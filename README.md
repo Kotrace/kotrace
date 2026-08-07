@@ -23,9 +23,14 @@ maven { url = uri("https://maven.luxgroup.dev") }
 
 // build.gradle.kts
 implementation("dev.luxgroup:kotrace:0.1.0")
+
+// OkHttp integration only — the traceparent-on-the-wire glue. Pulls the core transitively.
+implementation("dev.luxgroup:kotrace-okhttp:0.1.0")
 ```
 
-Imports are `dev.luxgroup.kotrace.*`.
+Core imports are `dev.luxgroup.kotrace.*`; the OkHttp module is `dev.luxgroup.kotrace.okhttp.*`. The
+core is pure Kotlin (`kotlinx-coroutines` only) — take `kotrace-okhttp` only if you use OkHttp, so a
+Ktor or pure-JVM consumer never drags an HTTP client.
 
 ## How to run (build + test)
 
@@ -42,6 +47,11 @@ Requires a JDK 11+. No secrets or env vars needed to build or test.
 are the whole public verb surface. Read `Span.kt` and `SpanContext.kt` next for the data + propagation
 model. Tests in `src/test/kotlin/dev/luxgroup/kotrace/` double as usage examples (`TraceTreeTest` is the
 guided tour).
+
+For OkHttp, `kotrace-okhttp/` holds `TracingCallFactory` (tags the outgoing request with the active
+span, from the coroutine thread) + `TracingInterceptor` (reads the tag on OkHttp's thread and writes
+`traceparent`). The split is deliberate — the interceptor cannot see the coroutine context. Wrap the
+client's `Call.Factory` with the factory and add the interceptor; both are inert with no active span.
 
 Example:
 
