@@ -82,4 +82,4 @@ println(spans.formatTree())
 
 ## Where to go when stuck
 
-Open an issue on the GitHub project. License: **TBD** — set before any external use.
+Open an issue on the GitHub project. Licensed under the [MIT License](LICENSE).
