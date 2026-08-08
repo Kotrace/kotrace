@@ -11,5 +11,5 @@ dependencies {
 }
 
 application {
-    mainClass = "dev.luxgroup.kotrace.demo.MainKt"
+    mainClass = "dev.kotrace.demo.MainKt"
 }

@@ -4,7 +4,7 @@ plugins {
     `maven-publish`
 }
 
-group = "dev.luxgroup"
+group = "dev.kotrace"
 version = "0.1.0"
 
 java {
@@ -41,7 +41,7 @@ publishing {
     if (repoDir != null) {
         repositories {
             maven {
-                name = "LuxGroupMaven"
+                name = "KotraceMaven"
                 url = uri(File(repoDir).toURI())
             }
         }

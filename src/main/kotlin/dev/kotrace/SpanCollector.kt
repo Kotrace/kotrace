@@ -1,4 +1,4 @@
-package dev.luxgroup.kotrace
+package dev.kotrace
 
 import kotlin.coroutines.AbstractCoroutineContextElement
 import kotlin.coroutines.CoroutineContext

@@ -1,9 +1,9 @@
-package dev.luxgroup.kotrace.okhttp
+package dev.kotrace.okhttp
 
-import dev.luxgroup.kotrace.Span
-import dev.luxgroup.kotrace.SpanStatus
-import dev.luxgroup.kotrace.TRACEPARENT_HEADER
-import dev.luxgroup.kotrace.toTraceparent
+import dev.kotrace.Span
+import dev.kotrace.SpanStatus
+import dev.kotrace.TRACEPARENT_HEADER
+import dev.kotrace.toTraceparent
 import okhttp3.Interceptor
 import okhttp3.Response
 

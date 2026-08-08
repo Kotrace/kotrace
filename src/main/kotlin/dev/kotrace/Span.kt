@@ -1,4 +1,4 @@
-package dev.luxgroup.kotrace
+package dev.kotrace
 
 /**
  * One unit of work in a trace. A tree of these, linked by [parentId], is the call path:

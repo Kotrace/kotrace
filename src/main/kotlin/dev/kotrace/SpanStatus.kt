@@ -1,3 +1,3 @@
-package dev.luxgroup.kotrace
+package dev.kotrace
 
 enum class SpanStatus { OK, ERROR }

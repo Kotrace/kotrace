@@ -1,7 +1,7 @@
-package dev.luxgroup.kotrace.okhttp
+package dev.kotrace.okhttp
 
-import dev.luxgroup.kotrace.Span
-import dev.luxgroup.kotrace.trace
+import dev.kotrace.Span
+import dev.kotrace.trace
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.slot

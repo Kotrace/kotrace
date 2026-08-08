@@ -1,7 +1,7 @@
-package dev.luxgroup.kotrace.okhttp
+package dev.kotrace.okhttp
 
-import dev.luxgroup.kotrace.Span
-import dev.luxgroup.kotrace.currentSpan
+import dev.kotrace.Span
+import dev.kotrace.currentSpan
 import okhttp3.Call
 import okhttp3.Request
 

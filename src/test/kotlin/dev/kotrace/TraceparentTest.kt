@@ -1,4 +1,4 @@
-package dev.luxgroup.kotrace
+package dev.kotrace
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue

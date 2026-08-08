@@ -4,7 +4,7 @@ plugins {
     `maven-publish`
 }
 
-group = "dev.luxgroup"
+group = "dev.kotrace"
 version = "0.1.0"
 
 java {
@@ -34,14 +34,14 @@ publishing {
         }
     }
     // Publish target: a local checkout of the dedicated static Maven repo, served over GitHub Pages at
-    // https://maven.luxgroup.dev. Set `kotrace.maven.repo.dir` to that checkout (in ~/.gradle or via
-    // -P), run `./gradlew publishAllPublicationsToLuxGroupMavenRepository`, then commit + push the repo.
+    // https://maven.kotrace.dev. Set `kotrace.maven.repo.dir` to that checkout (in ~/.gradle or via
+    // -P), run `./gradlew publishAllPublicationsToKotraceMavenRepository`, then commit + push the repo.
     // Consumers pull anonymously — a static repo needs no credentials.
     val repoDir = providers.gradleProperty("kotrace.maven.repo.dir").orNull
     if (repoDir != null) {
         repositories {
             maven {
-                name = "LuxGroupMaven"
+                name = "KotraceMaven"
                 url = uri(File(repoDir).toURI())
             }
         }

@@ -1,13 +1,14 @@
-package dev.luxgroup.kotrace.demo
+package dev.kotrace.demo
 
 import com.sun.net.httpserver.HttpServer
-import dev.luxgroup.kotrace.SpanCollector
-import dev.luxgroup.kotrace.TRACEPARENT_HEADER
-import dev.luxgroup.kotrace.birthplaceSpan
-import dev.luxgroup.kotrace.formatTree
-import dev.luxgroup.kotrace.okhttp.TracingCallFactory
-import dev.luxgroup.kotrace.okhttp.TracingInterceptor
-import dev.luxgroup.kotrace.trace
+import dev.kotrace.SpanCollector
+import dev.kotrace.TRACEPARENT_HEADER
+import dev.kotrace.birthplaceSpan
+import dev.kotrace.collectTrace
+import dev.kotrace.formatTree
+import dev.kotrace.okhttp.TracingCallFactory
+import dev.kotrace.okhttp.TracingInterceptor
+import dev.kotrace.trace
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope

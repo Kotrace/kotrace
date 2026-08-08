@@ -1,4 +1,4 @@
-package dev.luxgroup.kotrace
+package dev.kotrace
 
 /** The W3C Trace Context header name. Lower-case per the spec. */
 const val TRACEPARENT_HEADER = "traceparent"
