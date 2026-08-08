@@ -66,6 +66,19 @@ val spans = collectTrace {
 println(spans.formatTree())
 ```
 
+## Demo
+
+`:demo` is a runnable, self-contained tour — a mobile "checkout" flow as a tree of spans, a parallel
+`async` fan-out, and one **real** OkHttp call whose `traceparent` is captured by a throwaway in-process
+server (proving the client↔backend stitch with no OpenTelemetry). It is never published.
+
+```bash
+./gradlew :demo:run -q
+```
+
+Prints the `formatTree()` rendering, the `traceparent` the backend saw (its trace id matches the tree),
+and the birthplace span. Source: `demo/src/main/kotlin/dev/luxgroup/kotrace/demo/Main.kt`.
+
 ## How to contribute
 
 - One public verb per concern; keep the surface minimal. Coroutine types are `api`, so treat them as
