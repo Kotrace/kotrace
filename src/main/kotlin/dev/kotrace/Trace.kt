@@ -12,7 +12,7 @@ import java.security.SecureRandom
  * a body in it and still handle failures inside however it likes. ERROR propagates up the tree naturally
  * — the rethrown throwable passes through every enclosing [trace], marking each ancestor.
  */
-suspend fun <T> trace(name: String, block: suspend () -> T): T {
+suspend fun <T> trace(name: String, attributes: Map<String, String> = emptyMap(), block: suspend () -> T): T {
     val parent = currentCoroutineContext()[SpanContext]?.span
     val span = Span(
         traceId = parent?.traceId ?: hex(16),
@@ -20,6 +20,7 @@ suspend fun <T> trace(name: String, block: suspend () -> T): T {
         parentId = parent?.spanId,
         name = name,
         startNanos = System.nanoTime(),
+        attributes = attributes.toMutableMap(),
     )
     currentCoroutineContext()[SpanCollector]?.add(span)
     return try {

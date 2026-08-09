@@ -31,6 +31,18 @@ fun interface TraceSink {
 }
 
 /**
+ * A per-span predicate the consumer supplies to [SpanCollector.report] to drop a span's breadcrumb events
+ * from the fan-out — e.g. keep `repo` spans, drop `sql` ones, keyed off [Span.attributes]. kotrace never
+ * interprets the attributes; the meaning ("layer") lives entirely in the consumer's predicate.
+ *
+ * It gates **only** the log events. The birthplace throwable is emitted regardless of this filter — a
+ * filter tunes breadcrumb verbosity, it can never drop the crash cause.
+ */
+fun interface SpanFilter {
+    fun keep(span: Span): Boolean
+}
+
+/**
  * A one-line JSON rendering with snake_case keys — the shape a JSON log pipeline (ELK, Loki, …) ingests
  * as structured fields, so `trace_id` / `span_id` are queryable columns rather than substrings. Keys are
  * fixed and always present (`exception` is `null` on a plain log line). Hand-rolled — the core takes no
@@ -73,15 +85,20 @@ private fun StringBuilder.appendEscaped(s: String): StringBuilder {
  *
  * Emitting per event (not per span, not one line) is the point: the sink writes one searchable record
  * each, so `trace_id` recovers the whole flow and `span_id` recovers one span.
+ *
+ * [filter] gates a span's breadcrumb events (default: keep all). A filtered-out span still emits its
+ * birthplace throwable — that emit sits outside the guard, so a layer filter can never swallow the crash.
  */
-fun SpanCollector.report(sink: TraceSink) {
+fun SpanCollector.report(sink: TraceSink, filter: SpanFilter = SpanFilter { true }) {
     val all = spans
     val root = all.firstOrNull { it.parentId == null } ?: return
     fun childrenOf(parent: Span) = all.filter { it.parentId == parent.spanId }.sortedBy { it.startNanos }
 
     fun walk(span: Span) {
-        span.events.sortedBy { it.atNanos }.forEach { event ->
-            sink.emit(span.toRecord(event.level, event.message, atNanos = event.atNanos))
+        if (filter.keep(span)) {
+            span.events.sortedBy { it.atNanos }.forEach { event ->
+                sink.emit(span.toRecord(event.level, event.message, atNanos = event.atNanos))
+            }
         }
         val children = childrenOf(span)
         // Only the birthplace (deepest ERROR span) carries the throwable — ancestors merely propagate

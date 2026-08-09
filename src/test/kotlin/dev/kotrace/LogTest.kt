@@ -51,7 +51,7 @@ class LogTest {
                 }
             }
         }
-        collector.report { records += it }
+        collector.report(TraceSink { records += it })
 
         val traceIds = records.map { it.traceId }.distinct()
         assertEquals("one trace_id across every record", 1, traceIds.size)
@@ -67,6 +67,33 @@ class LogTest {
         val usecaseSpan = records.first { it.operation == "usecase" }
         val repoRecord = records.first { it.operation == "repo" }
         assertEquals("parent_span_id rebuilds the tree", usecaseSpan.spanId, repoRecord.parentId)
+    }
+
+    @Test
+    fun `span filter drops a layer's events but never its birthplace throwable`() = runTest {
+        val records = mutableListOf<TraceRecord>()
+        val collector = SpanCollector()
+        kotlinx.coroutines.withContext(collector) {
+            runCatching {
+                trace("usecase", mapOf("layer" to "uc")) {
+                    logSpan(LogLevel.INFO) { "start" }
+                    trace("repo", mapOf("layer" to "repo")) {
+                        logSpan(LogLevel.INFO) { "store" }
+                        throw IllegalStateException("Fake")
+                    }
+                }
+            }
+        }
+        collector.report(TraceSink { records += it }, SpanFilter { it.attributes["layer"] != "repo" })
+
+        assertTrue("kept layer's event survives", records.any { it.operation == "usecase" && it.message == "start" })
+        assertTrue(
+            "dropped layer's breadcrumb is gone",
+            records.none { it.operation == "repo" && it.throwable == null },
+        )
+        val error = records.single { it.throwable != null }
+        assertEquals("birthplace throwable survives the filter", "repo", error.operation)
+        assertEquals("Fake", error.message)
     }
 
     @Test
