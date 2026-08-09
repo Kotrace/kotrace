@@ -43,6 +43,19 @@ fun interface SpanFilter {
 }
 
 /**
+ * A last-pass scrubber applied to every [TraceRecord] on the **remote** fan-out ([SpanCollector.report]),
+ * before it reaches the sink. Return a redacted copy, or `null` to drop the record entirely.
+ *
+ * This is an opt-in escape hatch, **not** the primary PII guard: a captured body should be marked `local`
+ * (so [report] drops it unconditionally, [SpanEvent.local]) rather than relied on a redactor to catch — a
+ * field-blind scrubber leaks by omission. Use a [Redactor] only for field-aware scrubbing a caller
+ * deliberately wants in reports; the default is none.
+ */
+fun interface Redactor {
+    fun redact(record: TraceRecord): TraceRecord?
+}
+
+/**
  * A one-line JSON rendering with snake_case keys — the shape a JSON log pipeline (ELK, Loki, …) ingests
  * as structured fields, so `trace_id` / `span_id` are queryable columns rather than substrings. Keys are
  * fixed and always present (`exception` is `null` on a plain log line). Hand-rolled — the core takes no
@@ -88,16 +101,33 @@ private fun StringBuilder.appendEscaped(s: String): StringBuilder {
  *
  * [filter] gates a span's breadcrumb events (default: keep all). A filtered-out span still emits its
  * birthplace throwable — that emit sits outside the guard, so a layer filter can never swallow the crash.
+ *
+ * Every record passes through [KotraceLog.redactor] (if set) before the sink — a caller's field-aware
+ * scrub / drop for the remote path. `local` events are already gone by then (dropped above), so the
+ * redactor is a second, optional line, not the body guard.
  */
 fun SpanCollector.report(sink: TraceSink, filter: SpanFilter = SpanFilter { true }) {
     val all = spans
     val root = all.firstOrNull { it.parentId == null } ?: return
     fun childrenOf(parent: Span) = all.filter { it.parentId == parent.spanId }.sortedBy { it.startNanos }
 
+    fun emit(record: TraceRecord) {
+        val redactor = KotraceLog.redactor
+        if (redactor == null) {
+            sink.emit(record)
+            return
+        }
+        // A redactor returning null means "drop this record" — distinct from "no redactor set" above.
+        val scrubbed = redactor.redact(record) ?: return
+        sink.emit(scrubbed)
+    }
+
     fun walk(span: Span) {
         if (filter.keep(span)) {
-            span.events.sortedBy { it.atNanos }.forEach { event ->
-                sink.emit(span.toRecord(event.level, event.message, atNanos = event.atNanos))
+            // Drop local events (captured bodies, PII) unconditionally: report() is the remote fan-out,
+            // and a local event must never leave the device — the hard half of the body-capture boundary.
+            span.events.filterNot { it.local }.sortedBy { it.atNanos }.forEach { event ->
+                emit(span.toRecord(event.level, event.message, atNanos = event.atNanos))
             }
         }
         val children = childrenOf(span)
@@ -105,7 +135,7 @@ fun SpanCollector.report(sink: TraceSink, filter: SpanFilter = SpanFilter { true
         // ERROR status, so emitting the throwable at each level would duplicate it up the path.
         val isBirthplace = span.status == SpanStatus.ERROR && children.none { it.status == SpanStatus.ERROR }
         if (isBirthplace) span.error?.let { cause ->
-            sink.emit(
+            emit(
                 span.toRecord(
                     LogLevel.ERROR,
                     cause.message ?: cause::class.simpleName.orEmpty(),
@@ -119,7 +149,7 @@ fun SpanCollector.report(sink: TraceSink, filter: SpanFilter = SpanFilter { true
     walk(root)
 }
 
-private fun Span.toRecord(level: LogLevel, message: String, throwable: Throwable? = null, atNanos: Long) =
+internal fun Span.toRecord(level: LogLevel, message: String, throwable: Throwable? = null, atNanos: Long) =
     TraceRecord(
         traceId = traceId,
         spanId = spanId,

@@ -1,5 +1,7 @@
 package dev.kotrace.okhttp
 
+import dev.kotrace.KotraceLog
+import dev.kotrace.LogLevel
 import dev.kotrace.Span
 import dev.kotrace.SpanStatus
 import io.mockk.every
@@ -8,9 +10,13 @@ import io.mockk.slot
 import okhttp3.Interceptor
 import okhttp3.Protocol
 import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
+import okhttp3.ResponseBody.Companion.toResponseBody
+import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
@@ -66,5 +72,36 @@ class TracingInterceptorTest {
         val sent = run(request(span = null), code = 200)
 
         assertNull("no span, no traceparent", sent.header("traceparent"))
+    }
+
+    @After
+    fun resetCapture() {
+        KotraceLog.captureLevels = setOf(LogLevel.INFO, LogLevel.WARN, LogLevel.ERROR)
+    }
+
+    @Test
+    fun `captures request and response bodies as local events when enabled`() {
+        KotraceLog.captureLevels = setOf(LogLevel.DEBUG, LogLevel.INFO, LogLevel.ERROR)
+        val span = span()
+        val request = Request.Builder()
+            .url("https://graph.example.com/accounts")
+            .post("req-secret".toRequestBody(null))
+            .tag(Span::class.java, span)
+            .build()
+        val chain = mockk<Interceptor.Chain> {
+            every { request() } returns request
+            every { proceed(any()) } answers {
+                Response.Builder()
+                    .request(request).protocol(Protocol.HTTP_1_1).code(200).message("ok")
+                    .body("resp-secret".toResponseBody(null)).build()
+            }
+        }
+
+        TracingInterceptor(captureBody = true).intercept(chain)
+
+        val localEvents = span.events.filter { it.local }
+        assertTrue("request body captured", localEvents.any { it.message.contains("req-secret") })
+        assertTrue("response body captured", localEvents.any { it.message.contains("resp-secret") })
+        assertTrue("every body event is local (never reported)", span.events.filter { it.message.contains("secret") }.all { it.local })
     }
 }

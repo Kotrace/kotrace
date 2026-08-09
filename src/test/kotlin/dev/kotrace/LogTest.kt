@@ -13,8 +13,11 @@ import org.junit.Test
 class LogTest {
 
     @After
-    fun resetCapture() {
+    fun resetConfig() {
         KotraceLog.captureLevels = setOf(LogLevel.INFO, LogLevel.WARN, LogLevel.ERROR)
+        KotraceLog.emitMode = EmitMode.OnFailure
+        KotraceLog.liveSink = null
+        KotraceLog.redactor = null
     }
 
     @Test
@@ -94,6 +97,80 @@ class LogTest {
         val error = records.single { it.throwable != null }
         assertEquals("birthplace throwable survives the filter", "repo", error.operation)
         assertEquals("Fake", error.message)
+    }
+
+    @Test
+    fun `startChildSpanHere registers a child under the active span into the collector`() = runTest {
+        val collector = SpanCollector()
+        kotlinx.coroutines.withContext(collector) {
+            trace("parent") {
+                startChildSpanHere("http POST /token", mapOf("layer" to "http")).endHere(SpanStatus.OK)
+            }
+        }
+
+        val parent = collector.spans.first { it.name == "parent" }
+        val child = collector.spans.first { it.name == "http POST /token" }
+        assertEquals("child hangs off the active span", parent.spanId, child.parentId)
+        assertEquals("same trace", parent.traceId, child.traceId)
+        assertEquals("http", child.attributes["layer"])
+        assertTrue("endHere stamped the end", child.endNanos != null)
+    }
+
+    @Test
+    fun `report drops local events but keeps normal events and the throwable`() = runTest {
+        val records = mutableListOf<TraceRecord>()
+        val collector = SpanCollector()
+        kotlinx.coroutines.withContext(collector) {
+            runCatching {
+                trace("repo") {
+                    logSpan(LogLevel.INFO) { "normal line" }
+                    logSpan(LogLevel.INFO, local = true) { "SECRET body" }
+                    throw IllegalStateException("boom")
+                }
+            }
+        }
+        collector.report(TraceSink { records += it })
+
+        assertTrue("normal event kept", records.any { it.message == "normal line" })
+        assertTrue("local event never leaves the device", records.none { it.message == "SECRET body" })
+        assertTrue("birthplace throwable still emitted", records.any { it.throwable != null })
+    }
+
+    @Test
+    fun `live emit mode emits each event immediately, even on a successful trace`() = runTest {
+        val live = mutableListOf<TraceRecord>()
+        KotraceLog.emitMode = EmitMode.Live
+        KotraceLog.liveSink = TraceSink { live += it }
+
+        collectTrace {
+            trace("repo") {
+                logSpan(LogLevel.INFO) { "line one" }
+                logSpan(LogLevel.INFO) { "line two" }
+            }
+        }
+
+        assertEquals(listOf("line one", "line two"), live.map { it.message })
+    }
+
+    @Test
+    fun `redactor scrubs and can drop records on report`() = runTest {
+        val records = mutableListOf<TraceRecord>()
+        KotraceLog.redactor = Redactor { r -> if (r.message == "drop me") null else r.copy(message = "scrubbed") }
+        val collector = SpanCollector()
+        kotlinx.coroutines.withContext(collector) {
+            runCatching {
+                trace("repo") {
+                    logSpan(LogLevel.INFO) { "keep" }
+                    logSpan(LogLevel.INFO) { "drop me" }
+                    throw IllegalStateException("boom")
+                }
+            }
+        }
+        collector.report(TraceSink { records += it })
+
+        assertTrue("dropped record is gone", records.none { it.message == "drop me" })
+        assertTrue("kept record was scrubbed", records.any { it.message == "scrubbed" })
+        assertTrue("throwable record also passed the redactor", records.any { it.throwable != null })
     }
 
     @Test

@@ -41,6 +41,37 @@ suspend fun <T> trace(name: String, attributes: Map<String, String> = emptyMap()
 }
 
 /**
+ * Opens a child of [currentSpan] and registers it into [currentCollector], for **non-suspend** code
+ * running on a coroutine's thread that has no `coroutineContext` handle to call [trace] — the OkHttp
+ * `Call.Factory` (a raw call built on the coroutine thread) is the case this exists for. The caller must
+ * close it with [endHere].
+ *
+ * With no active span it opens a **root** (fresh `traceId`) — an untraced request still gets a span, so
+ * a live sink can log it; with no active collector the span simply isn't collected (report needs one),
+ * which is the correct no-op for a truly untraced background call.
+ */
+fun startChildSpanHere(name: String, attributes: Map<String, String> = emptyMap()): Span {
+    val parent = currentSpan()
+    val span = Span(
+        traceId = parent?.traceId ?: hex(16),
+        spanId = hex(8),
+        parentId = parent?.spanId,
+        name = name,
+        startNanos = System.nanoTime(),
+        attributes = attributes.toMutableMap(),
+    )
+    currentCollector()?.add(span)
+    return span
+}
+
+/** Closes a span opened by [startChildSpanHere], stamping its end, [status] and optional [error]. */
+fun Span.endHere(status: SpanStatus = SpanStatus.OK, error: Throwable? = null) {
+    endNanos = System.nanoTime()
+    this.status = status
+    if (error != null) this.error = error
+}
+
+/**
  * The birthplace span: the deepest ERROR span that carries a throwable. Depth is walked over
  * [SpanCollector.spans] via [Span.parentId]; only spans whose failure was a `Throwable` set
  * [Span.error], so a tree whose failures were all non-throwable yields none.
@@ -77,7 +108,7 @@ suspend fun collectTrace(block: suspend () -> Unit): List<Span> {
 private val random = SecureRandom()
 
 /** Lowercase hex of [bytes] random bytes — 16 for a trace id (W3C 32 chars), 8 for a span id (16). */
-private fun hex(bytes: Int): String {
+internal fun hex(bytes: Int): String {
     val b = ByteArray(bytes)
     random.nextBytes(b)
     return b.joinToString("") { "%02x".format(it.toInt() and 0xFF) }

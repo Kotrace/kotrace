@@ -1,11 +1,14 @@
 package dev.kotrace.okhttp
 
 import dev.kotrace.Span
+import dev.kotrace.SpanCollector
+import dev.kotrace.currentSpan
 import dev.kotrace.trace
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.slot
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withContext
 import okhttp3.Call
 import okhttp3.Request
 import org.junit.Assert.assertEquals
@@ -13,27 +16,34 @@ import org.junit.Assert.assertNull
 import org.junit.Test
 
 /**
- * Closes the loop the interceptor test left open: proves the span reaches the outgoing request from the
- * coroutine context — no hand-set tag — because the factory runs on the coroutine's thread where
- * [trace] has mirrored the span (Trap 1).
+ * Closes the loop the interceptor test left open: proves the factory opens the HTTP call's **own** span as
+ * a child of the active span and tags it on the outgoing request — no hand-set tag — because it runs on
+ * the coroutine's thread where [trace] mirrored the parent and the collector (Trap 1).
  */
 class TracingCallFactoryTest {
 
     @Test
-    fun `tags the outgoing request with the active span`() = runTest {
+    fun `opens an http child span of the active span and tags the request with it`() = runTest {
         val sent = slot<Request>()
         val delegate = mockk<Call.Factory> { every { newCall(capture(sent)) } returns mockk() }
         val factory = TracingCallFactory(delegate)
 
-        trace("HTTP GET /accounts") {
-            factory.newCall(Request.Builder().url("https://graph.example.com/accounts").build())
+        var parentId: String? = null
+        withContext(SpanCollector()) {
+            trace("AccountRepository.fetch") {
+                parentId = currentSpan()!!.spanId
+                factory.newCall(Request.Builder().url("https://graph.example.com/accounts").build())
+            }
         }
 
-        assertEquals("HTTP GET /accounts", sent.captured.tag(Span::class.java)?.name)
+        val tagged = sent.captured.tag(Span::class.java)!!
+        assertEquals("http GET /accounts", tagged.name)
+        assertEquals("http", tagged.attributes["layer"])
+        assertEquals("child of the active span", parentId, tagged.parentId)
     }
 
     @Test
-    fun `a call with no active span is left untagged`() = runTest {
+    fun `a call with tracing off is left untagged`() = runTest {
         val sent = slot<Request>()
         val delegate = mockk<Call.Factory> { every { newCall(capture(sent)) } returns mockk() }
 
