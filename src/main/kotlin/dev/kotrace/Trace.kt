@@ -4,15 +4,6 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.withContext
 import java.security.SecureRandom
 
-private val random = SecureRandom()
-
-/** Lowercase hex of [bytes] random bytes — 16 for a trace id (W3C 32 chars), 8 for a span id (16). */
-private fun hex(bytes: Int): String {
-    val b = ByteArray(bytes)
-    random.nextBytes(b)
-    return b.joinToString("") { "%02x".format(it.toInt() and 0xFF) }
-}
-
 /**
  * Opens a child of the current span, closes it on return, and marks it ERROR (recording the throwable)
  * on the way out — **rethrowing unchanged**.
@@ -80,4 +71,13 @@ suspend fun collectTrace(block: suspend () -> Unit): List<Span> {
         runCatching { block() }
     }
     return collector.spans
+}
+
+private val random = SecureRandom()
+
+/** Lowercase hex of [bytes] random bytes — 16 for a trace id (W3C 32 chars), 8 for a span id (16). */
+private fun hex(bytes: Int): String {
+    val b = ByteArray(bytes)
+    random.nextBytes(b)
+    return b.joinToString("") { "%02x".format(it.toInt() and 0xFF) }
 }

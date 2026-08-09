@@ -1,11 +1,14 @@
 package dev.kotrace.okhttp
 
+import dev.kotrace.LogLevel
 import dev.kotrace.Span
 import dev.kotrace.SpanStatus
 import dev.kotrace.TRACEPARENT_HEADER
+import dev.kotrace.log
 import dev.kotrace.toTraceparent
 import okhttp3.Interceptor
 import okhttp3.Response
+import java.util.concurrent.TimeUnit
 
 /**
  * Injects the W3C `traceparent` for the request's [Span] tag, so the backend continues the same trace —
@@ -26,8 +29,17 @@ class TracingInterceptor : Interceptor {
             .header(TRACEPARENT_HEADER, span.toTraceparent())
             .build()
 
+        // The span is tagged, not ambient, on OkHttp's thread — log to it directly. Path only (no query
+        // string): a query can carry user data, which must never reach a report (kotrace's symbol rule).
+        span.log(LogLevel.INFO) { "→ ${request.method} ${request.url.encodedPath}" }
+        val startNanos = System.nanoTime()
         val response = chain.proceed(request)
+        val tookMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startNanos)
+
         span.attributes["http.status"] = response.code.toString()
+        span.log(if (response.isSuccessful) LogLevel.INFO else LogLevel.ERROR) {
+            "← ${response.code} ${request.method} ${request.url.encodedPath} (${tookMs}ms)"
+        }
         if (!response.isSuccessful) span.status = SpanStatus.ERROR
         return response
     }

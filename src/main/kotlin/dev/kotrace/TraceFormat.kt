@@ -23,6 +23,7 @@ fun List<Span>.formatTree(): String {
         val children = childrenOf(span)
         sb.append("$indent└─ ${span.name} [${relStart}ms → ${relEnd}ms] ${durMs(span)}ms ${span.status}\n")
         if (span.attributes.isNotEmpty()) sb.append("$indent      attrs: ${span.attributes}\n")
+        span.events.sortedBy { it.atNanos }.forEach { sb.append("$indent      ${it.level}: ${it.message}\n") }
         // The birthplace is the deepest ERROR span — one whose children did not themselves error.
         // Show the throwable only there; ancestors merely carry ERROR status up the path.
         val isBirthplace = span.status == SpanStatus.ERROR && children.none { it.status == SpanStatus.ERROR }

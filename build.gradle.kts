@@ -1,11 +1,14 @@
 plugins {
     alias(libs.plugins.kotlin.jvm)
+    // Declared apply-false so the Android module `:kotrace-room` resolves AGP from one known version.
+    // AGP 9 has built-in Kotlin, so the Android module applies no separate Kotlin plugin.
+    alias(libs.plugins.android.library) apply false
     `java-library`
     `maven-publish`
 }
 
 group = "dev.kotrace"
-version = "0.1.0"
+version = "0.1.2"
 
 java {
     sourceCompatibility = JavaVersion.VERSION_11

@@ -11,8 +11,16 @@ contract, so an OTel upgrade later is additive.
 - `SpanContext` — carries the current span ambiently; also mirrors it to a `ThreadLocal` so non-suspend
   code on the coroutine's thread can read it via `currentSpan()`.
 - `SpanCollector` — trace-wide sink (concurrent-safe) so a reporter can render the whole tree.
+- `logSpan(level) { … }` / `logSpanHere(level) { … }` / `Span.log(level) { … }` — attach a log line to a
+  span (from a coroutine, a coroutine-thread callback, or a span held directly). `KotraceLog.captureLevels`
+  (default `INFO`+`WARN`+`ERROR`) filters; the message lambda is not built when filtered out.
+- `TraceRecord` / `TraceSink` / `SpanCollector.report(sink)` — fan a trace out as one searchable record
+  per log line + the birthplace throwable, each tagged `trace_id` / `span_id` / `parent_span_id`, so a
+  backend can group by any of them. The searchable counterpart to `formatTree`.
+- `TraceRecord.toJson()` — a one-line, snake_case JSON rendering (no serialization dependency, values
+  escaped) for a JSON log pipeline (ELK, Loki) to ingest `trace_id`/`span_id` as queryable fields.
 - `Span.toTraceparent()` / `TRACEPARENT_HEADER` — the W3C wire header.
-- `List<Span>.formatTree()` — an indented debug rendering.
+- `List<Span>.formatTree()` — an indented debug rendering, span logs interleaved.
 - `SpanCollector.birthplaceSpan()` — the deepest `ERROR` span carrying a throwable.
 
 ## Coordinates
@@ -26,11 +34,15 @@ implementation("dev.kotrace:kotrace:0.1.0")
 
 // OkHttp integration only — the traceparent-on-the-wire glue. Pulls the core transitively.
 implementation("dev.kotrace:kotrace-okhttp:0.1.0")
+
+// Room integration only (Android) — logs each query's SQL onto the active span. Pulls the core.
+implementation("dev.kotrace:kotrace-room:0.1.0")
 ```
 
-Core imports are `dev.kotrace.*`; the OkHttp module is `dev.kotrace.okhttp.*`. The
-core is pure Kotlin (`kotlinx-coroutines` only) — take `kotrace-okhttp` only if you use OkHttp, so a
-Ktor or pure-JVM consumer never drags an HTTP client.
+Core imports are `dev.kotrace.*`; the OkHttp module is `dev.kotrace.okhttp.*` and the Room module is
+`dev.kotrace.room.*`. The core is pure Kotlin (`kotlinx-coroutines` only) — take `kotrace-okhttp` only if
+you use OkHttp and `kotrace-room` (Android) only if you use Room, so a Ktor or pure-JVM consumer never
+drags an HTTP client or Android.
 
 ## How to run (build + test)
 
@@ -52,6 +64,10 @@ For OkHttp, `kotrace-okhttp/` holds `TracingCallFactory` (tags the outgoing requ
 span, from the coroutine thread) + `TracingInterceptor` (reads the tag on OkHttp's thread and writes
 `traceparent`). The split is deliberate — the interceptor cannot see the coroutine context. Wrap the
 client's `Call.Factory` with the factory and add the interceptor; both are inert with no active span.
+
+For Room, `kotrace-room/` (Android) holds `TracingQueryCallback` + the `RoomDatabase.Builder.tracing()`
+installer — SQL onto the active span, resolved via `currentSpan()` (Room runs under the caller's coroutine,
+so the `ThreadContextElement` mirror reaches its executor thread).
 
 Example:
 
@@ -100,6 +116,25 @@ Order between the factory and interceptor does not matter (tag is placed before 
 the chain). A call made with no active span passes through untagged and unmodified.
 
 See `demo/…/Main.kt` for a full end-to-end run.
+
+## Using with Room
+
+One call in the builder. `db.tracing()` installs a `QueryCallback` that logs each statement's SQL onto
+the active span. It reads the span via `currentSpan()` — no request-tag bridge like OkHttp needs — because
+Room runs a suspend query under the caller's coroutine (`withContext`), and `SpanContext` is a
+`ThreadContextElement`, so the span is mirrored onto Room's executor thread while the query runs. The
+callback is installed with a **direct executor** so it fires inline there.
+
+```kotlin
+import dev.kotrace.room.tracing
+
+Room.databaseBuilder(context, AppDatabase::class.java, "app.db")
+    .tracing()          // logs SQL at DEBUG by default; .tracing(LogLevel.INFO) to raise it
+    .build()
+```
+
+Only the parameterised SQL text (symbols, `?` placeholders) is logged — never the bound values, which can
+carry user data. SQL is high-volume, so it defaults to `DEBUG` (off under the default capture set).
 
 ## Demo
 
