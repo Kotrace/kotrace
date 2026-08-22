@@ -3,6 +3,7 @@ plugins {
     // Declared apply-false so the Android module `:kotrace-room` resolves AGP from one known version.
     // AGP 9 has built-in Kotlin, so the Android module applies no separate Kotlin plugin.
     alias(libs.plugins.android.library) apply false
+    alias(libs.plugins.dokka)
     `java-library`
     `maven-publish`
 }
@@ -19,6 +20,20 @@ java {
 kotlin {
     compilerOptions {
         jvmTarget = org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_11
+    }
+}
+
+// API docs (Dokka v2). `@sample` references resolve against this samples root. The sample code lives in
+// test source, so `check` compiles it against the real API — a sample that stops compiling breaks the
+// build, which is the whole point: KDoc examples can no longer silently drift (D3 / see ADR-007).
+dokka {
+    // Warnings fail the doc build: a dangling KDoc link or an unresolved `@sample` reference is an error,
+    // not a silent nit — this is what makes `dokkaGenerate` (run in CI) enforce D3.
+    dokkaPublications.named("html") {
+        failOnWarning.set(true)
+    }
+    dokkaSourceSets.named("main") {
+        samples.from("src/test/kotlin/dev/kotrace/samples")
     }
 }
 

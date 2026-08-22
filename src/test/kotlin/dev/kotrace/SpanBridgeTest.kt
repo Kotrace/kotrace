@@ -8,7 +8,7 @@ import org.junit.Test
 /**
  * Proves the thread-local bridge: [SpanContext] mirrors the ambient span into the thread-local that
  * [currentSpan] reads, so a non-suspend caller on the coroutine's thread sees the span active for the
- * flow — and the previous value is restored as each [trace] unwinds.
+ * flow — and the previous value is restored as each [span] unwinds.
  */
 class SpanBridgeTest {
 
@@ -16,10 +16,10 @@ class SpanBridgeTest {
     fun `currentSpan tracks the active trace and restores as traces unwind`() = runTest {
         assertNull("no span before any trace", currentSpan())
 
-        trace("root") {
+        span("root") {
             assertEquals("root active on the thread", "root", currentSpan()?.name)
 
-            trace("child") {
+            span("child") {
                 assertEquals("child active on the thread", "child", currentSpan()?.name)
             }
 

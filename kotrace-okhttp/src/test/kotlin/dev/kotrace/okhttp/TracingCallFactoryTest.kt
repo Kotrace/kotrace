@@ -3,7 +3,7 @@ package dev.kotrace.okhttp
 import dev.kotrace.Span
 import dev.kotrace.SpanCollector
 import dev.kotrace.currentSpan
-import dev.kotrace.trace
+import dev.kotrace.span
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.slot
@@ -18,7 +18,7 @@ import org.junit.Test
 /**
  * Closes the loop the interceptor test left open: proves the factory opens the HTTP call's **own** span as
  * a child of the active span and tags it on the outgoing request — no hand-set tag — because it runs on
- * the coroutine's thread where [trace] mirrored the parent and the collector (Trap 1).
+ * the coroutine's thread where [span] mirrored the parent and the collector (Trap 1).
  */
 class TracingCallFactoryTest {
 
@@ -30,7 +30,7 @@ class TracingCallFactoryTest {
 
         var parentId: String? = null
         withContext(SpanCollector()) {
-            trace("AccountRepository.fetch") {
+            span("AccountRepository.fetch") {
                 parentId = currentSpan()!!.spanId
                 factory.newCall(Request.Builder().url("https://graph.example.com/accounts").build())
             }

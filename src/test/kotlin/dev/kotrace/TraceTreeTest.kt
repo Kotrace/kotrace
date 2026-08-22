@@ -1,5 +1,6 @@
 package dev.kotrace
 
+import dev.kotrace.event.exception
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
@@ -13,19 +14,21 @@ import org.junit.Test
  */
 class TraceTreeTest {
 
+    // Test dump only — renderTree output stays in the test log, never a sink.
+    @OptIn(UnredactedTraceRead::class)
     @Test
     fun `nested failure builds a linked span tree with ERROR to the leaf`() = runTest {
         val spans = collectTrace {
-            trace("ui.handler") {
-                trace("service") {
-                    trace("store.write") {
+            span("ui.handler") {
+                span("service") {
+                    span("store.write") {
                         throw IllegalStateException("disk write failed: SQLITE_FULL")
                     }
                 }
             }
         }
 
-        println("\n" + spans.formatTree())
+        println("\n" + spans.renderTree())
 
         assertEquals("three layers stamped", 3, spans.size)
         assertEquals("one traceId across the trace", 1, spans.map { it.traceId }.distinct().size)
@@ -39,6 +42,6 @@ class TraceTreeTest {
         assertEquals("store's parent is the service span", service.spanId, store.parentId)
 
         assertTrue("ERROR propagates from the leaf up to the root", spans.all { it.status == SpanStatus.ERROR })
-        assertTrue("the original throwable is attached at the birthplace", store.error is IllegalStateException)
+        assertTrue("the original throwable is attached at the birthplace", store.exception is IllegalStateException)
     }
 }

@@ -1,6 +1,7 @@
 package dev.kotrace
 
 import kotlinx.coroutines.ThreadContextElement
+import kotlinx.coroutines.currentCoroutineContext
 import kotlin.coroutines.AbstractCoroutineContextElement
 import kotlin.coroutines.CoroutineContext
 import java.util.concurrent.CopyOnWriteArrayList
@@ -8,17 +9,25 @@ import java.util.concurrent.CopyOnWriteArrayList
 private val currentCollectorThreadLocal = ThreadLocal<SpanCollector?>()
 
 /**
- * The [SpanCollector] active on *this thread*, or null — the collector counterpart of [currentSpan]. A
- * non-suspend call running on a coroutine's thread (the OkHttp `Call.Factory`, which has no
- * `coroutineContext` handle) reads it to register a child span into the trace it belongs to. Maintained
- * by [SpanCollector]'s [ThreadContextElement] mirror, same mechanism as [SpanContext].
+ * The [SpanCollector] active in the current coroutine, or null — read straight from the `CoroutineContext`,
+ * the source of truth. This is the getter a **suspend** caller uses; it is the collector counterpart of
+ * [currentSpan]. Non-suspend code off the coroutine frame reads the [currentThreadCollector] mirror instead.
  */
-fun currentCollector(): SpanCollector? = currentCollectorThreadLocal.get()
+suspend fun currentCollector(): SpanCollector? = currentCoroutineContext()[SpanCollector]
 
 /**
- * Trace-wide sink: every [Span] in one trace, so a reporter can render the whole tree rather than only
- * walk one span's ancestry. Seeded once at the root; children register themselves via [add] as they
- * open.
+ * The [SpanCollector] active on *this thread*, or null — the collector counterpart of [currentThreadSpan]. A
+ * non-suspend call running on a coroutine's thread (the OkHttp `Call.Factory`, which has no
+ * `coroutineContext` handle) reads it to register a child span into the trace it belongs to. Maintained
+ * by [SpanCollector]'s [ThreadContextElement] mirror, same mechanism as [SpanContext]. A genuine suspend
+ * caller should prefer [currentCollector], which reads the context directly rather than the mirror.
+ */
+fun currentThreadCollector(): SpanCollector? = currentCollectorThreadLocal.get()
+
+/**
+ * Trace-wide buffer: every [Span] in one trace, so the whole tree can be rendered or fanned out rather
+ * than only walking one span's ancestry. Not a sink — the adapters are; this only holds the spans until
+ * report time. Seeded once at the root; children register themselves via [add] as they open.
  *
  * Backed by a [CopyOnWriteArrayList] so a traced fan-out — parallel `async` children each opening a
  * child span — can [add] concurrently without corrupting the list. Traces hold a handful of spans, so
@@ -27,7 +36,7 @@ fun currentCollector(): SpanCollector? = currentCollectorThreadLocal.get()
  * threads at once.
  *
  * As a [ThreadContextElement] it mirrors itself onto a ThreadLocal on every resume and restores the
- * previous on the way out — that mirror is what [currentCollector] reads for the non-suspend call-site
+ * previous on the way out — that mirror is what [currentThreadCollector] reads for the non-suspend call-site
  * bridge (OkHttp/Room opening a child span off the coroutine's own frame).
  */
 class SpanCollector :

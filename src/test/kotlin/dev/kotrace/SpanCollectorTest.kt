@@ -21,7 +21,7 @@ class SpanCollectorTest {
         val spans = collectTrace {
             coroutineScope {
                 repeat(childCount) { i ->
-                    launch(Dispatchers.Default) { trace("child-$i") { } }
+                    launch(Dispatchers.Default) { span("child-$i") { } }
                 }
             }
         }

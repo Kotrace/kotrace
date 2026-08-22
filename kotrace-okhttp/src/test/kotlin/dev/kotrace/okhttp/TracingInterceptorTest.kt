@@ -1,19 +1,25 @@
 package dev.kotrace.okhttp
 
-import dev.kotrace.KotraceLog
-import dev.kotrace.LogLevel
+import dev.kotrace.event.LogEvent
+import dev.kotrace.ReportAdapter
 import dev.kotrace.Span
+import dev.kotrace.event.SpanEvent
 import dev.kotrace.SpanStatus
+import dev.kotrace.TraceConfig
+import dev.kotrace.TracePolicy
+import dev.kotrace.event.TraceRecord
+import dev.kotrace.TraceStatus
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.slot
+import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withContext
 import okhttp3.Interceptor
 import okhttp3.Protocol
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
 import okhttp3.ResponseBody.Companion.toResponseBody
-import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -54,7 +60,7 @@ class TracingInterceptorTest {
         val sent = run(request(span), code = 200)
 
         assertEquals("00-${"a".repeat(32)}-${"b".repeat(16)}-01", sent.header("traceparent"))
-        assertEquals("200", span.attributes["http.status"])
+        assertEquals("200", span.info["http.status"])
         assertEquals(SpanStatus.OK, span.status)
     }
 
@@ -64,7 +70,7 @@ class TracingInterceptorTest {
         run(request(span), code = 500)
 
         assertEquals(SpanStatus.ERROR, span.status)
-        assertEquals("500", span.attributes["http.status"])
+        assertEquals("500", span.info["http.status"])
     }
 
     @Test
@@ -74,14 +80,16 @@ class TracingInterceptorTest {
         assertNull("no span, no traceparent", sent.header("traceparent"))
     }
 
-    @After
-    fun resetCapture() {
-        KotraceLog.captureLevels = setOf(LogLevel.INFO, LogLevel.WARN, LogLevel.ERROR)
+    /** A no-op report adapter, present only so a `TraceConfig` is in scope; storage is unconditional (no capture gate, ADR-002). */
+    private val captureDebug = object : ReportAdapter {
+        override val policy = object : TracePolicy {
+            override fun acceptsEvent(event: SpanEvent) = true
+        }
+        override fun onReport(status: TraceStatus, records: Sequence<TraceRecord>) = Unit
     }
 
     @Test
-    fun `captures request and response bodies as local events when enabled`() {
-        KotraceLog.captureLevels = setOf(LogLevel.DEBUG, LogLevel.INFO, LogLevel.ERROR)
+    fun `captures request and response bodies as sensitive events when enabled`() = runTest {
         val span = span()
         val request = Request.Builder()
             .url("https://graph.example.com/accounts")
@@ -97,11 +105,14 @@ class TracingInterceptorTest {
             }
         }
 
-        TracingInterceptor(captureBody = true).intercept(chain)
+        withContext(TraceConfig(listOf(captureDebug))) {
+            TracingInterceptor(TracingInterceptor.Level.BODY).intercept(chain)
+        }
 
-        val localEvents = span.events.filter { it.local }
-        assertTrue("request body captured", localEvents.any { it.message.contains("req-secret") })
-        assertTrue("response body captured", localEvents.any { it.message.contains("resp-secret") })
-        assertTrue("every body event is local (never reported)", span.events.filter { it.message.contains("secret") }.all { it.local })
+        val logs = span.events.filterIsInstance<LogEvent>()
+        val sensitiveEvents = logs.filter { it.sensitive }
+        assertTrue("request body captured", sensitiveEvents.any { it.message.contains("req-secret") })
+        assertTrue("response body captured", sensitiveEvents.any { it.message.contains("resp-secret") })
+        assertTrue("every body event is sensitive (never reported)", logs.filter { it.message.contains("secret") }.all { it.sensitive })
     }
 }

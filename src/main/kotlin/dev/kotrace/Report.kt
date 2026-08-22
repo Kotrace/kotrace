@@ -1,162 +1,112 @@
 package dev.kotrace
 
-/**
- * One flat, sink-ready log line lifted off a [Span] — the unit [SpanCollector.report] fans a failed
- * trace out into. Every field is a symbol or id (never user data), so a sink can drop it into a crash
- * report as-is and a reader can search it:
- *
- * - [traceId] groups every record across one flow;
- * - [spanId] groups the records of one span; [parentId] + [operation] rebuild the tree.
- *
- * [throwable] is set only on the record synthesised for a span's caught failure; a plain log event
- * carries none.
- */
-data class TraceRecord(
-    val traceId: String,
-    val spanId: String,
-    val parentId: String?,
-    val operation: String,
-    val level: LogLevel,
-    val message: String,
-    val throwable: Throwable? = null,
-    val atNanos: Long,
-)
+import dev.kotrace.event.ExceptionEvent
+import dev.kotrace.event.LogEvent
+import dev.kotrace.event.NamedEvent
+import dev.kotrace.event.SpanEvent
+import dev.kotrace.event.TraceRecord
+import dev.kotrace.event.exception
+import dev.kotrace.event.recordOf
 
 /**
- * Where [TraceRecord]s go. A consumer implements this once (route to Logcat, Crashlytics, …) and never
- * walks the span tree itself — [SpanCollector.report] does the fan-out.
- */
-fun interface TraceSink {
-    fun emit(record: TraceRecord)
-}
-
-/**
- * A per-span predicate the consumer supplies to [SpanCollector.report] to drop a span's breadcrumb events
- * from the fan-out — e.g. keep `repo` spans, drop `sql` ones, keyed off [Span.attributes]. kotrace never
- * interprets the attributes; the meaning ("layer") lives entirely in the consumer's predicate.
+ * Fans the finished trace out to every [ReportAdapter] in the active [TraceConfig] — the one report
+ * fan-out path. A single depth-first walk builds the record stream once; each adapter then receives a
+ * lazy [Sequence] filtered by its own [TracePolicy], so a report split across adapters (a success sink, a
+ * failure sink, a layer-scoped sink) still costs one walk. With no [TraceConfig] or no [ReportAdapter] in
+ * scope this is a no-op.
  *
- * It gates **only** the log events. The birthplace throwable is emitted regardless of this filter — a
- * filter tunes breadcrumb verbosity, it can never drop the crash cause.
- */
-fun interface SpanFilter {
-    fun keep(span: Span): Boolean
-}
-
-/**
- * A last-pass scrubber applied to every [TraceRecord] on the **remote** fan-out ([SpanCollector.report]),
- * before it reaches the sink. Return a redacted copy, or `null` to drop the record entirely.
+ * [status] is the trace's verdict, handed to each [ReportAdapter.onReport] before its records are forced, so
+ * an adapter can self-gate on the outcome it wants — the sequence is lazy, so a skipped outcome forces no
+ * work (see the [ReportAdapter.onReport] sample).
  *
- * This is an opt-in escape hatch, **not** the primary PII guard: a captured body should be marked `local`
- * (so [report] drops it unconditionally, [SpanEvent.local]) rather than relied on a redactor to catch — a
- * field-blind scrubber leaks by omission. Use a [Redactor] only for field-aware scrubbing a caller
- * deliberately wants in reports; the default is none.
+ * The walk collects, per span, every event [SpanEvent.reportable] admits, in time order — each
+ * [dev.kotrace.event.LogEvent], and, at the birthplace only ([isBirthplaceAmong]), the span's
+ * [dev.kotrace.event.ExceptionEvent]. Report membership is that one declared predicate, not an implicit
+ * filter: a [dev.kotrace.event.NamedEvent] is not reportable — a product/analytics occurrence fanned out
+ * live (see [LiveAdapter]), not tail-buffered for failure — and a future event kind must classify itself
+ * there or fail to compile.
+ * Each adapter filters the collected entries through its [TracePolicy] ([accepts]); the [dev.kotrace.event.ExceptionEvent]
+ * is subject only to [TracePolicy.acceptsEvent], which defaults to keeping it, so a breadcrumb filter never
+ * swallows the crash cause unless a policy explicitly covers exceptions.
  */
-fun interface Redactor {
-    fun redact(record: TraceRecord): TraceRecord?
-}
-
-/**
- * A one-line JSON rendering with snake_case keys — the shape a JSON log pipeline (ELK, Loki, …) ingests
- * as structured fields, so `trace_id` / `span_id` are queryable columns rather than substrings. Keys are
- * fixed and always present (`exception` is `null` on a plain log line). Hand-rolled — the core takes no
- * serialization dependency — but string values are JSON-escaped, so a message with a quote or newline
- * stays valid.
- */
-fun TraceRecord.toJson(): String = buildString {
-    append('{')
-    appendField("trace_id", traceId); append(',')
-    appendField("span_id", spanId); append(',')
-    appendField("parent_span_id", parentId); append(',')
-    appendField("operation", operation); append(',')
-    appendField("level", level.name); append(',')
-    appendField("message", message); append(',')
-    appendField("exception", throwable?.let { "${it::class.simpleName}: ${it.message}" })
-    append('}')
-}
-
-private fun StringBuilder.appendField(key: String, value: String?) {
-    append('"').append(key).append("\":")
-    if (value == null) append("null") else append('"').appendEscaped(value).append('"')
-}
-
-private fun StringBuilder.appendEscaped(s: String): StringBuilder {
-    for (c in s) when (c) {
-        '"' -> append("\\\"")
-        '\\' -> append("\\\\")
-        '\n' -> append("\\n")
-        '\r' -> append("\\r")
-        '\t' -> append("\\t")
-        else -> if (c < ' ') append("\\u%04x".format(c.code)) else append(c)
-    }
-    return this
-}
-
-/**
- * Fans the collected trace out to [sink] as individual [TraceRecord]s — the searchable alternative to a
- * single concatenated [formatTree] blob. Walks the tree depth-first from the root; per span, emits each
- * [SpanEvent] in time order, then, if the span carries a throwable, one final ERROR record for it.
- *
- * Emitting per event (not per span, not one line) is the point: the sink writes one searchable record
- * each, so `trace_id` recovers the whole flow and `span_id` recovers one span.
- *
- * [filter] gates a span's breadcrumb events (default: keep all). A filtered-out span still emits its
- * birthplace throwable — that emit sits outside the guard, so a layer filter can never swallow the crash.
- *
- * Every record passes through [KotraceLog.redactor] (if set) before the sink — a caller's field-aware
- * scrub / drop for the remote path. `local` events are already gone by then (dropped above), so the
- * redactor is a second, optional line, not the body guard.
- */
-fun SpanCollector.report(sink: TraceSink, filter: SpanFilter = SpanFilter { true }) {
+fun SpanCollector.reportTrace(status: TraceStatus) {
+    val adapters = currentThreadConfig()?.reportAdapters.orEmpty()
+    if (adapters.isEmpty()) return
     val all = spans
     val root = all.firstOrNull { it.parentId == null } ?: return
-    fun childrenOf(parent: Span) = all.filter { it.parentId == parent.spanId }.sortedBy { it.startNanos }
 
-    fun emit(record: TraceRecord) {
-        val redactor = KotraceLog.redactor
-        if (redactor == null) {
-            sink.emit(record)
-            return
-        }
-        // A redactor returning null means "drop this record" — distinct from "no redactor set" above.
-        val scrubbed = redactor.redact(record) ?: return
-        sink.emit(scrubbed)
-    }
-
+    val entries = ArrayList<WalkEntry>()
     fun walk(span: Span) {
-        if (filter.keep(span)) {
-            // Drop local events (captured bodies, PII) unconditionally: report() is the remote fan-out,
-            // and a local event must never leave the device — the hard half of the body-capture boundary.
-            span.events.filterNot { it.local }.sortedBy { it.atNanos }.forEach { event ->
-                emit(span.toRecord(event.level, event.message, atNanos = event.atNanos))
-            }
-        }
-        val children = childrenOf(span)
-        // Only the birthplace (deepest ERROR span) carries the throwable — ancestors merely propagate
-        // ERROR status, so emitting the throwable at each level would duplicate it up the path.
-        val isBirthplace = span.status == SpanStatus.ERROR && children.none { it.status == SpanStatus.ERROR }
-        if (isBirthplace) span.error?.let { cause ->
-            emit(
-                span.toRecord(
-                    LogLevel.ERROR,
-                    cause.message ?: cause::class.simpleName.orEmpty(),
-                    throwable = cause,
-                    atNanos = span.endNanos ?: span.startNanos,
-                ),
-            )
+        val children = all.childrenOf(span)
+        val birthplace = span.isBirthplaceAmong(all)
+        span.events.filter { it.reportable() }.sortedBy { it.atNanos }.forEach { event ->
+            val collected = if (event is ExceptionEvent) birthplace else true
+            if (collected) entries += WalkEntry(span, event)
         }
         children.forEach(::walk)
     }
     walk(root)
+
+    adapters.forEach { adapter -> adapter.onReport(status, adapter.viewOf(entries)) }
 }
 
-internal fun Span.toRecord(level: LogLevel, message: String, throwable: Throwable? = null, atNanos: Long) =
-    TraceRecord(
-        traceId = traceId,
-        spanId = spanId,
-        parentId = parentId,
-        operation = name,
-        level = level,
-        message = message,
-        throwable = throwable,
-        atNanos = atNanos,
-    )
+private class WalkEntry(val span: Span, val event: SpanEvent)
+
+/**
+ * Whether an event enters the failure **report** at all — the one declared statement of report membership.
+ * Exhaustive over the sealed [SpanEvent], so a future event kind fails to compile until it is classified
+ * here, rather than being silently omitted by whatever [reportTrace] happens to filter. This gates *whether* an
+ * event is reportable, not *how* it is collected: [reportTrace] still branches a [LogEvent] (one record per span)
+ * from an [ExceptionEvent] (the birthplace throwable, once).
+ *
+ * A [NamedEvent] is a product/analytics occurrence — live-only, fanned out to a [LiveAdapter] as it happens,
+ * never tail-buffered for failure — so it is not reportable.
+ */
+internal fun SpanEvent.reportable(): Boolean = when (this) {
+    is LogEvent -> true
+    is NamedEvent -> false
+    is ExceptionEvent -> true
+}
+
+/**
+ * This adapter's lazy view of the walked [entries], filtered by the one [accepts] predicate the live path
+ * also uses: a [LogEvent] passes its policy's span / event / sensitive gates; an [ExceptionEvent] passes
+ * unless the policy's [TracePolicy.acceptsEvent] deliberately drops it (default: kept). Only when an entry
+ * survives is its [dev.kotrace.event.TraceRecord] built — a [LogEvent]'s lazy message resolves here, once.
+ */
+private fun ReportAdapter.viewOf(entries: List<WalkEntry>): Sequence<TraceRecord> =
+    entries.asSequence()
+        .filter { policy.accepts(it.span, it.event) }
+        .map { it.span.recordOf(it.event) }
+
+/** Children of [parent], ordered by start — the tree edge is [Span.parentId] → [Span.spanId]. */
+internal fun List<Span>.childrenOf(parent: Span): List<Span> =
+    filter { it.parentId == parent.spanId }.sortedBy { it.startNanos }
+
+/**
+ * A span is a **birthplace** iff it carries the throwable ([exception] != null) and no span in its subtree
+ * does — the deepest throwable-bearing failure on its branch. Only there does the crash record belong;
+ * enclosing spans re-record the same throwable as it climbs ([dev.kotrace.span]) but are not the origin.
+ *
+ * The test is throwable-presence, **not** "ERROR with no ERROR child" (ADR-005). A throwable-less ERROR leaf
+ * is representable — a bridge span ended `end(ERROR, error = null)`, e.g. an OkHttp 500 that returned rather
+ * than threw (`dev.kotrace.okhttp` `TracingInterceptor`). Under the old status-only predicate such a leaf
+ * counted as the branch's birthplace and, having no [dev.kotrace.event.ExceptionEvent], emitted nothing —
+ * while its ancestor's real throwable, no longer "leaf-most", was silently dropped from the report. Gating
+ * on the throwable keeps birthplace aligned with the crash record actually emitted, and makes it agree with
+ * every consumer reading the report's [dev.kotrace.event.ExceptionRecord]s. Shared by [reportTrace] and
+ * [renderTree]; [all] is the whole span list, walked to test descendants.
+ */
+internal fun Span.isBirthplaceAmong(all: List<Span>): Boolean {
+    if (exception == null) return false
+    val byId = all.associateBy(Span::spanId)
+    fun descendsFromThis(candidate: Span): Boolean {
+        var cursor = byId[candidate.parentId]
+        while (cursor != null) {
+            if (cursor.spanId == spanId) return true
+            cursor = byId[cursor.parentId]
+        }
+        return false
+    }
+    return all.none { it.spanId != spanId && it.exception != null && descendsFromThis(it) }
+}

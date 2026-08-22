@@ -5,23 +5,33 @@ A tiny, coroutine-native span tracer for Kotlin/JVM. Builds a per-flow tree of s
 client↔backend correlation — with **no OpenTelemetry SDK** on either side. The wire format is the
 contract, so an OTel upgrade later is additive.
 
+> Design & rationale (why the pieces are shaped this way, and vs OpenTelemetry): **[ARCHITECTURE.md](ARCHITECTURE.md)**.
+
 - `Span` / `SpanStatus` — one unit of work and its outcome.
-- `trace(name) { … }` — opens a child of the ambient span, closes it on return, marks it `ERROR` and
-  rethrows on failure. Instrumentation only: it observes and rethrows, never swallows.
+- `span(name) { … }` — opens a child of the ambient span, closes it on return, marks it `ERROR` and
+  rethrows on failure. Instrumentation only: it observes and rethrows, never swallows. (Renamed from
+  `trace` — it opens a span, not a trace; ADR-003.)
 - `SpanContext` — carries the current span ambiently; also mirrors it to a `ThreadLocal` so non-suspend
-  code on the coroutine's thread can read it via `currentSpan()`.
-- `SpanCollector` — trace-wide sink (concurrent-safe) so a reporter can render the whole tree.
-- `logSpan(level) { … }` / `logSpanHere(level) { … }` / `Span.log(level) { … }` — attach a log line to a
-  span (from a coroutine, a coroutine-thread callback, or a span held directly). `KotraceLog.captureLevels`
-  (default `INFO`+`WARN`+`ERROR`) filters; the message lambda is not built when filtered out.
-- `TraceRecord` / `TraceSink` / `SpanCollector.report(sink)` — fan a trace out as one searchable record
-  per log line + the birthplace throwable, each tagged `trace_id` / `span_id` / `parent_span_id`, so a
-  backend can group by any of them. The searchable counterpart to `formatTree`.
+  code on the coroutine's thread can read it via `currentThreadSpan()`.
+- `currentSpan()` (suspend, reads `coroutineContext`) / `currentThreadSpan()` (non-suspend, reads the
+  `ThreadLocal` mirror) — the two span getters. A suspend caller uses the first; an off-coroutine bridge
+  (OkHttp/Room) the second.
+- `SpanCollector` — trace-wide buffer (concurrent-safe) holding every span in one trace, so the whole tree
+  can be rendered or fanned out at the end. Not a sink — the adapters are (see `reportTrace`).
+- `Span.log(level) { … }` / `Span.addNamed(name)` / `Span.addException(cause)` — the event verbs, all
+  extensions on `Span`; call them on a span you got from a getter (`currentSpan()?.log { }`) or hold
+  directly. Each adapter's `TracePolicy` filters logs at fan-out (a default keeps `INFO`+`WARN`+`ERROR`);
+  events are stored unconditionally and the message lambda is not built for a log no adapter accepts.
+- `TraceRecord` / `ReportAdapter` / `SpanCollector.reportTrace(status)` — fan a trace out at its end as one
+  searchable record per log line + the birthplace throwable, each tagged `trace_id` / `span_id` /
+  `parent_span_id`, to every `ReportAdapter` in the active `TraceConfig`. Backends group by any of the ids.
+  The searchable counterpart to `renderTree`.
 - `TraceRecord.toJson()` — a one-line, snake_case JSON rendering (no serialization dependency, values
   escaped) for a JSON log pipeline (ELK, Loki) to ingest `trace_id`/`span_id` as queryable fields.
 - `Span.toTraceparent()` / `TRACEPARENT_HEADER` — the W3C wire header.
-- `List<Span>.formatTree()` — an indented debug rendering, span logs interleaved.
-- `SpanCollector.birthplaceSpan()` — the deepest `ERROR` span carrying a throwable.
+- `List<Span>.renderTree()` — an indented debug rendering, span logs interleaved. An **unredacted** human
+  read (renders `sensitive` messages and raw exception text), so it is gated by `@UnredactedTraceRead`: a
+  call site must `@OptIn`, and must never route the output to a sink (ADR-008).
 
 ## Coordinates
 
@@ -30,13 +40,13 @@ contract, so an OTel upgrade later is additive.
 maven { url = uri("https://maven.kotrace.dev") }
 
 // build.gradle.kts
-implementation("dev.kotrace:kotrace:0.1.0")
+implementation("dev.kotrace:kotrace:0.1.2")
 
 // OkHttp integration only — the traceparent-on-the-wire glue. Pulls the core transitively.
-implementation("dev.kotrace:kotrace-okhttp:0.1.0")
+implementation("dev.kotrace:kotrace-okhttp:0.1.2")
 
 // Room integration only (Android) — logs each query's SQL onto the active span. Pulls the core.
-implementation("dev.kotrace:kotrace-room:0.1.0")
+implementation("dev.kotrace:kotrace-room:0.1.2")
 ```
 
 Core imports are `dev.kotrace.*`; the OkHttp module is `dev.kotrace.okhttp.*` and the Room module is
@@ -55,10 +65,9 @@ Requires a JDK 11+. No secrets or env vars needed to build or test.
 
 ## Where to start
 
-`src/main/kotlin/dev/kotrace/Trace.kt` is the entry point — `trace {}` and `collectTrace {}`
-are the whole public verb surface. Read `Span.kt` and `SpanContext.kt` next for the data + propagation
-model. Tests in `src/test/kotlin/dev/kotrace/` double as usage examples (`TraceTreeTest` is the
-guided tour).
+`src/main/kotlin/dev/kotrace/Trace.kt` is the entry point — `span {}` is the whole public verb surface.
+Read `Span.kt` and `SpanContext.kt` next for the data + propagation model. Tests in
+`src/test/kotlin/dev/kotrace/` double as usage examples (`TraceTreeTest` is the guided tour).
 
 For OkHttp, `kotrace-okhttp/` holds `TracingCallFactory` (tags the outgoing request with the active
 span, from the coroutine thread) + `TracingInterceptor` (reads the tag on OkHttp's thread and writes
@@ -66,20 +75,24 @@ span, from the coroutine thread) + `TracingInterceptor` (reads the tag on OkHttp
 client's `Call.Factory` with the factory and add the interceptor; both are inert with no active span.
 
 For Room, `kotrace-room/` (Android) holds `TracingQueryCallback` + the `RoomDatabase.Builder.tracing()`
-installer — SQL onto the active span, resolved via `currentSpan()` (Room runs under the caller's coroutine,
+installer — SQL onto the active span, resolved via `currentThreadSpan()` (Room runs under the caller's coroutine,
 so the `ThreadContextElement` mirror reaches its executor thread).
 
-Example:
+Example — seed a `SpanCollector` on the context, run the flow, then read the tree:
 
 ```kotlin
-val spans = collectTrace {
-    trace("handler") {
-        trace("service") {
-            trace("store.write") { error("boom") }
+val collector = SpanCollector()
+withContext(collector) {                     // rides the CoroutineContext down every child span
+    runCatching {                            // a real reporter lets the throwable propagate instead
+        span("handler") {
+            span("service") {
+                span("store.write") { error("boom") }
+            }
         }
     }
 }
-println(spans.formatTree())
+@OptIn(UnredactedTraceRead::class)           // human debug read — never route this to a sink (ADR-008)
+println(collector.spans.renderTree())
 ```
 
 ## Using with OkHttp
@@ -101,9 +114,9 @@ val http = OkHttpClient.Builder()
 // 2. Wrap the client (a Call.Factory) with the factory — use THIS to make calls.
 val calls: Call.Factory = TracingCallFactory(http)
 
-// 3. Call inside a span. traceparent goes on the wire; the span records http.status,
-//    and a non-2xx flips the span to ERROR.
-suspend fun price(): String = trace("http.GET /pricing") {
+// 3. Call inside a span. traceparent goes on the wire; the span emits http.status as info
+//    (on every record off the span, not a filter key — ADR-001), and a non-2xx flips it to ERROR.
+suspend fun price(): String = span("http.GET /pricing") {
     calls.newCall(Request.Builder().url(pricingUrl).build())
         .execute().use { it.body?.string().orEmpty() }
 }
@@ -120,7 +133,7 @@ See `demo/…/Main.kt` for a full end-to-end run.
 ## Using with Room
 
 One call in the builder. `db.tracing()` installs a `QueryCallback` that logs each statement's SQL onto
-the active span. It reads the span via `currentSpan()` — no request-tag bridge like OkHttp needs — because
+the active span. It reads the span via `currentThreadSpan()` — no request-tag bridge like OkHttp needs — because
 Room runs a suspend query under the caller's coroutine (`withContext`), and `SpanContext` is a
 `ThreadContextElement`, so the span is mirrored onto Room's executor thread while the query runs. The
 callback is installed with a **direct executor** so it fires inline there.
@@ -129,12 +142,13 @@ callback is installed with a **direct executor** so it fires inline there.
 import dev.kotrace.room.tracing
 
 Room.databaseBuilder(context, AppDatabase::class.java, "app.db")
-    .tracing()          // logs SQL at DEBUG by default; .tracing(LogLevel.INFO) to raise it
+    .tracing(mapOf("level" to "DEBUG"))   // attributes stamped on each SQL log; kotrace holds no level taxonomy
     .build()
 ```
 
 Only the parameterised SQL text (symbols, `?` placeholders) is logged — never the bound values, which can
-carry user data. SQL is high-volume, so it defaults to `DEBUG` (off under the default capture set).
+carry user data. kotrace has no severity taxonomy, so the level is just a `"level"` attribute you pass; SQL
+is high-volume, so tag it at a level your capture policy drops by default (e.g. `DEBUG`).
 
 ## Demo
 
@@ -146,7 +160,7 @@ server (proving the client↔backend stitch with no OpenTelemetry). It is never 
 ./gradlew :demo:run -q
 ```
 
-Prints the `formatTree()` rendering, the `traceparent` the backend saw (its trace id matches the tree),
+Prints the `renderTree()` rendering, the `traceparent` the backend saw (its trace id matches the tree),
 and the birthplace span. Source: `demo/src/main/kotlin/dev/kotrace/demo/Main.kt`.
 
 ## How to contribute

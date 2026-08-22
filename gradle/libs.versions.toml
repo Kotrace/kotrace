@@ -1,8 +1,9 @@
 [versions]
 kotlin = "2.4.10"
+dokka = "2.2.0"
 kotlinxCoroutines = "1.11.0"
 junit = "4.13.2"
-okhttp = "5.4.0"
+okhttp = "5.5.0"
 mockk = "1.14.11"
 # AGP 9.1.1 on Gradle 9.3.1 — matched to the Camailux app so the `-Pkotrace.local` composite (which pulls
 # this repo into that build) does not hit "multiple AGP versions in one build". AGP 9 has built-in Kotlin:
@@ -22,4 +23,5 @@ room-runtime = { module = "androidx.room:room-runtime", version.ref = "room" }
 
 [plugins]
 kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
+dokka = { id = "org.jetbrains.dokka", version.ref = "dokka" }
 android-library = { id = "com.android.library", version.ref = "agp" }
