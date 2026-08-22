@@ -40,13 +40,13 @@ contract, so an OTel upgrade later is additive.
 maven { url = uri("https://maven.kotrace.dev") }
 
 // build.gradle.kts
-implementation("dev.kotrace:kotrace:0.1.2")
+implementation("dev.kotrace:kotrace:0.2.0")
 
 // OkHttp integration only — the traceparent-on-the-wire glue. Pulls the core transitively.
-implementation("dev.kotrace:kotrace-okhttp:0.1.2")
+implementation("dev.kotrace:kotrace-okhttp:0.2.0")
 
 // Room integration only (Android) — logs each query's SQL onto the active span. Pulls the core.
-implementation("dev.kotrace:kotrace-room:0.1.2")
+implementation("dev.kotrace:kotrace-room:0.2.0")
 ```
 
 Core imports are `dev.kotrace.*`; the OkHttp module is `dev.kotrace.okhttp.*` and the Room module is
