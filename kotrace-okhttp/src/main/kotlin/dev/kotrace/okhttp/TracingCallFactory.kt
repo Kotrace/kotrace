@@ -20,7 +20,10 @@ import okhttp3.Request
  * something would consume it — an active collector (fan-out) or a registered live adapter. A call made
  * with tracing fully off is passed through untouched, so this is safe to wrap every client with.
  */
-class TracingCallFactory(private val delegate: Call.Factory) : Call.Factory {
+class TracingCallFactory(
+    private val delegate: Call.Factory,
+    private val attributes: Map<String, String> = emptyMap(),
+) : Call.Factory {
 
     // The genuine non-suspend bridge site: newCall runs on the coroutine thread with no coroutine frame,
     // so startSpan is correct here — this is exactly what NonSuspendTracingBridge opts in for (ADR-003).
@@ -32,7 +35,7 @@ class TracingCallFactory(private val delegate: Call.Factory) : Call.Factory {
 
         val span = startSpan(
             name = "http ${request.method} ${request.url.encodedPath}",
-            attributes = mapOf(HttpSpan.LAYER to HttpSpan.LAYER_HTTP),
+            attributes = attributes,
         )
         return delegate.newCall(request.newBuilder().tag(Span::class.java, span).build())
     }

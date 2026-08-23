@@ -125,7 +125,8 @@ fun main() = runBlocking<Unit> {
     // FailureExport drops them. TracingCallFactory tags the request from the coroutine thread;
     // TracingInterceptor writes the traceparent on OkHttp's thread. Both inert without an active span.
     val http = OkHttpClient.Builder().addInterceptor(TracingInterceptor(TracingInterceptor.Level.BODY)).build()
-    val calls: Call.Factory = TracingCallFactory(http)
+    // The http span's fixed filter attribute is passed in from here, not baked into the factory.
+    val calls: Call.Factory = TracingCallFactory(http, mapOf("layer" to "http"))
 
     // Seed the trace with its collector (the span tree) and its config (the adapters). Both ride the
     // CoroutineContext down every child span; fan-out reads them back at the report site below.
@@ -168,7 +169,7 @@ private suspend fun checkout(calls: Call.Factory, pricingUrl: String): Unit = sp
         currentSpan()?.log(lvl("INFO")) { "cart valid" }
     }
 
-    // No manual span here: TracingCallFactory opens the http span itself (fixed attribute layer=http) and
+    // No manual span here: TracingCallFactory opens the http span itself (attribute layer=http, passed in above) and
     // TracingInterceptor finishes it — status, timing, the traceparent on the wire, and the body events. The
     // response code is stamped as span info (putInfo "http.status"), so every record off this span carries
     // "info":{"http.status":"200"} in its JSON — emitted payload, not a filter key (ADR-001).

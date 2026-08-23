@@ -26,7 +26,7 @@ class TracingCallFactoryTest {
     fun `opens an http child span of the active span and tags the request with it`() = runTest {
         val sent = slot<Request>()
         val delegate = mockk<Call.Factory> { every { newCall(capture(sent)) } returns mockk() }
-        val factory = TracingCallFactory(delegate)
+        val factory = TracingCallFactory(delegate, mapOf("layer" to "http"))
 
         var parentId: String? = null
         withContext(SpanCollector()) {
@@ -40,6 +40,21 @@ class TracingCallFactoryTest {
         assertEquals("http GET /accounts", tagged.name)
         assertEquals("http", tagged.attributes["layer"])
         assertEquals("child of the active span", parentId, tagged.parentId)
+    }
+
+    @Test
+    fun `defaults to no attributes when none are passed in`() = runTest {
+        val sent = slot<Request>()
+        val delegate = mockk<Call.Factory> { every { newCall(capture(sent)) } returns mockk() }
+        val factory = TracingCallFactory(delegate)
+
+        withContext(SpanCollector()) {
+            span("AccountRepository.fetch") {
+                factory.newCall(Request.Builder().url("https://graph.example.com/accounts").build())
+            }
+        }
+
+        assertEquals(emptyMap<String, String>(), sent.captured.tag(Span::class.java)!!.attributes)
     }
 
     @Test
