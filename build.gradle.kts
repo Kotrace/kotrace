@@ -8,9 +8,6 @@ plugins {
     `maven-publish`
 }
 
-group = "dev.kotrace"
-version = "0.2.1"
-
 java {
     sourceCompatibility = JavaVersion.VERSION_11
     targetCompatibility = JavaVersion.VERSION_11

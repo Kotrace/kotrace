@@ -4,9 +4,6 @@ plugins {
     `maven-publish`
 }
 
-group = "dev.kotrace"
-version = "0.2.1"
-
 android {
     namespace = "dev.kotrace.room"
     compileSdk {
