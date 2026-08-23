@@ -20,6 +20,10 @@ include(":kotrace-okhttp")
 // split as `:kotrace-okhttp`). A pure-JVM or okhttp-only consumer never drags androidx.room.
 include(":kotrace-room")
 
+// `:kotrace-bom` is the Bill of Materials — a constraints-only `java-platform` pinning one coherent set
+// of kotrace module versions, so consumers align them without a version on each dependency.
+include(":kotrace-bom")
+
 // `:demo` is a runnable showcase, not a published artifact — nested/parallel tracing and the OkHttp
 // `traceparent` glue, driven end-to-end against a throwaway in-process server. Never published.
 include(":demo")

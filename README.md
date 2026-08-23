@@ -49,6 +49,14 @@ implementation("dev.kotrace:kotrace-okhttp:0.2.0")
 implementation("dev.kotrace:kotrace-room:0.2.0")
 ```
 
+Or align every module through the BOM — declare its version once, drop the version off each dependency:
+
+```kotlin
+implementation(platform("dev.kotrace:kotrace-bom:0.2.0"))
+implementation("dev.kotrace:kotrace")
+implementation("dev.kotrace:kotrace-okhttp")
+```
+
 Core imports are `dev.kotrace.*`; the OkHttp module is `dev.kotrace.okhttp.*` and the Room module is
 `dev.kotrace.room.*`. The core is pure Kotlin (`kotlinx-coroutines` only) — take `kotrace-okhttp` only if
 you use OkHttp and `kotrace-room` (Android) only if you use Room, so a Ktor or pure-JVM consumer never
