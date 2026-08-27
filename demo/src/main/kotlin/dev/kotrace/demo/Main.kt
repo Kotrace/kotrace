@@ -9,6 +9,7 @@ import dev.kotrace.SpanCollector
 import dev.kotrace.SpanStatus
 import dev.kotrace.TRACEPARENT_HEADER
 import dev.kotrace.TraceConfig
+import dev.kotrace.TraceLink
 import dev.kotrace.TracePolicy
 import dev.kotrace.event.TraceRecord
 import dev.kotrace.TraceStatus
@@ -59,6 +60,11 @@ import java.util.concurrent.atomic.AtomicReference
  * the only thing an `acceptsSpan` gate may read), while `http.status`, known only once the response returns, is
  * emitted **info** — it rides every record off that span (nested in the JSON, `"info":{"http.status":"200"}`) but
  * is never a filter key. Fixed dimensions filter; late results are payload.
+ *
+ * Finally the tour shows **cross-trace correlation** (ADR-009): after checkout fails, a separate
+ * "user reports the failure" flow opens its own trace carrying a [TraceLink] back to the checkout's
+ * `trace_id`. The link joins two independent trees where [Span.parentId] cannot, and surfaces as a nested
+ * `links` array on every record off the linking span.
  *
  * Run: `./gradlew :demo:run -q`
  */
@@ -149,6 +155,25 @@ fun main() = runBlocking<Unit> {
         // self-gates on it; it reads the active TraceConfig, so it must run inside this scope.
         val status = if (collector.spans.any { it.status == SpanStatus.ERROR }) TraceStatus.ERROR else TraceStatus.OK
         collector.reportTrace(status)
+    }
+
+    // Cross-trace correlation (ADR-009): a follow-up "user reports the failure" flow is deliberately its
+    // own trace, yet it is *about* the checkout that just failed. Capture the checkout's trace_id and open
+    // the report trace carrying a TraceLink to it — a birth-set edge that joins the two separate trees
+    // where parentId (an in-tree edge) cannot. The link rides every record off the linking span and
+    // surfaces in the live watch as a nested `links` array on the wire.
+    val checkoutTraceId = collector.spans.first { it.parentId == null }.traceId
+    val reportCollector = SpanCollector()
+    withContext(reportCollector + config) {
+        println()
+        println("── live watch · user report (a SEPARATE trace linking back to checkout) ──")
+        val link = TraceLink(checkoutTraceId, mapOf("reason" to "user_report"))
+        span("user_report_error", links = listOf(link)) {
+            currentSpan()?.log(lvl("INFO")) { "user reported the failed checkout" }
+        }
+        println()
+        println("── renderTree · user report ──")
+        println(reportCollector.spans.renderTree())
     }
 
     println()
