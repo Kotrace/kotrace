@@ -16,8 +16,13 @@ import java.security.SecureRandom
  *
  * @sample dev.kotrace.samples.SpanSamples.spanUsage
  */
-suspend fun <T> span(name: String, attributes: Map<String, String> = emptyMap(), block: suspend () -> T): T {
-    val opened = createSpan(currentCoroutineContext()[SpanContext]?.span, name, attributes)
+suspend fun <T> span(
+    name: String,
+    attributes: Map<String, String> = emptyMap(),
+    links: List<TraceLink> = emptyList(),
+    block: suspend () -> T,
+): T {
+    val opened = createSpan(currentCoroutineContext()[SpanContext]?.span, name, attributes, links)
     currentCollector()?.add(opened)
     return try {
         // Overlay only the element — withContext already inherits the current context. Passing the
@@ -52,8 +57,8 @@ suspend fun <T> span(name: String, attributes: Map<String, String> = emptyMap(),
  * correct no-op for a truly untraced background call.
  */
 @NonSuspendTracingBridge
-fun startSpan(name: String, attributes: Map<String, String> = emptyMap()): Span {
-    val opened = createSpan(currentThreadSpan(), name, attributes)
+fun startSpan(name: String, attributes: Map<String, String> = emptyMap(), links: List<TraceLink> = emptyList()): Span {
+    val opened = createSpan(currentThreadSpan(), name, attributes, links)
     currentThreadCollector()?.add(opened)
     return opened
 }
@@ -70,14 +75,24 @@ fun Span.end(status: SpanStatus = SpanStatus.OK, error: Throwable? = null) {
  * and the non-suspend [startSpan]. A null [parent] roots a fresh trace (new `traceId`). The caller
  * resolves [parent] from its own source — [span] from the coroutine context (authoritative), [startSpan]
  * from the [currentThreadSpan] mirror — so this never reaches for ambient state.
+ *
+ * [links] are the span's birth-set cross-trace edges ([TraceLink]) — carried as passed, no inheritance from
+ * [parent]: a link is a per-span statement, and its natural carrier is a trace root a caller opens with
+ * links in hand.
  */
-private fun createSpan(parent: Span?, name: String, attributes: Map<String, String>): Span = Span(
+private fun createSpan(
+    parent: Span?,
+    name: String,
+    attributes: Map<String, String>,
+    links: List<TraceLink> = emptyList(),
+): Span = Span(
     traceId = parent?.traceId ?: hex(16),
     spanId = hex(8),
     parentId = parent?.spanId,
     name = name,
     startNanos = System.nanoTime(),
     attributes = attributes,
+    links = links,
 )
 
 private val random = SecureRandom()

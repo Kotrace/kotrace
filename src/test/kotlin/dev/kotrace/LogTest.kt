@@ -346,6 +346,7 @@ class LogTest {
             operation = "repo.store",
             atNanos = 0,
             info = emptyMap(),
+            links = emptyList(),
             attributes = mapOf("level" to "ERROR"),
             message = "boom \"quoted\"\nnext",
         )
@@ -366,6 +367,7 @@ class LogTest {
             operation = "repo",
             atNanos = 0,
             info = emptyMap(),
+            links = emptyList(),
             throwable = IllegalStateException("User quoctrung66@gmail.com not found"),
         )
         val json = record.toJson()
@@ -417,6 +419,7 @@ class LogTest {
             // keys deliberately equal to a reserved identity key and to an attribute key —
             // nesting namespaces them, so none is dropped or duplicated
             info = mapOf("shared" to "info-kept", "trace_id" to "info-tid"),
+            links = emptyList(),
             attributes = mapOf("operation" to "attr-op", "shared" to "attr-kept"),
             message = "m",
         )
@@ -438,6 +441,7 @@ class LogTest {
             operation = "repo",
             atNanos = 0,
             info = emptyMap(),
+            links = emptyList(),
             attributes = emptyMap(),
             message = "m",
         )

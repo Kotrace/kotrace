@@ -1,6 +1,7 @@
 package dev.kotrace.event
 
 import dev.kotrace.Span
+import dev.kotrace.TraceLink
 import dev.kotrace.currentThreadConfig
 
 /**
@@ -23,6 +24,7 @@ data class NamedRecord(
     override val operation: String,
     override val atNanos: Long,
     override val info: Map<String, String>,
+    override val links: List<TraceLink>,
     val name: String,
     override val attributes: Map<String, String>,
 ) : AttributedRecord

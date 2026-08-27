@@ -31,6 +31,10 @@ enum class SpanStatus { OK, ERROR }
  * value known only *late* (a result like `http.status`) is **not** an attribute — it is emitted [info]
  * ([putInfo]); it must never become a filter key.
  *
+ * [links] are the span's birth-set **cross-trace edges** ([TraceLink]) — an immutable list of references to
+ * other traces, settled at construction like [attributes]. Distinct from [parentId] (the in-tree edge); see
+ * [TraceLink]. The natural carrier is a trace's root span.
+ *
  * [events] is copy-on-write: a traced fan-out (parallel `async` children) or a non-suspend callback on
  * an off-coroutine thread (OkHttp/Room) may append concurrently. Traces hold few events, so the cost is
  * negligible — the same trade [SpanCollector] makes for its span list.
@@ -42,6 +46,7 @@ class Span(
     val name: String,
     val startNanos: Long,
     val attributes: Map<String, String> = emptyMap(),
+    val links: List<TraceLink> = emptyList(),
 ) {
     val events: MutableList<SpanEvent> = CopyOnWriteArrayList()
 

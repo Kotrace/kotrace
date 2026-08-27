@@ -71,6 +71,7 @@ interchange.
 | **tracing** | the concern / this library — never a runtime object. |
 | **trace** | **one call tree** = one `trace_id`, per flow. The verb that opens a **span** within it is `span(name){}` — named for the node it opens, not the tree (ADR-003). |
 | **span** | **one node** (`Span`) — a name, a status, `attributes`, `events`, an optional `error`, a parent. Entity, not value (§2). |
+| **link** | a **cross-trace causal edge** (`TraceLink` on `Span.links`) — a reference to another *trace* by `trace_id` only (no `span_id`; ADR-009), the OTel *span link* shape. Distinct from `parentId` (the **in-tree** edge). Birth-set like `attributes`; surfaces on the wire as a `links` array on every record off the span. Never interchange with **parent**. |
 | **operation** | the owning **`Span.name`** at egress — its label as the flat **join key** on every `TraceRecord` and `toJson` column. `name` = the in-memory field; `operation` = that value as the wire/backend-join key (OTel-aligned). A **wire contract** (§2), and distinct from `NamedRecord.name` (the *event*'s name). |
 | **record** | a flat **egress line** (`TraceRecord`), lifted off a span at fan-out. Three kinds ↓. |
 | **log** | a **breadcrumb** event (`Span.log` → `LogEvent` → `LogRecord`) — a line bound to a span. |
@@ -135,7 +136,7 @@ a routing decision. Where it goes is a policy decision (§4); the flag only says
 ### `TraceRecord` — an egress line (sealed)
 
 ```
-sealed interface TraceRecord { traceId, spanId, parentId, operation, atNanos, info }
+sealed interface TraceRecord { traceId, spanId, parentId, operation, atNanos, info, links }
   ├─ LogRecord(attributes, message, sensitive)  // from a LogEvent
   ├─ NamedRecord(name, attributes)              // from a NamedEvent
   └─ ExceptionRecord(throwable)                 // from the birthplace exception — no event counterpart
@@ -343,8 +344,9 @@ non-sensitive** `LogEvent`/`NamedEvent` at the layer that parsed it — never by
 boundary: a client span emits it, a backend continues the **same** `traceId`, and the two stitch with no
 shared SDK. `TraceRecord.toJson()` renders a one-line snake_case record for a JSON log pipeline (ELK/Loki)
 to ingest `trace_id`/`span_id` as queryable fields, with `attributes`/`info` nested under their own objects
-(ADR-004) — the machine, PII-safe counterpart to the unredacted, `@UnredactedTraceRead`-gated `renderTree`
-(ADR-008).
+(ADR-004) and any cross-trace **`links`** as a nested `[{"trace_id":…,"attributes":{…}}]` array (ADR-009,
+omitted when empty) — the machine, PII-safe counterpart to the unredacted, `@UnredactedTraceRead`-gated
+`renderTree` (ADR-008).
 
 ---
 

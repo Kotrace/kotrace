@@ -1,6 +1,7 @@
 package dev.kotrace.event
 
 import dev.kotrace.Span
+import dev.kotrace.TraceLink
 import java.util.Locale
 
 /**
@@ -26,6 +27,13 @@ sealed interface TraceRecord {
      * record (whatever was stamped by emit time), final on a report record (span complete).
      */
     val info: Map<String, String>
+
+    /**
+     * The owning span's birth-set **cross-trace links** ([dev.kotrace.Span.links]) — references to other
+     * traces, stamped onto every record lifted off that span (span-scoped, the same treatment as [info]).
+     * Empty for a span with no links. See [TraceLink] for why a link is [TraceLink.traceId] only.
+     */
+    val links: List<TraceLink>
 }
 
 /**
@@ -38,9 +46,9 @@ sealed interface AttributedRecord : TraceRecord {
 
 /** Flattens a [SpanEvent] into its [TraceRecord] kind, stamping this span's identity onto the line. */
 internal fun Span.recordOf(event: SpanEvent): TraceRecord = when (event) {
-    is LogEvent -> LogRecord(traceId, spanId, parentId, name, event.atNanos, info.toMap(), event.attributes, event.message, event.sensitive)
-    is NamedEvent -> NamedRecord(traceId, spanId, parentId, name, event.atNanos, info.toMap(), event.name, event.attributes)
-    is ExceptionEvent -> ExceptionRecord(traceId, spanId, parentId, name, event.atNanos, info.toMap(), event.throwable)
+    is LogEvent -> LogRecord(traceId, spanId, parentId, name, event.atNanos, info.toMap(), links, event.attributes, event.message, event.sensitive)
+    is NamedEvent -> NamedRecord(traceId, spanId, parentId, name, event.atNanos, info.toMap(), links, event.name, event.attributes)
+    is ExceptionEvent -> ExceptionRecord(traceId, spanId, parentId, name, event.atNanos, info.toMap(), links, event.throwable)
 }
 
 /**
@@ -92,6 +100,7 @@ fun TraceRecord.toJson(): String = buildString {
         }
     }
     appendObject("info", info)
+    appendLinks("links", links)
     append('}')
 }
 
@@ -112,6 +121,24 @@ private fun StringBuilder.appendObject(key: String, map: Map<String, String>) {
         appendField(k, v)
     }
     append('}')
+}
+
+/** Renders [links] as a nested `"key":[{…}]` array, each link a `{"trace_id":…,"attributes":{…}}` object.
+ *  Empty list emits nothing (leaner line, mirrors [appendObject]). A link's `attributes` object is itself
+ *  omitted when empty. Leads with a comma, so the caller need not. */
+private fun StringBuilder.appendLinks(key: String, links: List<TraceLink>) {
+    if (links.isEmpty()) return
+    append(',').append('"').append(key).append("\":[")
+    var first = true
+    for (link in links) {
+        if (!first) append(',')
+        first = false
+        append('{')
+        appendField("trace_id", link.traceId)
+        appendObject("attributes", link.attributes)
+        append('}')
+    }
+    append(']')
 }
 
 private fun StringBuilder.appendEscaped(s: String): StringBuilder {
