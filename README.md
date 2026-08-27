@@ -28,6 +28,11 @@ contract, so an OTel upgrade later is additive.
   The searchable counterpart to `renderTree`.
 - `TraceRecord.toJson()` — a one-line, snake_case JSON rendering (no serialization dependency, values
   escaped) for a JSON log pipeline (ELK, Loki) to ingest `trace_id`/`span_id` as queryable fields.
+- `TraceLink` — a birth-set, cross-trace edge: `span(name, links = listOf(TraceLink(otherTraceId)))` points
+  the span at another *trace* by its `trace_id` (the OTel span-link shape), joining two separate trees where
+  `Span.parentId` (an in-tree edge) cannot. Trace-level, `trace_id` only — no `span_id` (ADR-009). It rides
+  every record off the linking span and surfaces in `toJson` as a nested `links` array; an unlinked span is
+  unchanged on the wire. `attributes` are static symbols only, same PII rule as spans.
 - `Span.toTraceparent()` / `TRACEPARENT_HEADER` — the W3C wire header.
 - `List<Span>.renderTree()` — an indented debug rendering, span logs interleaved. An **unredacted** human
   read (renders `sensitive` messages and raw exception text), so it is gated by `@UnredactedTraceRead`: a
@@ -161,15 +166,17 @@ is high-volume, so tag it at a level your capture policy drops by default (e.g. 
 ## Demo
 
 `:demo` is a runnable, self-contained tour — a mobile "checkout" flow as a tree of spans, a parallel
-`async` fan-out, and one **real** OkHttp call whose `traceparent` is captured by a throwaway in-process
-server (proving the client↔backend stitch with no OpenTelemetry). It is never published.
+`async` fan-out, one **real** OkHttp call whose `traceparent` is captured by a throwaway in-process
+server (proving the client↔backend stitch with no OpenTelemetry), and a follow-up user-report flow in its
+own trace that links back to the failed checkout by `trace_id` (`TraceLink`, ADR-009). It is never published.
 
 ```bash
 ./gradlew :demo:run -q
 ```
 
 Prints the `renderTree()` rendering, the `traceparent` the backend saw (its trace id matches the tree),
-and the birthplace span. Source: `demo/src/main/kotlin/dev/kotrace/demo/Main.kt`.
+the birthplace span, and the report trace whose `links` array carries the checkout's `trace_id`.
+Source: `demo/src/main/kotlin/dev/kotrace/demo/Main.kt`.
 
 ## How to contribute
 
