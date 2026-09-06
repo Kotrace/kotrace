@@ -35,6 +35,11 @@ enum class SpanStatus { OK, ERROR }
  * other traces, settled at construction like [attributes]. Distinct from [parentId] (the in-tree edge); see
  * [TraceLink]. The natural carrier is a trace's root span.
  *
+ * [scopeId] is the ambient [dev.kotrace.withScope] id active when this span opened, or null (ADR-010).
+ * Stamped onto every [dev.kotrace.event.TraceRecord] lifted off the span ([dev.kotrace.event.recordOf]) so
+ * an operation inside a scope correlates under it, above its own [traceId]. A plain correlation key: never a
+ * filter dimension, never read by a [TracePolicy] or the report path.
+ *
  * [events] is copy-on-write: a traced fan-out (parallel `async` children) or a non-suspend callback on
  * an off-coroutine thread (OkHttp/Room) may append concurrently. Traces hold few events, so the cost is
  * negligible — the same trade [SpanCollector] makes for its span list.
@@ -47,6 +52,7 @@ class Span(
     val startNanos: Long,
     val attributes: Map<String, String> = emptyMap(),
     val links: List<TraceLink> = emptyList(),
+    val scopeId: String? = null,
 ) {
     val events: MutableList<SpanEvent> = CopyOnWriteArrayList()
 

@@ -2,7 +2,7 @@ package dev.kotrace.event
 
 import dev.kotrace.Span
 import dev.kotrace.TraceLink
-import dev.kotrace.currentThreadConfig
+import dev.kotrace.resolvedThreadConfig
 
 /**
  * The birthplace throwable as a timeline event — the crash cause, ordered among the span's log lines.
@@ -28,11 +28,12 @@ class ExceptionEvent(
  * failed in the log store but cannot pull its detail from the crash reporter.
  */
 data class ExceptionRecord(
-    override val traceId: String,
-    override val spanId: String,
+    override val traceId: String?,
+    override val spanId: String?,
     override val parentId: String?,
-    override val operation: String,
+    override val operation: String?,
     override val atNanos: Long,
+    override val scopeId: String? = null,
     override val info: Map<String, String>,
     override val links: List<TraceLink>,
     val throwable: Throwable,
@@ -52,9 +53,15 @@ data class ExceptionRecord(
  * Note the throwable climbs the tree: it is re-recorded on every enclosing span as it rethrows
  * ([dev.kotrace.span]), so a live watch sees one line per ancestor — deepest (birthplace) first. Report
  * dedups that to the single birthplace record; live deliberately does not, showing the propagation trail.
+ *
+ * [info] is optional record-level metadata (ADR-010): it merges over the span's [dev.kotrace.Span.info] onto
+ * the emitted [ExceptionRecord.info] **without** touching the [ExceptionEvent], which stays object-only (a
+ * throwable, no attribute bag — ADR-005). A consumer uses it to carry an emit marker (an "explicit report"
+ * flag, a user-report id) that kotrace does not interpret. It rides the *live* record only — the event holds
+ * no info, so the report path (which rebuilds records from the event) is unaffected.
  */
-fun Span.addException(cause: Throwable) {
-    emit(ExceptionEvent(cause, System.nanoTime()), currentThreadConfig())
+fun Span.addException(cause: Throwable, info: Map<String, String> = emptyMap()) {
+    emit(ExceptionEvent(cause, System.nanoTime()), resolvedThreadConfig(), info)
 }
 
 /** The birthplace throwable recorded on this span, if any — the first [ExceptionEvent] on its timeline. */

@@ -70,6 +70,7 @@ interchange.
 |---|---|
 | **tracing** | the concern / this library — never a runtime object. |
 | **trace** | **one call tree** = one `trace_id`, per flow. The verb that opens a **span** within it is `span(name){}` — named for the node it opens, not the tree (ADR-003). |
+| **scope** | a **live-only correlation umbrella above a trace** (`scope ⊇ trace ⊇ span`, ADR-010) — a nullable `scope_id`, set by `withScope(scopeId){}`. **Not a span**: it opens no reportable tree and has no duration, outcome, `status`, or report path — a plain correlation key, never a filter dimension. Groups many traces **and** their orphan emits under one session/journey key. |
 | **span** | **one node** (`Span`) — a name, a status, `attributes`, `events`, an optional `error`, a parent. Entity, not value (§2). |
 | **link** | a **cross-trace causal edge** (`TraceLink` on `Span.links`) — a reference to another *trace* by `trace_id` only (no `span_id`; ADR-009), the OTel *span link* shape. Distinct from `parentId` (the **in-tree** edge). Birth-set like `attributes`; surfaces on the wire as a `links` array on every record off the span. Never interchange with **parent**. |
 | **operation** | the owning **`Span.name`** at egress — its label as the flat **join key** on every `TraceRecord` and `toJson` column. `name` = the in-memory field; `operation` = that value as the wire/backend-join key (OTel-aligned). A **wire contract** (§2), and distinct from `NamedRecord.name` (the *event*'s name). |
@@ -77,6 +78,7 @@ interchange.
 | **log** | a **breadcrumb** event (`Span.log` → `LogEvent` → `LogRecord`) — a line bound to a span. |
 | **event** (named) | a **named / analytics** occurrence (`Span.addNamed` → `NamedEvent` → `NamedRecord`, OTel `addEvent` shape). |
 | **exception** | the **birthplace crash** — `Span.error` (a field, §8), surfaced only at egress as `ExceptionRecord`; bypasses every policy gate. |
+| **span-less emit** | `emitLog` / `emitNamed` / `emitException` (ADR-010) — the **orphan** counterparts of the span-scoped `log` / `addNamed` / `addException`, for an occurrence outside any span (an app-lifecycle or push callback, a non-coroutine entry). Fanned **live-only** through the resolved config (context override, else the process-wide `Kotrace` config ↓), gated by policy; a record with null identity, carrying a `scope_id` if a `withScope` is active. `emitException(cause, info)` — and `addException(cause, info)` — populate record-level `ExceptionRecord.info` while the event stays object-only (ADR-005). |
 | **report** | the **tail** fan-out at trace end (`ReportAdapter.onReport(status)`) — buffered tree, breadcrumbs + crash, gated by status. |
 | **live** | the **per-event** fan-out as it happens (`LiveAdapter.onLive`) — immediate, ungated by trace status. |
 | **status** | `SpanStatus` = one node's outcome; `TraceStatus` = the whole trace's verdict (`OK`/`ERROR`/`CANCELLED`). Separate on purpose (§2). |
@@ -136,7 +138,7 @@ a routing decision. Where it goes is a policy decision (§4); the flag only says
 ### `TraceRecord` — an egress line (sealed)
 
 ```
-sealed interface TraceRecord { traceId, spanId, parentId, operation, atNanos, info, links }
+sealed interface TraceRecord { traceId?, spanId?, parentId?, operation?, atNanos, scopeId?, info, links }
   ├─ LogRecord(attributes, message, sensitive)  // from a LogEvent
   ├─ NamedRecord(name, attributes)              // from a NamedEvent
   └─ ExceptionRecord(throwable)                 // from the birthplace exception — no event counterpart
@@ -145,6 +147,17 @@ sealed interface TraceRecord { traceId, spanId, parentId, operation, atNanos, in
 The **denormalized** form: flat, with the identity/join fields stamped on (a raw `SpanEvent` carries
 none). This is the **contract an adapter sees** — the rich `Span` never crosses to a consumer, so a
 consumer never depends on kotrace's internal node shape.
+
+**`scope_id` — above `trace_id`** (ADR-010). A nullable correlation key, one level up (`scope ⊇ trace ⊇
+span`): a span opened inside a `withScope` stamps it alongside `trace_id`; a span-less emit inside one
+carries it alone. `toJson` emits `"scope_id"` **only when non-null** — absent = today's shape, so every
+pre-scope record and tool is untouched (parallel to ADR-004 nesting). It is **never** read by a
+`TracePolicy`, the report path, or any status/duration/outcome logic — a plain key, kept a distinct field
+so that distinction is structural, not conventional.
+
+**Nullable identity** (ADR-010). `traceId` / `spanId` / `operation` are nullable because a **span-less
+emit** (`emitLog` / `emitNamed` / `emitException`) has no span and thus no trace — its record carries null
+identity and (if inside a scope) a `scope_id`. A record lifted off a real `Span` always has them set.
 
 **`operation` vs `name` — the egress rename** (defined in §1 Vocabulary). `operation` is the owning
 `Span.name`, carried on every record as the flat join key; it is a `toJson` column, so it is a **wire
@@ -198,6 +211,26 @@ contract. `AbstractCoroutineContextElement` supplies only the `key` plumbing; it
 One collector = one trace, seeded at the root (`withContext(collector)`), dead when the root returns
 (fan-out, then GC). There is **no global registry** accumulating traces — that is what keeps memory flat and
 what makes kotrace's tail decision safe (§4): it buffers exactly one flow at a time.
+
+**The one process-global** (ADR-010). Per-*flow* state — the collector, the current span, the scope — is
+context-scoped and pure. **Config is not per-flow**: which sinks and policies a consumer runs is static and
+process-wide, so it lives in `Kotrace`, the install-once fan-out config. Every fan-out path resolves
+`currentThreadConfig() ?: Kotrace.defaultConfig()`, so the global is the default and a per-flow
+`TraceConfig` on the context (`withContext(collector + TraceConfig(...))`) is an **override** for that flow.
+This is what lets a **span-less emit** and a non-suspend root fan out with no coroutine to carry adapters.
+`Kotrace.install(...)` publishes the config once at startup through an `AtomicReference` (safe publication);
+it is read-only after, and a second install is a hard error (fail-closed, no silent replace). It is the sole
+mutable process state in the library, documented as such — and optional: with nothing installed and no
+override, every path is a safe no-op. (Report still needs a per-flow `SpanCollector` to buffer the tree, so
+a non-suspend flow with no collector is live-only by construction.)
+
+**Setup guidance.** Under DI (Hilt/Koin), resolve the adapters from the graph and `install` once at app
+start; the `install { … }` provider overload registers a supplier resolved lazily on first fan-out, for when
+the graph is not ready at class-load. A flow needing *different* sinks overlays a per-flow `TraceConfig` on
+its context (an override), so the global is not a straitjacket. Reserve the global for framework-owned,
+non-suspend entrypoints (app lifecycle, a push callback) where no context can be threaded in — everything
+coroutine-rooted can use a context `TraceConfig` instead, which is also what keeps tests hermetic (they set
+their own config per `withContext` and never touch the global).
 
 ### The failing path, and why `status` propagates
 
@@ -293,8 +326,14 @@ one-trace `SpanCollector` (§3) keeps that bounded.
 
 ### Config is immutable, var-free
 
-`TraceConfig(adapters)` is an immutable context element. `liveAdapters`/`reportAdapters` are partitioned
-once at construction, so the hot path reads a precomputed list. There is **no capture gate** (ADR-002):
+`TraceConfig(adapters)` is an immutable object holding the consumer's sinks. `liveAdapters`/`reportAdapters`
+are partitioned once at construction, so the hot path reads a precomputed list. **Which config a path uses**
+is resolved once, at the fan-out site, as `currentThreadConfig() ?: Kotrace.defaultConfig()` (ADR-010): a
+per-flow context override if one is in scope, else the process-wide `Kotrace` config (§3). Config is
+static, process-wide data, so its home is the install-once global; only per-flow state (the collector, the
+current span, the scope) is genuinely contextual. That one resolution feeds **every** path identically —
+span and span-less, live and report, suspend and non-suspend — so they differ only in the coroutine
+mechanism that locates the flow, never in which adapters see a record. There is **no capture gate** (ADR-002):
 the event verbs store unconditionally and filtering happens once, per adapter, at fan-out (`policy.accepts`
 in `emit` live, `viewOf` at report). Registering a DEBUG-wanting adapter is still the only step needed to
 surface DEBUG — it decides delivery, not storage. A rejected event never resolves its lazy message: `emit`

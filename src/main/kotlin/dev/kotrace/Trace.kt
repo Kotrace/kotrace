@@ -22,7 +22,11 @@ suspend fun <T> span(
     links: List<TraceLink> = emptyList(),
     block: suspend () -> T,
 ): T {
-    val opened = createSpan(currentCoroutineContext()[SpanContext]?.span, name, attributes, links)
+    val opened = createSpan(
+        currentCoroutineContext()[SpanContext]?.span,
+        name, attributes, links,
+        currentScopeId(),
+    )
     currentCollector()?.add(opened)
     return try {
         // Overlay only the element — withContext already inherits the current context. Passing the
@@ -58,7 +62,7 @@ suspend fun <T> span(
  */
 @NonSuspendTracingBridge
 fun startSpan(name: String, attributes: Map<String, String> = emptyMap(), links: List<TraceLink> = emptyList()): Span {
-    val opened = createSpan(currentThreadSpan(), name, attributes, links)
+    val opened = createSpan(currentThreadSpan(), name, attributes, links, currentThreadScopeId())
     currentThreadCollector()?.add(opened)
     return opened
 }
@@ -85,6 +89,7 @@ private fun createSpan(
     name: String,
     attributes: Map<String, String>,
     links: List<TraceLink> = emptyList(),
+    scopeId: String? = null,
 ): Span = Span(
     traceId = parent?.traceId ?: hex(16),
     spanId = hex(8),
@@ -93,6 +98,7 @@ private fun createSpan(
     startNanos = System.nanoTime(),
     attributes = attributes,
     links = links,
+    scopeId = scopeId,
 )
 
 private val random = SecureRandom()

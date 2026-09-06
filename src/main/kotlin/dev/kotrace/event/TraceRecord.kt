@@ -14,11 +14,26 @@ import java.util.Locale
  * the birthplace — it bypasses every policy gate).
  */
 sealed interface TraceRecord {
-    val traceId: String
-    val spanId: String
+    /**
+     * The owning span's trace id — a searchable join key. **Nullable**: a span-less emit
+     * ([emitLog]/[emitNamed]/[emitException], ADR-010) has no trace, so its record carries a null
+     * [traceId] (and [spanId] / [operation]); its correlation, if any, rides [scopeId] instead. A record
+     * lifted off a real [Span] always has these set.
+     */
+    val traceId: String?
+    val spanId: String?
     val parentId: String?
-    val operation: String
+    val operation: String?
     val atNanos: Long
+
+    /**
+     * The correlation umbrella above [traceId] (`scope ⊇ trace ⊇ span`, ADR-010) — the ambient
+     * [dev.kotrace.withScope] id active when this record was emitted, or null outside any scope. A **plain
+     * correlation key**: never subject to duration, outcome, the report path or waterfall rendering — those
+     * are trace semantics. A span opened inside a scope stamps it alongside [traceId]; a span-less emit
+     * inside a scope carries it alone. Rendered by [toJson] only when non-null (back-compat).
+     */
+    val scopeId: String?
 
     /**
      * The owning span's late **emitted info** ([dev.kotrace.Span.info]) — a result value like `http.status`,
@@ -44,11 +59,19 @@ sealed interface AttributedRecord : TraceRecord {
     val attributes: Map<String, String>
 }
 
-/** Flattens a [SpanEvent] into its [TraceRecord] kind, stamping this span's identity onto the line. */
-internal fun Span.recordOf(event: SpanEvent): TraceRecord = when (event) {
-    is LogEvent -> LogRecord(traceId, spanId, parentId, name, event.atNanos, info.toMap(), links, event.attributes, event.message, event.sensitive)
-    is NamedEvent -> NamedRecord(traceId, spanId, parentId, name, event.atNanos, info.toMap(), links, event.name, event.attributes)
-    is ExceptionEvent -> ExceptionRecord(traceId, spanId, parentId, name, event.atNanos, info.toMap(), links, event.throwable)
+/**
+ * Flattens a [SpanEvent] into its [TraceRecord] kind, stamping this span's identity — and its ambient
+ * [Span.scopeId] — onto the line. [extraInfo] is merged over the span's [Span.info] (empty by default);
+ * it is how [dev.kotrace.event.addException]'s record-level `info` reaches the record without riding the
+ * object-only [ExceptionEvent] (ADR-005/ADR-010).
+ */
+internal fun Span.recordOf(event: SpanEvent, extraInfo: Map<String, String> = emptyMap()): TraceRecord {
+    val info = if (extraInfo.isEmpty()) info.toMap() else info.toMap() + extraInfo
+    return when (event) {
+        is LogEvent -> LogRecord(traceId, spanId, parentId, name, event.atNanos, scopeId, info, links, event.attributes, event.message, event.sensitive)
+        is NamedEvent -> NamedRecord(traceId, spanId, parentId, name, event.atNanos, scopeId, info, links, event.name, event.attributes)
+        is ExceptionEvent -> ExceptionRecord(traceId, spanId, parentId, name, event.atNanos, scopeId, info, links, event.throwable)
+    }
 }
 
 /**
@@ -101,12 +124,21 @@ fun TraceRecord.toJson(): String = buildString {
     }
     appendObject("info", info)
     appendLinks("links", links)
+    // scope_id is emitted only when present (ADR-010): absent = today's shape, so an unscoped record and
+    // every pre-scope tool are untouched — parallel to how empty attributes/info/links omit their key.
+    appendOptionalField("scope_id", scopeId)
     append('}')
 }
 
 private fun StringBuilder.appendField(key: String, value: String?) {
     append('"').append(key).append("\":")
     if (value == null) append("null") else append('"').appendEscaped(value).append('"')
+}
+
+/** Renders `,"key":"value"` only when [value] is non-null (leads with the comma, so the caller need not). */
+private fun StringBuilder.appendOptionalField(key: String, value: String?) {
+    if (value == null) return
+    append(',').append('"').append(key).append("\":\"").appendEscaped(value).append('"')
 }
 
 /** Renders [map] as a nested `"key":{…}` object. Empty maps emit nothing (leaner line, stable enough — a

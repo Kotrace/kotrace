@@ -24,8 +24,26 @@ contract, so an OTel upgrade later is additive.
   events are stored unconditionally and the message lambda is not built for a log no adapter accepts.
 - `TraceRecord` / `ReportAdapter` / `SpanCollector.reportTrace(status)` — fan a trace out at its end as one
   searchable record per log line + the birthplace throwable, each tagged `trace_id` / `span_id` /
-  `parent_span_id`, to every `ReportAdapter` in the active `TraceConfig`. Backends group by any of the ids.
+  `parent_span_id`, to every `ReportAdapter` in the resolved `TraceConfig`. Backends group by any of the ids.
   The searchable counterpart to `renderTree`.
+- `Kotrace.install(adapters)` / `Kotrace.install { … }` — the **process-wide fan-out config** (ADR-010),
+  installed once at startup (read-only after; a second install throws; the provider overload resolves lazily
+  on first fan-out, DI-friendly). Every path resolves `currentThreadConfig() ?: Kotrace.defaultConfig()`, so
+  a per-flow `TraceConfig` overlaid on the context **overrides** the global for that flow, while span-less
+  emits and non-suspend entrypoints — which carry no context — still reach the adapters. Report needs a
+  per-flow `SpanCollector`, so a collector-less flow is live-only by construction.
+- `emitLog { … }` / `emitNamed(name)` / `emitException(cause, info)` — **span-less emit verbs** (ADR-010),
+  the orphan counterparts of the `Span.*` verbs, for an occurrence outside any span (app lifecycle, a push
+  callback, any non-coroutine entry). **Live-only**, fanned through the resolved config and gated by policy;
+  the record has null identity and carries a `scope_id` when a scope is active. `emitException(cause, info)`
+  — and `addException(cause, info)` — carry record-level `ExceptionRecord.info` while the exception event
+  stays object-only (ADR-005), so an explicit report reaches live adapters unconditionally.
+- `withScope(scopeId) { … }` / `scope_id` — a **correlation umbrella above `trace_id`** (`scope ⊇ trace ⊇
+  span`, ADR-010). A live-only ambient key: a span or emit inside a scope stamps `scope_id` onto its records
+  (a span alongside `trace_id`, an orphan emit alone), grouping many traces + their orphans under one
+  session/journey key. **Not a span** — no reportable tree, no duration/outcome; `toJson` emits `scope_id`
+  only when present (absent = today's shape). Read it with `currentScopeId()` (suspend) / `currentThreadScopeId()`
+  (the `ThreadLocal` mirror, for non-suspend emits).
 - `TraceRecord.toJson()` — a one-line, snake_case JSON rendering (no serialization dependency, values
   escaped) for a JSON log pipeline (ELK, Loki) to ingest `trace_id`/`span_id` as queryable fields.
 - `TraceLink` — a birth-set, cross-trace edge: `span(name, links = listOf(TraceLink(otherTraceId)))` points
@@ -45,19 +63,19 @@ contract, so an OTel upgrade later is additive.
 maven { url = uri("https://maven.kotrace.dev") }
 
 // build.gradle.kts
-implementation("dev.kotrace:kotrace:0.2.1")
+implementation("dev.kotrace:kotrace:0.3.0")
 
 // OkHttp integration only — the traceparent-on-the-wire glue. Pulls the core transitively.
-implementation("dev.kotrace:kotrace-okhttp:0.2.1")
+implementation("dev.kotrace:kotrace-okhttp:0.3.0")
 
 // Room integration only (Android) — logs each query's SQL onto the active span. Pulls the core.
-implementation("dev.kotrace:kotrace-room:0.2.1")
+implementation("dev.kotrace:kotrace-room:0.3.0")
 ```
 
 Or align every module through the BOM — declare its version once, drop the version off each dependency:
 
 ```kotlin
-implementation(platform("dev.kotrace:kotrace-bom:0.2.1"))
+implementation(platform("dev.kotrace:kotrace-bom:0.3.0"))
 implementation("dev.kotrace:kotrace")
 implementation("dev.kotrace:kotrace-okhttp")
 ```
@@ -162,6 +180,38 @@ Room.databaseBuilder(context, AppDatabase::class.java, "app.db")
 Only the parameterised SQL text (symbols, `?` placeholders) is logged — never the bound values, which can
 carry user data. kotrace has no severity taxonomy, so the level is just a `"level"` attribute you pass; SQL
 is high-volume, so tag it at a level your capture policy drops by default (e.g. `DEBUG`).
+
+## Span-less emits & scopes
+
+An emit outside any span — an app-lifecycle hook, a push-notification callback, any non-coroutine entry —
+has no span to attach to and no `TraceConfig` in context. Install the process-wide config once, then emit
+from anywhere; `withScope` adds a correlation umbrella above `trace_id` so orphan emits and whole groups of
+operations correlate under one session/journey key (ADR-010).
+
+```kotlin
+import dev.kotrace.Kotrace
+import dev.kotrace.withScope
+import dev.kotrace.event.emitException
+import dev.kotrace.event.emitNamed
+
+// 1. Once at startup (or Kotrace.install { diGraph.adapters() } to resolve lazily under DI).
+Kotrace.install(listOf(myLiveAdapter))
+
+// 2. Orphan emit — no coroutine, no span needed. Fans live to the installed adapters.
+fun onPushReceived(cause: Throwable) {
+    emitNamed("push_received", mapOf("channel" to "promo"))
+    emitException(cause, mapOf("report" to "explicit"))   // info rides ExceptionRecord.info
+}
+
+// 3. A scope — everything inside carries scope_id = "session-42"; a span additionally carries its trace_id.
+suspend fun handleSession() = withScope("session-42") {
+    emitNamed("session_started")                 // scope_id only
+    span("checkout") { /* … */ }                 // trace_id + scope_id
+}
+```
+
+A flow that needs *different* sinks overlays a per-flow `TraceConfig` on its context
+(`withContext(collector + TraceConfig(...))`), which overrides the global for that flow.
 
 ## Demo
 

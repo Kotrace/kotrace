@@ -15,10 +15,10 @@ import dev.kotrace.accepts
  * `internal`, shared by the log, named, and exception verbs — all three append here unconditionally, so a
  * crash is never dropped and a filtered breadcrumb is still stored (just not fanned out).
  */
-internal fun Span.emit(event: SpanEvent, config: TraceConfig?) {
+internal fun Span.emit(event: SpanEvent, config: TraceConfig?, extraInfo: Map<String, String> = emptyMap()) {
     events += event
     val accepting = config?.liveAdapters?.filter { it.policy.accepts(this, event) }.orEmpty()
     if (accepting.isEmpty()) return
-    val record = recordOf(event)
+    val record = recordOf(event, extraInfo)
     accepting.forEach { it.onLive(record) }
 }

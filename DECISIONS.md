@@ -14,3 +14,4 @@ open only the ADR you need.
 | [007](decisions/adr-007-dokka-and-compiled-kdoc-samples.md) | Adopt Dokka; KDoc examples are compiled `@sample`s, not prose snippets | Accepted | 2026-08-22 |
 | [008](decisions/adr-008-unredacted-trace-read-optin.md) | Gate `renderTree` behind an `@UnredactedTraceRead` opt-in marker | Accepted | 2026-08-22 |
 | [009](decisions/adr-009-trace-link-cross-trace-correlation.md) | `TraceLink`: cross-trace correlation on `trace_id` only (no `span_id`) | Proposed | 2026-08-26 |
+| [010](decisions/adr-010-spanless-fanout-and-ambient-scope.md) | Span-less live fan-out + `scope_id`, a correlation level above `trace_id` (`scope ⊇ trace ⊇ span`) | Accepted | 2026-09-06 |

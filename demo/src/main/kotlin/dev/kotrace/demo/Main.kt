@@ -2,13 +2,13 @@ package dev.kotrace.demo
 
 import com.sun.net.httpserver.HttpServer
 import dev.kotrace.event.AttributedEvent
+import dev.kotrace.Kotrace
 import dev.kotrace.LiveAdapter
 import dev.kotrace.ReportAdapter
 import dev.kotrace.event.SpanEvent
 import dev.kotrace.SpanCollector
 import dev.kotrace.SpanStatus
 import dev.kotrace.TRACEPARENT_HEADER
-import dev.kotrace.TraceConfig
 import dev.kotrace.TraceLink
 import dev.kotrace.TracePolicy
 import dev.kotrace.event.TraceRecord
@@ -18,9 +18,11 @@ import dev.kotrace.reportTrace
 import dev.kotrace.renderTree
 import dev.kotrace.UnredactedTraceRead
 import dev.kotrace.currentSpan
+import dev.kotrace.event.emitNamed
 import dev.kotrace.event.log
 import dev.kotrace.event.toJson
 import dev.kotrace.span
+import dev.kotrace.withScope
 import dev.kotrace.okhttp.TracingCallFactory
 import dev.kotrace.okhttp.TracingInterceptor
 import kotlinx.coroutines.async
@@ -36,12 +38,15 @@ import java.net.InetSocketAddress
 import java.util.concurrent.atomic.AtomicReference
 
 /**
- * A self-contained tour of kotrace. Models a mobile "checkout" flow as a tree of [trace] spans, logs a
- * few [logSpan] lines along the way, fans a couple of spans out in parallel, and makes one **real**
+ * A self-contained tour of kotrace. Models a mobile "checkout" flow as a tree of [span]s, logs a
+ * few lines along the way, fans a couple of spans out in parallel, and makes one **real**
  * OkHttp call whose `traceparent` is captured by a throwaway in-process server — proving the
  * client↔backend stitch with no OpenTelemetry anywhere.
  *
- * The point of the demo is the **two-role adapter model** ([TraceConfig] carries the consumer's fan-out):
+ * **Setup (ADR-010).** The consumer's fan-out is installed **once** as kotrace's process-wide config
+ * ([Kotrace.install]); every path resolves it (`currentThreadConfig() ?: Kotrace.defaultConfig()`), so a
+ * span, a span-less emit, suspend and non-suspend all reach the same adapters with no per-trace
+ * `TraceConfig` seeding. Only the per-flow [SpanCollector] rides the `CoroutineContext`. The two roles:
  * - [LiveWatch] — a [LiveAdapter] that prints every record the instant it is logged (the on-device debug
  *   watch). Its [TracePolicy] wants DEBUG and opts into `sensitive` payloads, because nothing it prints
  *   leaves the device.
@@ -56,6 +61,13 @@ import java.util.concurrent.atomic.AtomicReference
  * surfaces DEBUG live, while the export policy keeps only INFO+ and refuses `sensitive`. Severity is a plain
  * `"level"` attribute — kotrace names no level; these policies rank it.
  *
+ * **Span-less emits + scope (ADR-010).** Before the trace, an orphan `emitNamed` — no span, no context —
+ * still reaches the live fan-out through the installed global (an app-lifecycle or push callback emits
+ * exactly this way); its record carries null identity and no `scope_id`. The checkout then runs inside a
+ * [withScope]: everything under it — the traced spans **and** an orphan emit — carries a `scope_id`
+ * correlation umbrella above `trace_id` (`scope ⊇ trace ⊇ span`). Watch `"scope_id":"checkout_session_42"`
+ * appear on the in-scope records, live and in the export, and be absent from the pre-scope orphan.
+ *
  * The http span shows the **two span channels** (ADR-001): its `layer=http` is a fixed **attribute** (birth-set,
  * the only thing an `acceptsSpan` gate may read), while `http.status`, known only once the response returns, is
  * emitted **info** — it rides every record off that span (nested in the JSON, `"info":{"http.status":"200"}`) but
@@ -63,8 +75,8 @@ import java.util.concurrent.atomic.AtomicReference
  *
  * Finally the tour shows **cross-trace correlation** (ADR-009): after checkout fails, a separate
  * "user reports the failure" flow opens its own trace carrying a [TraceLink] back to the checkout's
- * `trace_id`. The link joins two independent trees where [Span.parentId] cannot, and surfaces as a nested
- * `links` array on every record off the linking span.
+ * `trace_id`. The link joins two independent trees where [dev.kotrace.Span.parentId] cannot, and surfaces
+ * as a nested `links` array on every record off the linking span.
  *
  * Run: `./gradlew :demo:run -q`
  */
@@ -134,27 +146,42 @@ fun main() = runBlocking<Unit> {
     // The http span's fixed filter attribute is passed in from here, not baked into the factory.
     val calls: Call.Factory = TracingCallFactory(http, mapOf("layer" to "http"))
 
-    // Seed the trace with its collector (the span tree) and its config (the adapters). Both ride the
-    // CoroutineContext down every child span; fan-out reads them back at the report site below.
-    val collector = SpanCollector()
+    // ADR-010 setup: install the consumer's adapters ONCE as kotrace's process-wide fan-out config. Every
+    // path (span, span-less, live, report, suspend, non-suspend) resolves this — so no per-trace TraceConfig
+    // is seeded onto the context below; only the SpanCollector (per-flow state) rides it.
     val export = FailureExport()
-    val config = TraceConfig(listOf(LiveWatch(), export))
-    withContext(collector + config) {
-        // runCatching swallows the failure so we can render — a real reporter lets the throwable propagate
-        // and fans out from a boundary that reads the collector/config off context.
-        println("── live watch (everything, as it happens — on-device only) ──")
-        runCatching { checkout(calls, pricingUrl) }
-        server.stop(0)
+    Kotrace.install(listOf(LiveWatch(), export))
 
-        println()
-        println("── renderTree (human read — the raw tree, all levels) ──")
-        println(collector.spans.renderTree())
-        println()
+    // A span-less orphan emit (ADR-010): outside any span, outside any scope, with nothing on the context —
+    // yet it still reaches the live fan-out through the installed global. An app-lifecycle or push callback
+    // emits exactly like this. Its record has null identity and NO scope_id.
+    println("── live watch · span-less orphan (no span, no scope) ──")
+    emitNamed("app_launched", mapOf("build" to "demo"))
 
-        // The trace's verdict, from any ERROR span. reportTrace hands it to every ReportAdapter's onReport, which
-        // self-gates on it; it reads the active TraceConfig, so it must run inside this scope.
-        val status = if (collector.spans.any { it.status == SpanStatus.ERROR }) TraceStatus.ERROR else TraceStatus.OK
-        collector.reportTrace(status)
+    val collector = SpanCollector()
+    // withScope establishes a live-only correlation umbrella: every record under it carries
+    // scope_id="checkout_session_42" alongside its trace_id (a span) or alone (an orphan emit).
+    withScope("checkout_session_42") {
+        withContext(collector) {
+            println()
+            println("── live watch (everything, as it happens — on-device only) ──")
+            // An orphan emit INSIDE the scope: no span, so still null identity — but now carrying scope_id.
+            emitNamed("checkout_opened")
+            // runCatching swallows the failure so we can render — a real reporter lets the throwable propagate
+            // and fans out from a boundary that reads the collector off context.
+            runCatching { checkout(calls, pricingUrl) }
+            server.stop(0)
+
+            println()
+            println("── renderTree (human read — the raw tree, all levels) ──")
+            println(collector.spans.renderTree())
+            println()
+
+            // The trace's verdict, from any ERROR span. reportTrace hands it to every ReportAdapter's onReport,
+            // which self-gates on it; it resolves the fan-out config (context override, else the global).
+            val status = if (collector.spans.any { it.status == SpanStatus.ERROR }) TraceStatus.ERROR else TraceStatus.OK
+            collector.reportTrace(status)
+        }
     }
 
     // Cross-trace correlation (ADR-009): a follow-up "user reports the failure" flow is deliberately its
@@ -164,7 +191,7 @@ fun main() = runBlocking<Unit> {
     // surfaces in the live watch as a nested `links` array on the wire.
     val checkoutTraceId = collector.spans.first { it.parentId == null }.traceId
     val reportCollector = SpanCollector()
-    withContext(reportCollector + config) {
+    withContext(reportCollector) {
         println()
         println("── live watch · user report (a SEPARATE trace linking back to checkout) ──")
         val link = TraceLink(checkoutTraceId, mapOf("reason" to "user_report"))
@@ -209,7 +236,7 @@ private suspend fun checkout(calls: Call.Factory, pricingUrl: String): Unit = sp
     }
 
     // The failing leaf. ERROR marks the whole path up to `checkout` as the throwable rethrows through
-    // each enclosing trace; the export picks this deepest throwable-bearing span back out (ADR-005).
+    // each enclosing span; the export picks this deepest throwable-bearing span back out (ADR-005).
     span("payment.charge") {
         currentSpan()?.log(lvl("INFO")) { "charging card" }
         delay(20)

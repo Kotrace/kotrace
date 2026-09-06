@@ -26,9 +26,20 @@ suspend fun currentConfig(): TraceConfig? = currentCoroutineContext()[TraceConfi
 fun currentThreadConfig(): TraceConfig? = currentConfigThreadLocal.get()
 
 /**
- * The immutable fan-out configuration carried ambiently in the `CoroutineContext`, seeded once at a
- * trace's root next to its [SpanCollector]. It holds the consumer's [adapters], so a log verb resolves
- * them without a mutable global — the var-free replacement for the old `KotraceLog` object.
+ * The [TraceConfig] a fan-out path uses: the per-flow context override ([currentThreadConfig]) if one is
+ * present, else the process-wide [Kotrace] config (ADR-010). This is what makes every path — span and
+ * span-less, live and report, suspend and non-suspend — fan to the same adapters, differing only in the
+ * coroutine mechanism that locates the flow. Null only when neither is installed (a safe no-op).
+ */
+internal fun resolvedThreadConfig(): TraceConfig? = currentThreadConfig() ?: Kotrace.defaultConfig()
+
+/**
+ * An immutable fan-out configuration — the consumer's [adapters]. It has two homes (ADR-010): the
+ * process-wide default installed once via [Kotrace.install], and — optionally — a **per-flow override**
+ * carried ambiently in the `CoroutineContext`, seeded at a trace's root next to its [SpanCollector]. Every
+ * fan-out site resolves [resolvedThreadConfig] = `currentThreadConfig() ?: Kotrace.defaultConfig()`, so a
+ * context override wins for its flow and the global covers everything else (span-less emits, non-suspend
+ * roots, untraced flows). Overlay one only when a flow needs different sinks than the process default.
  *
  * [liveAdapters] / [reportAdapters] are partitioned once here, so the per-event hot path checks a
  * precomputed list rather than filtering on every log call. There is no capture gate (ADR-002): the event

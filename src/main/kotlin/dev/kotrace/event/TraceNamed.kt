@@ -2,7 +2,7 @@ package dev.kotrace.event
 
 import dev.kotrace.Span
 import dev.kotrace.TraceLink
-import dev.kotrace.currentThreadConfig
+import dev.kotrace.resolvedThreadConfig
 
 /**
  * A named, structured occurrence on a span ([name] + [attributes]) — the OTel `event.name` shape, e.g. a
@@ -18,11 +18,12 @@ class NamedEvent(
 
 /** A flattened [NamedEvent]: identity + a named, structured occurrence. */
 data class NamedRecord(
-    override val traceId: String,
-    override val spanId: String,
+    override val traceId: String?,
+    override val spanId: String?,
     override val parentId: String?,
-    override val operation: String,
+    override val operation: String?,
     override val atNanos: Long,
+    override val scopeId: String? = null,
     override val info: Map<String, String>,
     override val links: List<TraceLink>,
     val name: String,
@@ -42,5 +43,5 @@ data class NamedRecord(
  * is read through the [dev.kotrace.currentThreadConfig] mirror — this verb is non-suspend, so it cannot read the context directly.
  */
 fun Span.addNamed(name: String, attributes: Map<String, String> = emptyMap()) {
-    emit(NamedEvent(name, attributes, System.nanoTime()), currentThreadConfig())
+    emit(NamedEvent(name, attributes, System.nanoTime()), resolvedThreadConfig())
 }

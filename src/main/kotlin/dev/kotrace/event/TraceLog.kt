@@ -2,7 +2,7 @@ package dev.kotrace.event
 
 import dev.kotrace.Span
 import dev.kotrace.TraceLink
-import dev.kotrace.currentThreadConfig
+import dev.kotrace.resolvedThreadConfig
 
 /**
  * A log line on a span ([message] + [attributes]) — the diagnostic breadcrumb kind of event. Severity is
@@ -28,11 +28,12 @@ class LogEvent(
 
 /** A flattened [LogEvent]: identity + a log line with its [attributes]. [sensitive] rides through for the policy gate. */
 data class LogRecord(
-    override val traceId: String,
-    override val spanId: String,
+    override val traceId: String?,
+    override val spanId: String?,
     override val parentId: String?,
-    override val operation: String,
+    override val operation: String?,
     override val atNanos: Long,
+    override val scopeId: String? = null,
     override val info: Map<String, String>,
     override val links: List<TraceLink>,
     override val attributes: Map<String, String>,
@@ -54,5 +55,5 @@ data class LogRecord(
  * [dev.kotrace.currentThreadConfig] mirror — this verb is non-suspend, so it cannot read the context directly.
  */
 fun Span.log(attributes: Map<String, String> = emptyMap(), sensitive: Boolean = false, message: () -> String) {
-    emit(LogEvent(attributes, message, System.nanoTime(), sensitive), currentThreadConfig())
+    emit(LogEvent(attributes, message, System.nanoTime(), sensitive), resolvedThreadConfig())
 }

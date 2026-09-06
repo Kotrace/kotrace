@@ -30,7 +30,7 @@ import dev.kotrace.event.recordOf
  * swallows the crash cause unless a policy explicitly covers exceptions.
  */
 fun SpanCollector.reportTrace(status: TraceStatus) {
-    val adapters = currentThreadConfig()?.reportAdapters.orEmpty()
+    val adapters = resolvedThreadConfig()?.reportAdapters.orEmpty()
     if (adapters.isEmpty()) return
     val all = spans
     val root = all.firstOrNull { it.parentId == null } ?: return
