@@ -29,9 +29,21 @@ fun currentThreadConfig(): TraceConfig? = currentConfigThreadLocal.get()
  * The [TraceConfig] a fan-out path uses: the per-flow context override ([currentThreadConfig]) if one is
  * present, else the process-wide [Kotrace] config (ADR-010). This is what makes every path — span and
  * span-less, live and report, suspend and non-suspend — fan to the same adapters, differing only in the
- * coroutine mechanism that locates the flow. Null only when neither is installed (a safe no-op).
+ * coroutine mechanism that locates the flow. Null when neither is installed — a safe no-op, unless the
+ * strict-uninstalled latch ([Kotrace.strictWhenUninstalled]) is armed, in which case that null resolution is
+ * a hard error instead (ADR-011): the emit reached kotrace before any config was installed.
  */
-internal fun resolvedThreadConfig(): TraceConfig? = currentThreadConfig() ?: Kotrace.defaultConfig()
+internal fun resolvedThreadConfig(): TraceConfig? =
+    (currentThreadConfig() ?: Kotrace.defaultConfig())
+        ?: if (Kotrace.isStrictWhenUninstalled()) {
+            error(
+                "kotrace: an emit resolved no fan-out config while strict-uninstalled is armed (ADR-011). " +
+                    "Call Kotrace.install(...) once at startup before the first emit, or install(emptyList()) " +
+                    "to disable telemetry deliberately.",
+            )
+        } else {
+            null
+        }
 
 /**
  * An immutable fan-out configuration — the consumer's [adapters]. It has two homes (ADR-010): the

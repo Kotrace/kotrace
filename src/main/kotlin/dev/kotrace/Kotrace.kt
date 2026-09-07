@@ -1,6 +1,7 @@
 package dev.kotrace
 
 import org.jetbrains.annotations.TestOnly
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 
 /**
@@ -37,6 +38,9 @@ object Kotrace {
     /** Memoizing holder: the provider resolves exactly once, on the first [defaultConfig] read (safe publication). */
     private val installed = AtomicReference<Lazy<TraceConfig>?>(null)
 
+    /** Strict-uninstalled latch (ADR-011): when armed, a fan-out that resolves no config is a hard error. */
+    private val strict = AtomicBoolean(false)
+
     /**
      * Publishes the process-wide fan-out [adapters] (live and report). Call once at startup. Throws
      * [IllegalStateException] on a second call — the config is read-only after install. An empty list
@@ -60,9 +64,32 @@ object Kotrace {
     /** The installed process-wide [TraceConfig], or null if none — the fallback when no context override exists. */
     internal fun defaultConfig(): TraceConfig? = installed.get()?.value
 
-    /** Test-only: clears the install-once latch so a suite can install a fresh config per case. */
+    /**
+     * Arms the **strict-uninstalled** check (ADR-011): from now on, a fan-out that resolves to no config — no
+     * per-flow [TraceConfig] override *and* nothing installed via [install] — is a hard [IllegalStateException]
+     * ([resolvedThreadConfig]) instead of ADR-010's silent no-op. It turns two invisible wiring bugs loud —
+     * `install` never called, or an emit that ran before `install` — at the first emit that hits them.
+     *
+     * **Arm before `install`, and off by default.** It is a separate call, not a parameter of [install]: to
+     * catch an emit *before* install (and the case where install never runs at all), the latch must already
+     * be set when that emit resolves. Call it once, at the earliest startup point, and only in a debug/dev
+     * build — release leaves it off so the ADR-010 no-op stands and no monitoring call can crash production.
+     * Idempotent (unlike [install]): re-arming is a no-op, never an error.
+     *
+     * **Deliberately disabling telemetry stays valid** — express it as `install(emptyList())` (a non-null,
+     * empty config → no throw), not as never calling [install] (which now reads as "forgot to wire").
+     */
+    fun strictWhenUninstalled() {
+        strict.set(true)
+    }
+
+    /** Whether the strict-uninstalled latch is armed (ADR-011) — read by [resolvedThreadConfig] on a null resolution. */
+    internal fun isStrictWhenUninstalled(): Boolean = strict.get()
+
+    /** Test-only: clears the install-once latch and the strict latch so a suite can start each case fresh. */
     @TestOnly
     fun resetForTest() {
         installed.set(null)
+        strict.set(false)
     }
 }

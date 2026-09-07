@@ -32,6 +32,23 @@ contract, so an OTel upgrade later is additive.
   a per-flow `TraceConfig` overlaid on the context **overrides** the global for that flow, while span-less
   emits and non-suspend entrypoints — which carry no context — still reach the adapters. Report needs a
   per-flow `SpanCollector`, so a collector-less flow is live-only by construction.
+  - **Registering adapters — build the list, no builder DSL.** kotrace takes a plain `List<TraceAdapter>`;
+    the provider overload (`install { … }`) plus stdlib `buildList` *is* the conditional-registration idiom —
+    the equivalent of Retrofit's `addInterceptor`, from the standard library, so kotrace adds no builder of
+    its own:
+    ```kotlin
+    Kotrace.install {
+        buildList {
+            add(CrashAdapter(reporter))
+            add(AnalyticsAdapter(analytics))
+            if (BuildConfig.DEBUG) add(LiveLogAdapter(logcat)) // conditional, reads like addInterceptor
+        }
+    }
+    ```
+  - **`Kotrace.strictWhenUninstalled()`** (ADR-011) — opt-in fail-fast: once armed, an emit that resolves
+    **no** config (nothing installed, no override) throws instead of silently no-op'ing. Off by default;
+    arm it **before** `install`, in a debug build only, to catch a forgotten or too-late install. Deliberately
+    running no sinks stays valid as `install(emptyList())` (a real, empty config), not as never installing.
 - `emitLog { … }` / `emitNamed(name)` / `emitException(cause, info)` — **span-less emit verbs** (ADR-010),
   the orphan counterparts of the `Span.*` verbs, for an occurrence outside any span (app lifecycle, a push
   callback, any non-coroutine entry). **Live-only**, fanned through the resolved config and gated by policy;
