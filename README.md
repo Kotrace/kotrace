@@ -230,6 +230,38 @@ suspend fun handleSession() = withScope("session-42") {
 A flow that needs *different* sinks overlays a per-flow `TraceConfig` on its context
 (`withContext(collector + TraceConfig(...))`), which overrides the global for that flow.
 
+## Android surfaces → what to use
+
+kotrace reaches wherever the coroutine `CoroutineContext` flows — structured concurrency carries it, and
+because `SpanContext` is a `ThreadContextElement` the active span is re-mirrored onto each thread a
+coroutine resumes on, so **dispatcher hops keep the trace**. It stops at any boundary that *leaves* the
+coroutine world (raw threads, framework callbacks, Java) or *defers* execution to later (posted/async
+callbacks): the `ThreadLocal` mirror is not inheritable and is restored the moment a `span { }` scope
+exits, so across those boundaries you carry the span by hand — pass the `Span` object (its `trace_id` +
+`span_id` survive anything), or re-seed `SpanContext(span) + collector + config` when re-entering a
+coroutine (same idea as OkHttp's request-tag bridge).
+
+| Android surface | In a coroutine? | Use | Why |
+| --- | --- | --- | --- |
+| `viewModelScope.launch`, suspend repo/usecase | yes | `span("…") { }` | ambient parent + collector flow with the context |
+| `withContext(Dispatchers.IO/Default)` hop | yes | `span { }` spans the hop | `SpanContext` is a `ThreadContextElement`, re-mirrored on the new thread |
+| Retrofit / OkHttp call | yes (call site) | `TracingCallFactory` + `TracingInterceptor`, call inside `span { }` | factory opens the http span on the coroutine thread; interceptor finishes it on OkHttp's thread via the request tag |
+| Room suspend DAO query | yes | `db.tracing()` | `QueryCallback` reads `currentThreadSpan()` inline on Room's executor thread |
+| `CoroutineWorker.doWork()` | yes | `span { }` | it hands you a coroutine |
+| Non-suspend factory/interceptor invoked **inline on the coroutine thread** | no (but on that thread) | `startSpan()` / `Span.end()` (opt-in `@NonSuspendTracingBridge`) | the mirror is live inline — the one legitimate `startSpan` site (ADR-003) |
+| Non-suspend hook that only **attaches** to the open span | no (inline) | `currentThreadSpan()?.log(…)` / `emit*` | read the mirror, don't open a node |
+| Lifecycle (`onCreate`/`onResume`), click listeners, RecyclerView | no (main thread) | launch a coroutine + open a **root** `span("…") { }`, or `emitNamed`/`emitException` for a one-off | no ambient span to inherit — this is a new trace root |
+| `BroadcastReceiver.onReceive`, Service, `JobScheduler` | no | root `span { }` in a launched coroutine, or `emit*` | new entry point, not a continuation |
+| 3rd-party SDK async callback, `LocationListener`, sensor/camera | no (SDK thread, deferred) | pass the `Span` explicitly, or open a root span / `emit*` | mirror is dead on the SDK thread (`ThreadLocal` not inheritable) |
+| Raw `Thread` / `Executors` / RxJava `Scheduler` | no | pass the `Span` by hand, then `SpanContext(span) + collector + config` to re-enter a coroutine | the mirror is never carried to non-coroutine threads |
+| `Handler.post` / `runOnUiThread` | no (deferred) | capture the `Span` **before** posting, use it explicitly | mirror is restored by the time the `Runnable` runs |
+| `GlobalScope.launch` / scope without a collector | technically | avoid — use a scope carrying `collector` + `TraceConfig`, or seed it | `span { }` opens but nothing collects it |
+| Java you don't own, JNI/native | no | instrument at the nearest Kotlin/coroutine boundary you control | out of reach |
+
+Rule of thumb: **in a coroutine → `span { }`; a non-suspend hook running inline on the coroutine thread →
+`startSpan` (open) or `currentThreadSpan()` (attach); everywhere else → start a new root or carry the
+`Span` across by hand.**
+
 ## Demo
 
 `:demo` is a runnable, self-contained tour — a mobile "checkout" flow as a tree of spans, a parallel
