@@ -28,8 +28,17 @@ import dev.kotrace.event.recordOf
  * Each adapter filters the collected entries through its [TracePolicy] ([accepts]); the [dev.kotrace.event.ExceptionEvent]
  * is subject only to [TracePolicy.acceptsEvent], which defaults to keeping it, so a breadcrumb filter never
  * swallows the crash cause unless a policy explicitly covers exceptions.
+ *
+ * [attached] carries **trace-level orphan failures** — throwables that belong to the trace as a whole but
+ * are the birthplace of no span, the canonical case being a saga's suppressed rollback throwables collected
+ * on the failed result value. Each is emitted as an [dev.kotrace.event.ExceptionRecord] keyed to the **root**
+ * span (its `trace_id` / `operation`). They are appended **after** the tree walk on purpose: the birthplace
+ * dedup ([isBirthplaceAmong]) lives inside the walk, so a post-walk entry rides through it — an orphan
+ * failure must not be silenced just because it is not the leaf-most throwable on a branch. They are
+ * deliberately **not** written onto [Span.events]: doing so would let one flip the root into a birthplace and
+ * shadow the tree's real crash origin. With no throwable to attach [attached] is empty and this is inert.
  */
-fun SpanCollector.reportTrace(status: TraceStatus) {
+fun SpanCollector.reportTrace(status: TraceStatus, attached: List<Throwable> = emptyList()) {
     val adapters = resolvedThreadConfig()?.reportAdapters.orEmpty()
     if (adapters.isEmpty()) return
     val all = spans
@@ -46,6 +55,11 @@ fun SpanCollector.reportTrace(status: TraceStatus) {
         children.forEach(::walk)
     }
     walk(root)
+
+    if (attached.isNotEmpty()) {
+        val now = System.nanoTime()
+        attached.forEach { entries += WalkEntry(root, ExceptionEvent(it, now)) }
+    }
 
     adapters.forEach { adapter -> adapter.onReport(status, adapter.viewOf(entries)) }
 }

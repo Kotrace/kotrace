@@ -130,6 +130,26 @@ class LogTest {
     }
 
     @Test
+    fun `attached failures emit one exception record each, keyed to the root, past the birthplace dedup`() = runTest {
+        val report = CollectingReport()
+        val collector = SpanCollector()
+        val rollbackA = IllegalStateException("orphaned A")
+        val rollbackB = IllegalStateException("orphaned B")
+        withContext(collector + TraceConfig(listOf(report))) {
+            span("usecase") {
+                // A raise-only failure: the root carries no birthplace throwable of its own, so the only
+                // exception records must be the two attached orphans.
+                currentSpan()?.log(lvl("INFO")) { "rollback ran" }
+            }
+            collector.reportTrace(TraceStatus.ERROR, attached = listOf(rollbackA, rollbackB))
+        }
+
+        val crashes = report.records.filterIsInstance<ExceptionRecord>()
+        assertEquals("one record per attached throwable", listOf(rollbackA, rollbackB), crashes.map { it.throwable })
+        assertTrue("each keyed to the root operation", crashes.all { it.operation == "usecase" })
+    }
+
+    @Test
     @OptIn(NonSuspendTracingBridge::class)
     fun `a throwable-less ERROR leaf never shadows an ancestor crash out of the report`() = runTest {
         // Regression for the birthplace bug (ADR-005): a bridge span ended ERROR with no throwable — an
