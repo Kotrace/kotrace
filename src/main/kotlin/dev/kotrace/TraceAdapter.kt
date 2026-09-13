@@ -38,6 +38,10 @@ interface ReportAdapter : TraceAdapter {
      * choose. The point is the laziness: gating on [status] costs nothing because the sequence is never
      * forced.
      *
+     * **Consume [records] synchronously, within this call** (ADR-014). Fault isolation guards the whole
+     * `onReport` invocation, so a policy/message fault raised while you iterate is contained here; retaining
+     * the [Sequence] and consuming it after `onReport` returns escapes that guard and is unsupported.
+     *
      * @sample dev.kotrace.samples.ReportAdapterSamples.onReportSelfGate
      */
     fun onReport(status: TraceStatus, records: Sequence<TraceRecord>)

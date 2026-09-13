@@ -46,7 +46,19 @@ object Kotrace {
      * [IllegalStateException] on a second call — the config is read-only after install. An empty list
      * installs a no-op config (fan-out reaches nowhere).
      */
-    fun install(adapters: List<TraceAdapter>) = install { adapters }
+    fun install(adapters: List<TraceAdapter>) = install(adapters, null)
+
+    /**
+     * Publishes the process-wide fan-out [adapters] with an optional [faultHook] (ADR-014) observing faults
+     * contained during fan-out — so the hook covers the normal global setup, not only per-flow overrides.
+     * Same install-once contract.
+     */
+    fun install(adapters: List<TraceAdapter>, faultHook: AdapterFaultHook?) {
+        // Snapshot now, not on first fan-out: a caller mutating the list after install (or concurrently)
+        // must not silently change — or empty — the installed config.
+        val snapshot = adapters.toList()
+        install(faultHook) { snapshot }
+    }
 
     /**
      * Publishes the process-wide fan-out config from a [provider] resolved **lazily**, exactly once, on the
@@ -54,8 +66,28 @@ object Kotrace {
      * defer building the adapters until first use. Same install-once contract as the list overload: a second
      * call throws.
      */
-    fun install(provider: () -> List<TraceAdapter>) {
-        val holder = lazy(LazyThreadSafetyMode.SYNCHRONIZED) { TraceConfig(provider().toList()) }
+    fun install(provider: () -> List<TraceAdapter>) = install(null, provider)
+
+    /**
+     * Lazy [provider] overload carrying an optional [faultHook] (ADR-014). Same install-once, lazy-resolve
+     * contract as [install]`(provider)`.
+     */
+    fun install(faultHook: AdapterFaultHook?, provider: () -> List<TraceAdapter>) {
+        val holder = lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
+            val adapters = try {
+                provider()
+            } catch (t: Throwable) {
+                // A throwing provider must not turn the traced operation into a failure — and Kotlin `lazy`
+                // does not memoize exceptions, so an uncaught throw would re-run on every fan-out. Contain it
+                // as a resolved **no-op** config (empty adapters): telemetry that failed to wire simply
+                // reaches nowhere, never crashing the process it observes (ADR-011). A JVM-fatal error still
+                // propagates. This is a consumer setup fault, not an adapter fault, so it is not routed to
+                // [faultHook] (ADR-014 keeps config resolution out of the adapter-fault channel).
+                if (t.isFatalFault()) throw t
+                emptyList()
+            }
+            TraceConfig(adapters.toList(), faultHook)
+        }
         if (!installed.compareAndSet(null, holder)) {
             error("Kotrace config already installed; it is install-once (ADR-010)")
         }

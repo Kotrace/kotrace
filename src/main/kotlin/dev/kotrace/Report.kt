@@ -39,8 +39,10 @@ import dev.kotrace.event.recordOf
  * shadow the tree's real crash origin. With no throwable to attach [attached] is empty and this is inert.
  */
 fun SpanCollector.reportTrace(status: TraceStatus, attached: List<Throwable> = emptyList()) {
-    val adapters = resolvedThreadConfig()?.reportAdapters.orEmpty()
+    val config = resolvedThreadConfig()
+    val adapters = config?.reportAdapters.orEmpty()
     if (adapters.isEmpty()) return
+    val hook = config?.faultHook
     val all = spans
     val root = all.firstOrNull { it.parentId == null } ?: return
 
@@ -61,7 +63,13 @@ fun SpanCollector.reportTrace(status: TraceStatus, attached: List<Throwable> = e
         attached.forEach { entries += WalkEntry(root, ExceptionEvent(it, now)) }
     }
 
-    adapters.forEach { adapter -> adapter.onReport(status, adapter.viewOf(entries)) }
+    // Guard the entire synchronous onReport per adapter (ADR-014): the adapter consumes its lazy view
+    // in-call, so its policy/message faults are contained here too. A throwing sink never skips its
+    // siblings or propagates into the boundary. (Retaining the sequence to consume after onReport returns
+    // is unsupported — see ReportAdapter.onReport.)
+    adapters.forEach { adapter ->
+        guardAdapter(FaultPhase.REPORT, adapter, hook) { adapter.onReport(status, adapter.viewOf(entries)) }
+    }
 }
 
 private class WalkEntry(val span: Span, val event: SpanEvent)

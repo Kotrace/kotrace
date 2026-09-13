@@ -64,6 +64,11 @@ internal fun resolvedThreadConfig(): TraceConfig? =
  */
 class TraceConfig(
     val adapters: List<TraceAdapter>,
+    /**
+     * An optional [AdapterFaultHook] (ADR-014) observing faults contained during fan-out. Null (the default)
+     * ⇒ faults are swallowed silently.
+     */
+    val faultHook: AdapterFaultHook? = null,
 ) : ThreadContextElement<TraceConfig?>, AbstractCoroutineContextElement(Key) {
 
     companion object Key : CoroutineContext.Key<TraceConfig>

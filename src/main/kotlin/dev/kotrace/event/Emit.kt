@@ -1,8 +1,12 @@
 package dev.kotrace.event
 
+import dev.kotrace.FaultPhase
 import dev.kotrace.Span
 import dev.kotrace.TraceConfig
 import dev.kotrace.accepts
+import dev.kotrace.guardAdapter
+import dev.kotrace.guardPolicy
+import dev.kotrace.guardShared
 
 /**
  * Appends [event] to the span, then offers it to each [dev.kotrace.LiveAdapter] as it happens — the per-event path
@@ -17,8 +21,19 @@ import dev.kotrace.accepts
  */
 internal fun Span.emit(event: SpanEvent, config: TraceConfig?, extraInfo: Map<String, String> = emptyMap()) {
     events += event
-    val accepting = config?.liveAdapters?.filter { it.policy.accepts(this, event) }.orEmpty()
+    val liveAdapters = config?.liveAdapters ?: return
+    if (liveAdapters.isEmpty()) return
+    val hook = config.faultHook
+    // Per-adapter policy under its own guard (ADR-014): a throwing policy is contained (treated as reject),
+    // never propagated into the traced operation.
+    val accepting = liveAdapters.filter { adapter ->
+        guardPolicy(FaultPhase.LIVE, adapter, hook) { adapter.policy.accepts(this, event) }
+    }
     if (accepting.isEmpty()) return
-    val record = recordOf(event, extraInfo)
-    accepting.forEach { it.onLive(record) }
+    // Shared, per-event record construction under a shared guard: on failure the event is delivered to no
+    // accepting adapter (the record does not exist), the operation continues, and the hook fires with null.
+    val record = guardShared(FaultPhase.LIVE, hook) { recordOf(event, extraInfo) } ?: return
+    accepting.forEach { adapter ->
+        guardAdapter(FaultPhase.LIVE, adapter, hook) { adapter.onLive(record) }
+    }
 }

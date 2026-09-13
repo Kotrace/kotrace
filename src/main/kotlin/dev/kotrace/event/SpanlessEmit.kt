@@ -1,7 +1,11 @@
 package dev.kotrace.event
 
+import dev.kotrace.FaultPhase
 import dev.kotrace.accepts
 import dev.kotrace.currentThreadScopeId
+import dev.kotrace.guardAdapter
+import dev.kotrace.guardPolicy
+import dev.kotrace.guardShared
 import dev.kotrace.resolvedThreadConfig
 
 /**
@@ -22,11 +26,20 @@ import dev.kotrace.resolvedThreadConfig
  * orphan inside a scope); outside any scope [scopeId][TraceRecord.scopeId] is null.
  */
 private fun emitSpanless(event: SpanEvent, info: Map<String, String> = emptyMap()) {
-    val live = resolvedThreadConfig()?.liveAdapters.orEmpty()
-    val accepting = live.filter { it.policy.accepts(event) }
+    val config = resolvedThreadConfig()
+    val live = config?.liveAdapters ?: return
+    if (live.isEmpty()) return
+    val hook = config.faultHook
+    val accepting = live.filter { adapter ->
+        guardPolicy(FaultPhase.SPANLESS_LIVE, adapter, hook) { adapter.policy.accepts(event) }
+    }
     if (accepting.isEmpty()) return
-    val record = spanlessRecordOf(event, currentThreadScopeId(), info)
-    accepting.forEach { it.onLive(record) }
+    val record = guardShared(FaultPhase.SPANLESS_LIVE, hook) {
+        spanlessRecordOf(event, currentThreadScopeId(), info)
+    } ?: return
+    accepting.forEach { adapter ->
+        guardAdapter(FaultPhase.SPANLESS_LIVE, adapter, hook) { adapter.onLive(record) }
+    }
 }
 
 /** Flattens a span-less [event] into its record kind — null identity, ambient [scopeId], record-level [info]. */
