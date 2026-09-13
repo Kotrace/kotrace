@@ -16,7 +16,20 @@ git remembers. Ids are positional and reused as items are deleted — **do not c
 
 ### Bugs
 
-_None._
+- **B01 — birthplace dedup drops an escaping exception when a span recovers a child and throws a different
+  one.** `isBirthplaceAmong` ([Report.kt](src/main/kotlin/dev/kotrace/Report.kt)) treats *any* exception-bearing
+  descendant as proof this span is not the origin, so it keeps only the deepest throwable on a branch. That is
+  correct when one throwable climbs (each enclosing span re-records the same object, ADR-005), but wrong when a
+  span **catches** a child failure `A` and **throws a new** `B`: both spans carry an exception, the root (with
+  the escaping `B`) is judged "not birthplace", and `B` is dropped from the report while the recovered `A` is
+  reported. **Cost:** the report can show a handled failure and omit the one that actually escaped the trace —
+  a misleading crash record. **Why not fixed now:** a correct fix needs a stable *origin token* stamped on each
+  recorded throwable and deduped by token, and that token must survive coroutine stacktrace-recovery copying
+  across `withContext` boundaries (the very reason the current heuristic is structural, not identity-based —
+  see [Trace.kt](src/main/kotlin/dev/kotrace/Trace.kt) catch comment). That is a change to the exception model,
+  designed in **[ADR-015](decisions/adr-015-exception-origin-token.md)** (Proposed) rather than rushed. Related:
+  ADR-005 (birthplace), ADR-012 (`attached` orphan failures ride *past* this dedup deliberately). Found in the
+  2026-09-13 Codex review.
 
 ### Debt
 
