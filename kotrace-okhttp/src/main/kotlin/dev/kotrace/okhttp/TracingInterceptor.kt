@@ -25,12 +25,14 @@ import java.util.concurrent.TimeUnit
  * level, so this interceptor decides what to record and tags nothing with severity. The span itself
  * supplies the tree nesting, timing, and OK/ERROR status, so a breadcrumb needs no level of its own.
  *
- * The span carries method + **path only** (no query string: a query can hold user data, which must never
- * reach a report — kotrace's symbol rule). Headers and bodies are logged as **sensitive** events (an
- * `Authorization` header or a body is user data), which the report fan-out drops unless a policy opts in:
- * they must never leave the device, so [Level.HEADERS] / [Level.BODY] are debug-build-only, on-device-only
- * ([bodyLimit] caps how much of a body is read). This is what lets kotrace stand in for OkHttp's logging
- * interceptor at BODY level without the crash-report leak that would follow from a body on a normal span.
+ * Every breadcrumb that interpolates a URL **path** (the [Level.BASIC] request/response lines) is logged
+ * **sensitive**, because a REST path can embed user data (`/users/alice@example.com`) — kotrace's symbol
+ * rule. Headers and bodies are sensitive for the same reason (an `Authorization` header or a body is user
+ * data). The report fan-out drops every sensitive event unless a policy opts in, so all of these are
+ * on-device-only by default; [Level.HEADERS] / [Level.BODY] remain debug-build-only ([bodyLimit] caps how
+ * much of a body is read). The only non-sensitive facts are the span's own method/status/timing/nesting.
+ * This is what lets kotrace stand in for OkHttp's logging interceptor at BODY level without the crash-report
+ * leak that would follow from a path or body on a normal span.
  */
 class TracingInterceptor(
     private val level: Level = Level.BASIC,
@@ -59,7 +61,9 @@ class TracingInterceptor(
         return try {
             val response = chain.proceed(request)
             val tookMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startNanos)
-            if (level >= Level.BASIC) span.log { "← ${response.code} ${request.method} $path (${tookMs}ms)" }
+            // sensitive: the line carries the URL path, which can embed user data (an id, an email); a
+            // report sink sees it only if its policy opts into sensitive (device-only by default).
+            if (level >= Level.BASIC) span.log(sensitive = true) { "← ${response.code} ${request.method} $path (${tookMs}ms)" }
             if (level >= Level.HEADERS) span.log(sensitive = true) { "⇠ ${response.code} headers${response.headers.render()}" }
             if (level >= Level.BODY) span.log(sensitive = true) { "⇠ body ${response.peekBody(bodyLimit).string()}" }
 
@@ -67,7 +71,9 @@ class TracingInterceptor(
             span.end(if (response.isSuccessful) SpanStatus.OK else SpanStatus.ERROR)
             response
         } catch (t: Throwable) {
-            if (level >= Level.BASIC) span.log { "✗ ${request.method} $path: ${t.message}" }
+            // sensitive: carries the path and the throwable message, both of which can hold user data. The
+            // throwable itself is recorded via end(ERROR, t) → the crash reporter, independent of this line.
+            if (level >= Level.BASIC) span.log(sensitive = true) { "✗ ${request.method} $path: ${t.message}" }
             span.end(SpanStatus.ERROR, t)
             throw t
         }
@@ -91,6 +97,9 @@ class TracingInterceptor(
             body.writeTo(buffer)
             buffer.readUtf8(minOf(buffer.size, bodyLimit))
         } catch (t: Throwable) {
+            // Never swallow a JVM-fatal error (ADR-014): a compromised process must surface, not read as
+            // "no snippet". Mirrors core's isFatalFault(), inlined here since that helper is core-internal.
+            if (t is VirtualMachineError || t is ThreadDeath || t is LinkageError) throw t
             null
         }
     }

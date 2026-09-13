@@ -14,8 +14,12 @@ import java.util.concurrent.Executor
  * duration of the call. Installed with a **direct executor** ([tracing]) so `onQuery` fires inline on
  * that thread while the mirror is live; a background executor would run it after the span is gone.
  *
- * Only the SQL text — parameterised symbols (`?` placeholders) — is logged. `bindArgs` are the bound
- * **values**, which can be user data, so they are never touched (kotrace's symbol-only rule / EH-MON-4).
+ * The SQL text is logged as a **sensitive** event. `bindArgs` (the bound values) are never touched, but the
+ * SQL string itself is not guaranteed to be symbol-only: a `@RawQuery` / `SimpleSQLiteQuery` built by string
+ * concatenation can inline user values directly into the text. Marking it sensitive is fail-closed — the
+ * report fan-out drops it unless a policy opts into sensitive, so an inlined value can never reach a broad
+ * sink by accident (kotrace's symbol-only rule / EH-MON-4). A consumer whose SQL is strictly parameterised
+ * can opt sensitive in for its device-only watch.
  *
  * kotrace core holds no severity taxonomy, so the caller supplies the log [attributes] (e.g. a severity
  * level under the consumer's own key). SQL is high-volume, so a consumer typically tags it at a level its
@@ -23,7 +27,7 @@ import java.util.concurrent.Executor
  */
 class TracingQueryCallback(private val attributes: Map<String, String> = emptyMap()) : RoomDatabase.QueryCallback {
     override fun onQuery(sqlQuery: String, bindArgs: List<Any?>) {
-        currentThreadSpan()?.log(attributes) { "SQL ${sqlQuery.trim()}" }
+        currentThreadSpan()?.log(attributes, sensitive = true) { "SQL ${sqlQuery.trim()}" }
     }
 }
 
