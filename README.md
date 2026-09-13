@@ -31,7 +31,9 @@ contract, so an OTel upgrade later is additive.
   on first fan-out, DI-friendly). Every path resolves `currentThreadConfig() ?: Kotrace.defaultConfig()`, so
   a per-flow `TraceConfig` overlaid on the context **overrides** the global for that flow, while span-less
   emits and non-suspend entrypoints — which carry no context — still reach the adapters. Report needs a
-  per-flow `SpanCollector`, so a collector-less flow is live-only by construction.
+  `SpanCollector`: a top-level suspend `span { }` **auto-roots** one and reports at its outcome (ADR-013), so
+  the report boundary is implicit; a flow that only ever does span-less emits (no top-level `span`) stays
+  live-only by construction.
   - **Registering adapters — build the list, no builder DSL.** kotrace takes a plain `List<TraceAdapter>`;
     the provider overload (`install { … }`) plus stdlib `buildList` *is* the conditional-registration idiom —
     the equivalent of Retrofit's `addInterceptor`, from the standard library, so kotrace adds no builder of

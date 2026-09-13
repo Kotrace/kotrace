@@ -17,3 +17,6 @@ open only the ADR you need.
 | [010](decisions/adr-010-spanless-fanout-and-ambient-scope.md) | Span-less live fan-out + `scope_id`, a correlation level above `trace_id` (`scope ⊇ trace ⊇ span`) | Accepted | 2026-09-06 |
 | [011](decisions/adr-011-strict-uninstalled-optin.md) | `strictWhenUninstalled`: an opt-in fail-fast for emit-before-install | Proposed | 2026-09-07 |
 | [012](decisions/adr-012-reporttrace-attached-orphan-failures.md) | `reportTrace(attached)`: trace-level orphan failures (e.g. saga rollback throwables) on the report path, keyed to root, past the birthplace dedup | Accepted | 2026-09-07 |
+| [013](decisions/adr-013-auto-root-span.md) | A top-level `span` self-owns its trace and reports at the outcome (auto-root, iff no span/collector in context) — no new verb | Accepted | 2026-09-12 |
+| [014](decisions/adr-014-adapter-fault-isolation.md) | Per-adapter fault isolation across every fan-out phase (live / span-less / report) + opt-in diagnostic hook | Accepted | 2026-09-12 |
+| [015](decisions/adr-015-exception-origin-token.md) | Birthplace dedup by a stable exception origin token, not "deepest throwable-bearing span" (fixes recover-and-rethrow-different drop) | Proposed | 2026-09-13 |

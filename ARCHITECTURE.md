@@ -32,7 +32,7 @@ The **wire format is the contract**: an OTel upgrade later is additive (§9).
 flowchart TD
   logSpan["Span.log"] --> LE["LogEvent"]
   addEvent["Span.addNamed"] --> NE["NamedEvent"]
-  catch["span{} catch (on failure)"] --> ERR["Span.error (field)"]
+  catch["span{} catch (on failure)"] --> ERR["Span.addException → ExceptionEvent"]
 
   LE --> SP[("Span — in SpanCollector<br/>(one trace, buffered)")]
   NE --> SP
@@ -71,13 +71,13 @@ interchange.
 | **tracing** | the concern / this library — never a runtime object. |
 | **trace** | **one call tree** = one `trace_id`, per flow. The verb that opens a **span** within it is `span(name){}` — named for the node it opens, not the tree (ADR-003). |
 | **scope** | a **live-only correlation umbrella above a trace** (`scope ⊇ trace ⊇ span`, ADR-010) — a nullable `scope_id`, set by `withScope(scopeId){}`. **Not a span**: it opens no reportable tree and has no duration, outcome, `status`, or report path — a plain correlation key, never a filter dimension. Groups many traces **and** their orphan emits under one session/journey key. |
-| **span** | **one node** (`Span`) — a name, a status, `attributes`, `events`, an optional `error`, a parent. Entity, not value (§2). |
+| **span** | **one node** (`Span`) — a name, a status, `attributes`, `events` (the birthplace `ExceptionEvent`, if any, lives among them — there is no `error` field), a parent. Entity, not value (§2). |
 | **link** | a **cross-trace causal edge** (`TraceLink` on `Span.links`) — a reference to another *trace* by `trace_id` only (no `span_id`; ADR-009), the OTel *span link* shape. Distinct from `parentId` (the **in-tree** edge). Birth-set like `attributes`; surfaces on the wire as a `links` array on every record off the span. Never interchange with **parent**. |
 | **operation** | the owning **`Span.name`** at egress — its label as the flat **join key** on every `TraceRecord` and `toJson` column. `name` = the in-memory field; `operation` = that value as the wire/backend-join key (OTel-aligned). A **wire contract** (§2), and distinct from `NamedRecord.name` (the *event*'s name). |
 | **record** | a flat **egress line** (`TraceRecord`), lifted off a span at fan-out. Three kinds ↓. |
 | **log** | a **breadcrumb** event (`Span.log` → `LogEvent` → `LogRecord`) — a line bound to a span. |
 | **event** (named) | a **named / analytics** occurrence (`Span.addNamed` → `NamedEvent` → `NamedRecord`, OTel `addEvent` shape). |
-| **exception** | the **birthplace crash** — `Span.error` (a field, §8), surfaced only at egress as `ExceptionRecord`; bypasses every policy gate. |
+| **exception** | the **birthplace crash** — an `ExceptionEvent` on `Span.events` (read via the `Span.exception` extension, §8), surfaced at egress as `ExceptionRecord`. It is subject only to `TracePolicy.acceptsEvent` (which defaults to keeping it), so a breadcrumb filter never drops the crash unless a policy explicitly covers exceptions — it does **not** bypass every gate. |
 | **span-less emit** | `emitLog` / `emitNamed` / `emitException` (ADR-010) — the **orphan** counterparts of the span-scoped `log` / `addNamed` / `addException`, for an occurrence outside any span (an app-lifecycle or push callback, a non-coroutine entry). Fanned **live-only** through the resolved config (context override, else the process-wide `Kotrace` config ↓), gated by policy; a record with null identity, carrying a `scope_id` if a `withScope` is active. `emitException(cause, info)` — and `addException(cause, info)` — populate record-level `ExceptionRecord.info` while the event stays object-only (ADR-005). |
 | **report** | the **tail** fan-out at trace end (`ReportAdapter.onReport(status)`) — buffered tree, breadcrumbs + crash, gated by status. |
 | **live** | the **per-event** fan-out as it happens (`LiveAdapter.onLive`) — immediate, ungated by trace status. |
@@ -165,16 +165,18 @@ contract** a backend joins on. It collides deliberately with `NamedRecord.name`,
 name (`NamedEvent.name`): on a `NamedRecord`, `operation` = the span, `name` = the event. Renaming
 `operation`→`name` would both alias the event name and break the join wire — so both stay.
 
-Capture has **two** kinds, egress has **three**: `ExceptionRecord` is synthesized from `Span.error` at the
-birthplace and has no `SpanEvent` counterpart. That asymmetry is honest — it records that the exception is a
-span *outcome* (field), surfaced as a record only at fan-out. Mapping:
+Capture and egress are both **three** kinds, one-to-one. The sealed `SpanEvent` has `LogEvent`,
+`NamedEvent`, and `ExceptionEvent` — the exception is an **event on the span**, not a `Span.error` field
+(its single source of truth is `Span.events`, read via the `Span.exception` extension). `ExceptionRecord` is
+lifted from the birthplace `ExceptionEvent` — the deepest throwable-bearing span on a branch (ADR-005).
+Mapping:
 
 ```mermaid
 flowchart LR
-  subgraph cap["capture (2 kinds)"]
+  subgraph cap["capture (3 kinds, on Span.events)"]
     LE["LogEvent"]
     NE["NamedEvent"]
-    EF["Span.error (field)"]
+    XE["ExceptionEvent"]
   end
   subgraph eg["egress (3 kinds, id-stamped)"]
     LR["LogRecord"]
@@ -183,14 +185,14 @@ flowchart LR
   end
   LE --> LR
   NE --> NR
-  EF -->|at birthplace| XR
+  XE -->|at birthplace| XR
 ```
 
 ---
 
-## 3. Propagation and boundaries — three context elements
+## 3. Propagation and boundaries — four context elements
 
-kotrace hangs three things on the `CoroutineContext`, each a `ThreadContextElement` with a `ThreadLocal`
+kotrace hangs four things on the `CoroutineContext`, each a `ThreadContextElement` with a `ThreadLocal`
 mirror. The mirror is what lets **non-suspend code on a coroutine's thread** (an OkHttp factory, a Room
 callback) read them without a `coroutineContext` handle.
 
@@ -198,9 +200,10 @@ callback) read them without a `coroutineContext` handle.
 |---|---|---|---|
 | `SpanContext` | the active span | `currentThreadSpan()` (suspend: `currentSpan()`) | who is a new span's **parent** |
 | `SpanCollector` | every span in one trace | `currentThreadCollector()` | which tree is **collected** |
-| `TraceConfig` | the consumer's adapters (+ derived capture levels) | `currentThreadConfig()` (suspend: `currentConfig()`) | how the trace **fans out** |
+| `TraceConfig` | the consumer's adapters + policies (and optional `AdapterFaultHook`) | `currentThreadConfig()` (suspend: `currentConfig()`) | how the trace **fans out** |
+| `ScopeContext` | the ambient `scope_id` (ADR-010) | `currentThreadScopeId()` (suspend: `currentScopeId()`) | the correlation umbrella above `trace_id` |
 
-These are **three separate boundaries**, decoupled on purpose: a span can have a `traceId` (identity) but no
+These are **four separate boundaries**, decoupled on purpose: a span can have a `traceId` (identity) but no
 collector (untraced-but-identified); the config is orthogonal to both. Why a `ThreadContextElement` and not
 a bare `ThreadLocal`: a coroutine resumes on different threads, so the mirror must be re-established on every
 resume and restored on the way out — that is exactly the `updateThreadContext`/`restoreThreadContext`
@@ -208,8 +211,11 @@ contract. `AbstractCoroutineContextElement` supplies only the `key` plumbing; it
 
 ### `SpanCollector` is per-trace and ephemeral
 
-One collector = one trace, seeded at the root (`withContext(collector)`), dead when the root returns
-(fan-out, then GC). There is **no global registry** accumulating traces — that is what keeps memory flat and
+One collector = one trace, seeded at the root and dead when the root returns (fan-out, then GC). The seeding
+is normally **implicit**: a top-level `span { }` opened with no span and no collector in context **auto-roots**
+(ADR-013) — it installs the collector (`withContext(collector)`), opens the root, and calls `reportTrace` at
+the outcome; a consumer may still seed one by hand (`withContext(collector)` + its own `reportTrace`) for
+bespoke control. There is **no global registry** accumulating traces — that is what keeps memory flat and
 what makes kotrace's tail decision safe (§4): it buffers exactly one flow at a time.
 
 **The one process-global** (ADR-010). Per-*flow* state — the collector, the current span, the scope — is
@@ -221,8 +227,9 @@ This is what lets a **span-less emit** and a non-suspend root fan out with no co
 `Kotrace.install(...)` publishes the config once at startup through an `AtomicReference` (safe publication);
 it is read-only after, and a second install is a hard error (fail-closed, no silent replace). It is the sole
 mutable process state in the library, documented as such — and optional: with nothing installed and no
-override, every path is a safe no-op. (Report still needs a per-flow `SpanCollector` to buffer the tree, so
-a non-suspend flow with no collector is live-only by construction.)
+override, every path is a safe no-op. (Report needs a `SpanCollector`: a top-level suspend `span` auto-roots
+one (ADR-013); a non-suspend flow or a flow that only does span-less emits has none, so it is live-only by
+construction.)
 
 **Setup guidance.** Under DI (Hilt/Koin), resolve the adapters from the graph and `install` once at app
 start; the `install { … }` provider overload registers a supplier resolved lazily on first fan-out, for when
@@ -269,8 +276,9 @@ descendant carries a throwable` (`isBirthplaceAmong`, ADR-005). Only there is th
 `ExceptionRecord`), so it appears once, not once per ancestor. Gating on the throwable — not merely "no
 child errored" — is what stops a throwable-less `ERROR` leaf (a bridge span ended `end(ERROR, null)`, e.g. an
 OkHttp 500 that returned) from shadowing an ancestor's real crash out of the report. `report` is the sole
-birthplace authority; there is no separate public helper. The birthplace record **bypasses every fan-out
-gate** — a filter can never swallow the crash cause.
+birthplace authority; there is no separate public helper. The birthplace record is gated **only** by
+`TracePolicy.acceptsEvent` (default: kept), so a breadcrumb filter never swallows the crash cause unless a
+policy explicitly covers exceptions.
 
 ---
 
@@ -412,7 +420,7 @@ pure-JVM consumer drags neither:
 > the shipped design. The one property the field-form was chosen for — dedup — is preserved by topology at
 > read time, not by overwrite.
 
-The exception is a span **timeline event**, recorded by `trace`'s catch and reconciled at read:
+The exception is a span **timeline event**, recorded by `span`'s catch and reconciled at read:
 
 1. **Always recorded, and live as it is thrown.** `addException` appends unconditionally — like every event
    verb, there is no capture gate (ADR-002) — so a level or layer filter never drops a crash. It also emits
@@ -442,7 +450,7 @@ PII gate in the model). Same words, different scope.
 | Span event | `Span Event` (`addEvent`, no severity) | `SpanEvent` (**has a level** — a span-event ⨝ log hybrid) |
 | Logs | a **separate Logs signal** (LogRecord, bridges Log4j/SLF4J, standalone) | **none** — a log *is* a span event; no active span → no-op |
 | "Event" (named) | a `LogRecord` with `event.name` (event ⊂ log) | `NamedEvent` (a kind of `SpanEvent`) |
-| Exception | a Span Event (`recordException`, serialized attrs) | a `Span.error` **field** (live `Throwable`, §8) |
+| Exception | a Span Event (`recordException`, serialized attrs) | an `ExceptionEvent` on `Span.events` (live `Throwable`, §8) |
 | Sampling | **head** sampler at the root (blind to outcome) | **tail** — buffer, decide at end |
 | PII | scrubbed by a collector processor, outside the app | a `sensitive` flag **in the model**, fail-closed at fan-out |
 | Cross-process | full context + resource + links | `traceparent` only |
@@ -460,9 +468,13 @@ the live `Throwable` as a field.
 
 ## 10. Consumer boundary (how a host wires it)
 
-kotrace's whole consumer surface is: the log/`addNamed` verbs, the `TraceAdapter`/`TracePolicy` interfaces,
-`TraceConfig`, and `reportTrace`. A host implements adapters that bridge `TraceRecord` → its own sinks and never
-touches the `Span` tree. The reference consumer (Camailux) keeps *all* kotrace naming inside one module: a
+kotrace's whole consumer surface is: the `span`/log/`addNamed` verbs, the `TraceAdapter`/`TracePolicy`
+interfaces, `TraceConfig`, and `reportTrace`. **The common host writes only `span { }`** — a top-level one
+auto-roots and reports at its outcome (ADR-013), so the report boundary needs no explicit `reportTrace`;
+`reportTrace` (and a hand-seeded `SpanCollector`) stays for bespoke boundaries and failure-as-data
+(`attached`, ADR-012). A host implements adapters that bridge `TraceRecord` → its own sinks and never
+touches the `Span` tree; an optional `AdapterFaultHook` on the config observes any fault contained during
+fan-out (ADR-014). The reference consumer (Camailux) keeps *all* kotrace naming inside one module: a
 `CrashAdapter` (records → crash reporter), an `AnalyticsAdapter` (`NamedRecord` → analytics), a debug
 `LiveLogAdapter`, assembled behind a small facade — everything else in the app names only vendor-neutral
 interfaces. That is the intended shape: **kotrace is an implementation detail behind the adapter seam.**
