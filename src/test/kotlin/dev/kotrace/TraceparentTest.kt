@@ -11,9 +11,10 @@ class TraceparentTest {
 
     @Test
     fun `format is version-traceid-spanid-flags with W3C hex widths`() {
-        val header = span("0".repeat(32), "1".repeat(16)).toTraceparent()
+        // Non-zero fixed patterns: an all-zero trace-id/span-id is invalid per W3C Trace Context.
+        val header = span("a".repeat(32), "1".repeat(16)).toTraceparent()
 
-        assertEquals("00-${"0".repeat(32)}-${"1".repeat(16)}-01", header)
+        assertEquals("00-${"a".repeat(32)}-${"1".repeat(16)}-01", header)
         val parts = header.split("-")
         assertEquals("four fields", 4, parts.size)
         assertEquals("version", "00", parts[0])
@@ -31,7 +32,7 @@ class TraceparentTest {
 
     @Test
     fun `unsampled sets the flags to 00`() {
-        assertTrue(span("0".repeat(32), "1".repeat(16)).toTraceparent(sampled = false).endsWith("-00"))
+        assertTrue(span("a".repeat(32), "1".repeat(16)).toTraceparent(sampled = false).endsWith("-00"))
     }
 
     private companion object {

@@ -50,10 +50,16 @@ class Span(
     val parentId: String?,
     val name: String,
     val startNanos: Long,
-    val attributes: Map<String, String> = emptyMap(),
-    val links: List<TraceLink> = emptyList(),
+    attributes: Map<String, String> = emptyMap(),
+    links: List<TraceLink> = emptyList(),
     val scopeId: String? = null,
 ) {
+    /** Birth-set filter dimensions — defensively copied so a caller mutating its map after construction can't desync live vs report. */
+    val attributes: Map<String, String> = attributes.toMap()
+
+    /** Birth-set cross-trace edges — defensively copied for the same reason as [attributes]. */
+    val links: List<TraceLink> = links.toList()
+
     val events: MutableList<SpanEvent> = CopyOnWriteArrayList()
 
     /**

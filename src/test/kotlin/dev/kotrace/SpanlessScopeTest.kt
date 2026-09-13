@@ -188,10 +188,13 @@ class SpanlessScopeTest {
     @Test fun `a bare scope never produces a report fan-out`() = runTest {
         val report = CollectingReport()
         Kotrace.install(listOf(report))
+        // A scope is not a trace (ADR-010): its span-less activity is live-only and opens no reportable tree.
+        // (A `span` opened here would auto-root and report — that is ADR-013, covered in AutoRootSpanTest.)
         withScope("sess-1") {
-            runCatching { span("op") { throw IllegalStateException("fail") } }
+            emitNamed("op")
+            runCatching { emitException(IllegalStateException("fail")) }
         }
-        assertEquals("no SpanCollector, no reportTrace — live-only by design", 0, report.reports)
+        assertEquals("a bare scope buffers no tree — span-less emits are live-only", 0, report.reports)
     }
 
     // --- Global config feeds every path; a context override wins ---

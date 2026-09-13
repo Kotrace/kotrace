@@ -1,14 +1,23 @@
 package dev.kotrace
 
 import dev.kotrace.event.addException
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.withContext
 import java.security.SecureRandom
 
 /**
- * Opens a child span of the current span, closes it on return, and marks it ERROR (recording the
- * throwable) on the way out — **rethrowing unchanged**. Named for the node it opens (a span), not the tree
- * (ADR-003); the non-suspend counterpart is [startSpan].
+ * Opens a span, closes it on return, and marks it ERROR (recording the throwable) on the way out —
+ * **rethrowing unchanged**. Named for the node it opens (a span), not the tree (ADR-003); the non-suspend
+ * counterpart is [startSpan].
+ *
+ * **Auto-root (ADR-013).** A `span` opened with *neither* a current span *nor* a [SpanCollector] in context
+ * owns the whole trace: it installs a collector, opens the root, runs [block], and calls [reportTrace] once
+ * at the outcome (return → [TraceStatus.OK], an escaping [CancellationException] → [TraceStatus.CANCELLED],
+ * any other escaping throwable → [TraceStatus.ERROR]) — the application throwable always rethrown. Any other
+ * context state is the instrumentation-only path below: with a collector present the span is a child (or a
+ * manual-boundary root the consumer reports itself); with a span present but no collector it is a child for
+ * identity/live only. The consumer therefore only ever writes `span { }`; the outermost one is the boundary.
  *
  * This is instrumentation, not error handling: [span] only observes and rethrows, so a caller may wrap
  * a body in it and still handle failures inside however it likes. ERROR propagates up the tree naturally
@@ -22,12 +31,21 @@ suspend fun <T> span(
     links: List<TraceLink> = emptyList(),
     block: suspend () -> T,
 ): T {
+    val context = currentCoroutineContext()
+    // Auto-root iff BOTH are absent (ADR-013). Keying on the collector alone would let an
+    // identified-but-uncollected span (a SpanContext with no collector) mint a *child* into a fresh
+    // collector whose walk then finds no root — silent loss. Read the coroutine context, not the mirrors.
+    val spanCollector = context[SpanCollector]
+    val spanContext = context[SpanContext]
+    if (spanContext == null && spanCollector == null) {
+        return autoRootSpan(name, attributes, links, block)
+    }
     val opened = createSpan(
-        currentCoroutineContext()[SpanContext]?.span,
+        spanContext?.span,
         name, attributes, links,
-        currentScopeId(),
+        context[ScopeContext]?.scopeId,
     )
-    currentCollector()?.add(opened)
+    spanCollector?.add(opened)
     return try {
         // Overlay only the element — withContext already inherits the current context. Passing the
         // whole currentCoroutineContext() would re-inject its Job and break structured concurrency.
@@ -38,10 +56,62 @@ suspend fun <T> span(
         // the throwable — see isBirthplaceAmong) — not by exception identity, which coroutine stacktrace
         // recovery breaks by copying `t` across each `withContext` boundary.
         opened.markStatus(SpanStatus.ERROR)
-        opened.addException(t)
+        // Recording the throwable must never replace it: under strict-uninstalled (ADR-011)
+        // resolvedThreadConfig can throw here, *before* the rethrow. Preserve the application throwable and
+        // attach the failure as suppressed (ADR-013); a JVM-fatal failure still propagates.
+        try {
+            opened.addException(t)
+        } catch (recordFailure: Throwable) {
+            if (recordFailure.isFatalFault()) throw recordFailure
+            t.alsoSuppress(recordFailure)
+        }
         throw t
     } finally {
         opened.markEnd(System.nanoTime())
+    }
+}
+
+/**
+ * The auto-root boundary (ADR-013): install a fresh [SpanCollector], let the recursion open+register the
+ * root and run [block] (the collector is now in context, so the nested [span] takes the instrumentation
+ * path), then [reportTrace] the outcome **before** the collector context exits — so the collector and any
+ * ambient [TraceConfig] are still resolved. The collector is overlaid alone; config is inherited, never
+ * frozen here (ADR-010).
+ */
+private suspend fun <T> autoRootSpan(
+    name: String,
+    attributes: Map<String, String>,
+    links: List<TraceLink>,
+    block: suspend () -> T,
+): T {
+    val collector = SpanCollector()
+    return withContext(collector) {
+        var status = TraceStatus.OK
+        var escaped: Throwable? = null
+        try {
+            span(name, attributes, links, block)
+        } catch (t: Throwable) {
+            escaped = t
+            status = if (t is CancellationException) TraceStatus.CANCELLED else TraceStatus.ERROR
+            throw t
+        } finally {
+            reportAutoRoot(collector, status, escaped)
+        }
+    }
+}
+
+/**
+ * Reports the auto-root trace with strict-mode precedence (ADR-013): if reporting throws — e.g. strict
+ * [resolvedThreadConfig] with nothing installed (ADR-011) — and an application throwable already [escaped],
+ * preserve it and attach the failure as suppressed (never let a `finally` throw replace the app throwable).
+ * On a normally-completing block a report failure propagates as itself; a JVM-fatal failure always does.
+ */
+private fun reportAutoRoot(collector: SpanCollector, status: TraceStatus, escaped: Throwable?) {
+    try {
+        collector.reportTrace(status)
+    } catch (reportFailure: Throwable) {
+        if (reportFailure.isFatalFault()) throw reportFailure
+        if (escaped != null) escaped.alsoSuppress(reportFailure) else throw reportFailure
     }
 }
 
@@ -103,9 +173,14 @@ private fun createSpan(
 
 private val random = SecureRandom()
 
-/** Lowercase hex of [bytes] random bytes — 16 for a trace id (W3C 32 chars), 8 for a span id (16). */
+/**
+ * Lowercase hex of [bytes] random bytes — 16 for a trace id (W3C 32 chars), 8 for a span id (16). The
+ * all-zero value is regenerated: W3C Trace Context declares an all-zero trace-id/span-id invalid, so a
+ * downstream tracer would reject the `traceparent`. (Astronomically rare from `SecureRandom`, but a minted
+ * id must never be one a peer discards.)
+ */
 internal fun hex(bytes: Int): String {
     val b = ByteArray(bytes)
-    random.nextBytes(b)
+    do { random.nextBytes(b) } while (b.all { it == 0.toByte() })
     return b.joinToString("") { "%02x".format(it.toInt() and 0xFF) }
 }
