@@ -113,6 +113,37 @@ drags an HTTP client or Android.
 
 Requires a JDK 11+. No secrets or env vars needed to build or test.
 
+## Performance
+
+The benchmark suite lives in the non-published `:benchmarks` module. The figures below are steady-state
+JMH results from an Apple M1 Pro running Oracle JDK 21.0.3, G1GC and a fixed 1 GiB heap, using 3 forks ×
+5 warm-up iterations × 5 measurement iterations. They characterize this JVM workload, not Android ART or
+production end-to-end latency.
+
+| Scenario | Result | Allocation |
+|---|---:|---:|
+| Empty auto-root, no config | 8.14 ± 0.41 µs/flow | 14.5 KiB/flow |
+| Capture 100 logs, no sink | 3.69 ± 0.04 µs/batch | 28.7 KiB/batch |
+| Report a 512-span balanced tree | 47.06 ± 1.96 µs/report | 160.9 KiB/report |
+| 16 workers × 100 logs on one shared span | 544.70 ± 19.09 µs/flow | 5.61 MB/flow |
+
+The report path now indexes the span tree once. At 512 spans this is 11.2–12.9× faster than repeatedly
+scanning the complete span list, while preserving depth-first/start-time order and exception-lineage dedup.
+The shared-span case remains the main known hotspot: `Span.events` uses `CopyOnWriteArrayList`, which is a
+good trade for the common 0–10-event trace but becomes expensive with hundreds of events or many concurrent
+writers. A lock-backed replacement improved those dense workloads but regressed empty traces, reads and
+reports, so it was rejected.
+
+Live adapters are synchronous and therefore apply backpressure directly to the traced operation. In the
+synthetic 1 ms blocking-sink workload, one event measured 1.28 ms at p50 and 5.42 ms at p99; ten events
+measured 12.73 ms at p50 and 22.09 ms at p99. An adapter that performs I/O should enqueue onto its own
+bounded worker rather than block `onLive`.
+
+See the [benchmark plan](docs/benchmark-plan.md), [full baseline analysis](benchmarks/results/20260914-sol-high-stage2b/analysis.md),
+[report-index result](benchmarks/results/20260914-report-index-candidate-v2/analysis.md), and
+[rejected event-buffer experiment](benchmarks/results/20260914-event-buffer-candidate/analysis.md) for the
+workload definitions, confidence intervals, limitations and reproduction commands.
+
 ## Where to start
 
 `src/main/kotlin/dev/kotrace/Trace.kt` is the entry point — `span {}` is the whole public verb surface.
