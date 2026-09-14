@@ -13,7 +13,7 @@ enum class FaultPhase { LIVE, SPANLESS_LIVE, REPORT }
  * default (no hook) swallows the fault silently so a broken sink can never crash the traced operation.
  *
  * Carried on [TraceConfig]. Contract:
- * - [adapter] is the sink whose region threw, or `null` for a shared, per-event record-construction fault
+ * - `adapter` is the sink whose region threw, or `null` for a shared, per-event record-construction fault
  *   that has no single owner (the event is then not delivered to any accepting adapter).
  * - A **non-fatal** throw from [onAdapterFault] itself is swallowed; a JVM-fatal one
  *   ([VirtualMachineError]/[ThreadDeath]/[LinkageError]) is rethrown.

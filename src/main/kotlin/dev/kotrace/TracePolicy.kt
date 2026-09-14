@@ -53,8 +53,9 @@ internal fun TracePolicy.accepts(span: Span, event: SpanEvent): Boolean = when (
 
 /**
  * The span-**less** predicate for a default-registry emit (ADR-010) — same gates as [accepts] minus
- * [acceptsSpan], which has no meaning without a span (it keys off [Span.attributes]). [acceptsEvent] and
- * (for a [LogEvent]) [acceptsSensitive] still apply, so fan-out stays the single filtering authority even
+ * [TracePolicy.acceptsSpan], which has no meaning without a span (it keys off [Span.attributes]).
+ * [TracePolicy.acceptsEvent] and (for a [LogEvent]) [TracePolicy.acceptsSensitive] still apply, so fan-out
+ * stays the single filtering authority even
  * for an orphan emit.
  */
 internal fun TracePolicy.accepts(event: SpanEvent): Boolean = when (event) {

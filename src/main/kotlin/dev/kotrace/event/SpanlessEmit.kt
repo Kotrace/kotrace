@@ -1,6 +1,7 @@
 package dev.kotrace.event
 
 import dev.kotrace.FaultPhase
+import dev.kotrace.Span
 import dev.kotrace.accepts
 import dev.kotrace.currentThreadScopeId
 import dev.kotrace.guardAdapter
@@ -51,7 +52,7 @@ private fun spanlessRecordOf(event: SpanEvent, scopeId: String?, info: Map<Strin
 
 /**
  * The span-less log verb — a diagnostic breadcrumb with no owning span, fanned live to the default registry.
- * Mirrors [Span.log]: [attributes] carry consumer symbols (severity, tag), [sensitive] classifies a
+ * Mirrors [log]: [attributes] carry consumer symbols (severity, tag), [sensitive] classifies a
  * [message] carrying user data (routed by each adapter's [dev.kotrace.TracePolicy.acceptsSensitive]), and
  * the [message] provider resolves lazily only once an adapter accepts the event.
  */
@@ -61,7 +62,7 @@ fun emitLog(attributes: Map<String, String> = emptyMap(), sensitive: Boolean = f
 
 /**
  * The span-less named-event verb — a named, structured occurrence with no owning span, fanned live to the
- * default registry. Mirrors [Span.addNamed]; live-only, as a named event always is.
+ * default registry. Mirrors [addNamed]; live-only, as a named event always is.
  */
 fun emitNamed(name: String, attributes: Map<String, String> = emptyMap()) {
     emitSpanless(NamedEvent(name, attributes, System.nanoTime()))
@@ -69,7 +70,7 @@ fun emitNamed(name: String, attributes: Map<String, String> = emptyMap()) {
 
 /**
  * The span-less exception verb — records [cause] with no owning span, fanned live to the default registry.
- * Mirrors [Span.addException], including the record-level [info] map (ADR-010): it populates
+ * Mirrors [addException], including the record-level [info] map (ADR-010): it populates
  * [ExceptionRecord.info] while the [ExceptionEvent] stays object-only (a throwable, no attribute bag —
  * ADR-005). Because a span-less exception fans live and unconditionally (no trace status gates it), an
  * explicit report reaches live adapters the moment it is emitted.
