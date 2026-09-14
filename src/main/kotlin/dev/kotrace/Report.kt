@@ -5,8 +5,9 @@ import dev.kotrace.event.LogEvent
 import dev.kotrace.event.NamedEvent
 import dev.kotrace.event.SpanEvent
 import dev.kotrace.event.TraceRecord
-import dev.kotrace.event.exception
 import dev.kotrace.event.recordOf
+import java.util.Collections
+import java.util.IdentityHashMap
 
 /**
  * Fans the finished trace out to every [ReportAdapter] in the active [TraceConfig] — the one report
@@ -20,8 +21,8 @@ import dev.kotrace.event.recordOf
  * work (see the [ReportAdapter.onReport] sample).
  *
  * The walk collects, per span, every event [SpanEvent.reportable] admits, in time order — each
- * [dev.kotrace.event.LogEvent], and, at the birthplace only ([isBirthplaceAmong]), the span's
- * [dev.kotrace.event.ExceptionEvent]. Report membership is that one declared predicate, not an implicit
+ * [dev.kotrace.event.LogEvent], and, at the birthplace only ([birthplaceExceptionsAmong]), the span's
+ * [dev.kotrace.event.ExceptionEvent]s. Report membership is that one declared predicate, not an implicit
  * filter: a [dev.kotrace.event.NamedEvent] is not reportable — a product/analytics occurrence fanned out
  * live (see [LiveAdapter]), not tail-buffered for failure — and a future event kind must classify itself
  * there or fail to compile.
@@ -33,7 +34,7 @@ import dev.kotrace.event.recordOf
  * are the birthplace of no span, the canonical case being a saga's suppressed rollback throwables collected
  * on the failed result value. Each is emitted as an [dev.kotrace.event.ExceptionRecord] keyed to the **root**
  * span (its `trace_id` / `operation`). They are appended **after** the tree walk on purpose: the birthplace
- * dedup ([isBirthplaceAmong]) lives inside the walk, so a post-walk entry rides through it — an orphan
+ * dedup ([birthplaceExceptionsAmong]) lives inside the walk, so a post-walk entry rides through it — an orphan
  * failure must not be silenced just because it is not the leaf-most throwable on a branch. They are
  * deliberately **not** written onto [Span.events]: doing so would let one flip the root into a birthplace and
  * shadow the tree's real crash origin. With no throwable to attach [attached] is empty and this is inert.
@@ -49,9 +50,9 @@ fun SpanCollector.reportTrace(status: TraceStatus, attached: List<Throwable> = e
     val entries = ArrayList<WalkEntry>()
     fun walk(span: Span) {
         val children = all.childrenOf(span)
-        val birthplace = span.isBirthplaceAmong(all)
+        val birthplaces = span.birthplaceExceptionsAmong(all)
         span.events.filter { it.reportable() }.sortedBy { it.atNanos }.forEach { event ->
-            val collected = if (event is ExceptionEvent) birthplace else true
+            val collected = if (event is ExceptionEvent) event in birthplaces else true
             if (collected) entries += WalkEntry(span, event)
         }
         children.forEach(::walk)
@@ -106,21 +107,25 @@ internal fun List<Span>.childrenOf(parent: Span): List<Span> =
     filter { it.parentId == parent.spanId }.sortedBy { it.startNanos }
 
 /**
- * A span is a **birthplace** iff it carries the throwable ([exception] != null) and no span in its subtree
- * does — the deepest throwable-bearing failure on its branch. Only there does the crash record belong;
- * enclosing spans re-record the same throwable as it climbs ([dev.kotrace.span]) but are not the origin.
+ * The [ExceptionEvent]s on this span that are **birthplaces** — the crash records that belong here. Decided
+ * **per event by lineage key** (ADR-015), not once per span: an event is a birthplace iff **no descendant
+ * span carries an [ExceptionEvent] with the same [ExceptionEvent.lineageKey]**.
  *
- * The test is throwable-presence, **not** "ERROR with no ERROR child" (ADR-005). A throwable-less ERROR leaf
- * is representable — a bridge span ended `end(ERROR, error = null)`, e.g. an OkHttp 500 that returned rather
- * than threw (`dev.kotrace.okhttp` `TracingInterceptor`). Under the old status-only predicate such a leaf
- * counted as the branch's birthplace and, having no [dev.kotrace.event.ExceptionEvent], emitted nothing —
- * while its ancestor's real throwable, no longer "leaf-most", was silently dropped from the report. Gating
- * on the throwable keeps birthplace aligned with the crash record actually emitted, and makes it agree with
- * every consumer reading the report's [dev.kotrace.event.ExceptionRecord]s. Shared by [reportTrace] and
- * [renderTree]; [all] is the whole span list, walked to test descendants.
+ * A single failure climbing the tree is re-recorded on every enclosing span ([dev.kotrace.span]); each copy
+ * shares the deepest original's canonical key ([dev.kotrace.event.lineageKeyOf]), so only the deepest span is
+ * a birthplace and the ancestors' copies are dropped — the ADR-005 climb collapse, but keyed by lineage so it
+ * survives coroutine stacktrace-recovery copies and so a **recover-and-rethrow-different** flow no longer
+ * drops the escaping failure: two unrelated throwables have different keys, so both report, each at its span
+ * (B01). Keys are compared by **identity** (an [java.util.IdentityHashMap]-backed set), never `equals`, so a
+ * throwable overriding equality cannot merge distinct lineages.
+ *
+ * A span with no [ExceptionEvent] yields an empty list (it emits no crash record), so the old throwable-less
+ * ERROR leaf still shadows nothing (ADR-005). Shared by [reportTrace] and [renderTree]; [all] is the whole
+ * span list, walked to test descendants.
  */
-internal fun Span.isBirthplaceAmong(all: List<Span>): Boolean {
-    if (exception == null) return false
+internal fun Span.birthplaceExceptionsAmong(all: List<Span>): List<ExceptionEvent> {
+    val mine = events.filterIsInstance<ExceptionEvent>()
+    if (mine.isEmpty()) return emptyList()
     val byId = all.associateBy(Span::spanId)
     fun descendsFromThis(candidate: Span): Boolean {
         var cursor = byId[candidate.parentId]
@@ -130,5 +135,10 @@ internal fun Span.isBirthplaceAmong(all: List<Span>): Boolean {
         }
         return false
     }
-    return all.none { it.spanId != spanId && it.exception != null && descendsFromThis(it) }
+    val descendantKeys: MutableSet<Any> = Collections.newSetFromMap(IdentityHashMap())
+    all.asSequence()
+        .filter { it.spanId != spanId && descendsFromThis(it) }
+        .flatMap { it.events.asSequence().filterIsInstance<ExceptionEvent>() }
+        .forEach { descendantKeys += it.lineageKey }
+    return mine.filter { it.lineageKey !in descendantKeys }
 }

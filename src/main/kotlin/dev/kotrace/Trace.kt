@@ -1,6 +1,6 @@
 package dev.kotrace
 
-import dev.kotrace.event.addException
+import dev.kotrace.event.recordPropagatedException
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.withContext
@@ -52,15 +52,18 @@ suspend fun <T> span(
         withContext(SpanContext(opened)) { block() }
     } catch (t: Throwable) {
         // ERROR marks the whole failing path as the throwable rethrows through each enclosing span.
-        // Which span is the *birthplace* is decided structurally at read time (the deepest span carrying
-        // the throwable — see isBirthplaceAmong) — not by exception identity, which coroutine stacktrace
-        // recovery breaks by copying `t` across each `withContext` boundary.
+        // Which span is the *birthplace* is decided at read time by lineage key (ADR-015, see
+        // birthplaceExceptionsAmong): every enclosing span re-records the climbing throwable, and the copies
+        // share one canonical key even when coroutine stacktrace recovery copies `t` across each `withContext`
+        // boundary, so the climb collapses to its deepest span.
         opened.markStatus(SpanStatus.ERROR)
         // Recording the throwable must never replace it: under strict-uninstalled (ADR-011)
         // resolvedThreadConfig can throw here, *before* the rethrow. Preserve the application throwable and
-        // attach the failure as suppressed (ADR-013); a JVM-fatal failure still propagates.
+        // attach the failure as suppressed (ADR-013); a JVM-fatal failure still propagates. Record via the
+        // propagation path (ADR-015): it stamps the canonical lineage key so this climb collapses to its
+        // birthplace even when coroutine stacktrace recovery copies `t` at each boundary.
         try {
-            opened.addException(t)
+            opened.recordPropagatedException(t)
         } catch (recordFailure: Throwable) {
             if (recordFailure.isFatalFault()) throw recordFailure
             t.alsoSuppress(recordFailure)
@@ -141,7 +144,7 @@ fun startSpan(name: String, attributes: Map<String, String> = emptyMap(), links:
 @NonSuspendTracingBridge
 fun Span.end(status: SpanStatus = SpanStatus.OK, error: Throwable? = null) {
     markCompleted(status, System.nanoTime()) // both fields in one atomic publish
-    if (error != null) this.addException(error)
+    if (error != null) this.recordPropagatedException(error) // ADR-015: canonical lineage key, collapses the climb
 }
 
 /**

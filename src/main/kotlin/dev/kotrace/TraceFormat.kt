@@ -3,7 +3,6 @@ package dev.kotrace
 import dev.kotrace.event.ExceptionEvent
 import dev.kotrace.event.LogEvent
 import dev.kotrace.event.NamedEvent
-import dev.kotrace.event.exception
 import java.util.concurrent.TimeUnit
 
 /**
@@ -31,17 +30,17 @@ fun List<Span>.renderTree(): String {
         val children = childrenOf(span)
         sb.append("$indent└─ ${span.name} [${relStart}ms → ${relEnd}ms] ${durMs(span)}ms ${span.status}\n")
         if (span.attributes.isNotEmpty()) sb.append("$indent      attrs: ${span.attributes}\n")
+        // Show a throwable only at its birthplace (per-event, by lineage key — ADR-015); ancestors merely
+        // carry ERROR status up the path. Every selected exception renders inline, in timestamp order with
+        // the log lines, so a span holding two distinct failures shows both `error:` lines.
+        val birthplaces = span.birthplaceExceptionsAmong(this@renderTree)
         span.events.sortedBy { it.atNanos }.forEach { event ->
             val line = when (event) {
                 is LogEvent -> "${event.attributes}: ${event.message}"
                 is NamedEvent -> "event ${event.name} ${event.attributes}"
-                is ExceptionEvent -> null
+                is ExceptionEvent -> if (event in birthplaces) "error: ${event.throwable::class.simpleName}: ${event.throwable.message}" else null
             }
             if (line != null) sb.append("$indent      $line\n")
-        }
-        // Show the throwable only at the birthplace; ancestors merely carry ERROR status up the path.
-        if (span.isBirthplaceAmong(this@renderTree)) {
-            span.exception?.let { sb.append("$indent      error: ${it::class.simpleName}: ${it.message}\n") }
         }
         children.forEach { render(it, depth + 1) }
     }
