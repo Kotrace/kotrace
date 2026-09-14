@@ -23,6 +23,14 @@ sealed interface TraceAdapter {
 interface LiveAdapter : TraceAdapter {
     /**
      * No trace outcome is known yet; [record] is offered as it is appended.
+     *
+     * **Runs synchronously on the logging coroutine's thread, on the application's critical path.**
+     * Whatever `onLive` does — including a blocking sink — is charged directly to the traced code: a sink
+     * that parks ~1 ms per record adds ~1 ms of latency to that log call (benchmarked). kotrace does **not**
+     * move this call off-thread; it will not silently make delivery async. If your sink does I/O
+     * (network, disk), enqueue [record] to a bounded worker and return promptly here — do not block in
+     * `onLive`. A bounded queue is deliberate: it is where you choose your backpressure (drop, block, or
+     * coalesce) rather than letting an unbounded buffer grow under a hot trace.
      */
     fun onLive(record: TraceRecord)
 }
@@ -41,6 +49,11 @@ interface ReportAdapter : TraceAdapter {
      * **Consume [records] synchronously, within this call** (ADR-014). Fault isolation guards the whole
      * `onReport` invocation, so a policy/message fault raised while you iterate is contained here; retaining
      * the [Sequence] and consuming it after `onReport` returns escapes that guard and is unsupported.
+     *
+     * Synchronous means this runs on the trace-ending coroutine's thread, on its critical path: the walk
+     * and every sink write here delay that coroutine's completion. Consume within the call, but if your sink
+     * does I/O, drain the forced records into a bounded worker and return — the same backpressure guidance as
+     * [LiveAdapter.onLive]. kotrace will not off-thread this for you.
      *
      * @sample dev.kotrace.samples.ReportAdapterSamples.onReportSelfGate
      */
