@@ -20,7 +20,7 @@ class ExceptionEvent(
     /**
      * Stable **lineage key** for report/render dedup (ADR-015). Birthplace selection collapses events that
      * share a key to the deepest span carrying it, so one failure climbing the tree reports once. The key is
-     * an object compared by **identity** (see [dev.kotrace.Span.birthplaceExceptionsAmong]).
+     * an object compared by **identity** (see [dev.kotrace.TraceTreeIndex.birthplaceExceptionsOf]).
      *
      * The default is a **fresh, distinct** identity: a consumer-recorded event (public [addException]) is its
      * own lineage and is never deduped away. Only the internal propagation recorder ([recordPropagatedException])
@@ -170,7 +170,8 @@ fun Span.addException(cause: Throwable, info: Map<String, String> = emptyMap()) 
 }
 
 /**
- * Records a **climbing** throwable (ADR-015): the internal counterpart of [addException] used by the [span]
+ * Records a **climbing** throwable (ADR-015): the internal counterpart of [addException] used by the
+ * [dev.kotrace.span]
  * catch and [dev.kotrace.end] as a failure propagates up the tree. It stamps the event with the *canonical*
  * [lineageKeyOf] the throwable, so the same failure re-recorded on every enclosing span shares one key and
  * report/render collapse it to its deepest birthplace — surviving the coroutine stacktrace-recovery copy that

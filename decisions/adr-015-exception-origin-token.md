@@ -187,7 +187,7 @@ Leaving the object as its own identity (fail open) replaces it.
 - **The report stops hiding the escaping failure** in recover-and-rethrow-different flows. B01 closed.
 - **`ExceptionEvent` gains an internal lineage key**; `addException` and the report walk share it. The existing
   public constructor and API are unchanged; externally constructed events get a distinct key.
-- **Birthplace is now per-event, not per-span.** The walk and `renderTree` both change to test each
+- **Birthplace is now per-event, not per-span.** The indexed walk and `renderTree` both test each
   `ExceptionEvent`; `renderTree` renders every selected event in record order (see policy above).
 - **Correctness of the *dedup* is contingent on recognizing coroutine-recovery edges**, which is version- and
   `-ea`-dependent; the test matrix pins it. But because the design **fails open** — an unrecognized copy keeps

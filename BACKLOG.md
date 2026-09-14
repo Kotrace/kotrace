@@ -18,7 +18,7 @@ git remembers. Ids are positional and reused as items are deleted — **do not c
 
 _None open._ (B01 — birthplace dedup dropping an escaping exception in the recover-and-rethrow-different
 flow — is fixed: birthplace now dedups per `ExceptionEvent` by a stable, fail-open lineage key
-([ADR-015](decisions/adr-015-exception-origin-token.md)); see `birthplaceExceptionsAmong`
+([ADR-015](decisions/adr-015-exception-origin-token.md)); see `TraceTreeIndex.birthplaceExceptionsOf`
 ([Report.kt](src/main/kotlin/dev/kotrace/Report.kt)) and `lineageKeyOf`
 ([TraceException.kt](src/main/kotlin/dev/kotrace/event/TraceException.kt)).)
 

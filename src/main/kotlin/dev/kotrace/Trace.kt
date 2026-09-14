@@ -53,7 +53,7 @@ suspend fun <T> span(
     } catch (t: Throwable) {
         // ERROR marks the whole failing path as the throwable rethrows through each enclosing span.
         // Which span is the *birthplace* is decided at read time by lineage key (ADR-015, see
-        // birthplaceExceptionsAmong): every enclosing span re-records the climbing throwable, and the copies
+        // TraceTreeIndex.birthplaceExceptionsOf): every enclosing span re-records the climbing throwable, and the copies
         // share one canonical key even when coroutine stacktrace recovery copies `t` across each `withContext`
         // boundary, so the climb collapses to its deepest span.
         opened.markStatus(SpanStatus.ERROR)

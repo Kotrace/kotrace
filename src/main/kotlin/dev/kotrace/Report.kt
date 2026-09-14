@@ -21,7 +21,7 @@ import java.util.IdentityHashMap
  * work (see the [ReportAdapter.onReport] sample).
  *
  * The walk collects, per span, every event [SpanEvent.reportable] admits, in time order — each
- * [dev.kotrace.event.LogEvent], and, at the birthplace only ([birthplaceExceptionsAmong]), the span's
+ * [dev.kotrace.event.LogEvent], and, at the birthplace only ([TraceTreeIndex.birthplaceExceptionsOf]), the span's
  * [dev.kotrace.event.ExceptionEvent]s. Report membership is that one declared predicate, not an implicit
  * filter: a [dev.kotrace.event.NamedEvent] is not reportable — a product/analytics occurrence fanned out
  * live (see [LiveAdapter]), not tail-buffered for failure — and a future event kind must classify itself
@@ -34,7 +34,7 @@ import java.util.IdentityHashMap
  * are the birthplace of no span, the canonical case being a saga's suppressed rollback throwables collected
  * on the failed result value. Each is emitted as an [dev.kotrace.event.ExceptionRecord] keyed to the **root**
  * span (its `trace_id` / `operation`). They are appended **after** the tree walk on purpose: the birthplace
- * dedup ([birthplaceExceptionsAmong]) lives inside the walk, so a post-walk entry rides through it — an orphan
+ * dedup ([TraceTreeIndex.birthplaceExceptionsOf]) lives inside the walk, so a post-walk entry rides through it — an orphan
  * failure must not be silenced just because it is not the leaf-most throwable on a branch. They are
  * deliberately **not** written onto [Span.events]: doing so would let one flip the root into a birthplace and
  * shadow the tree's real crash origin. With no throwable to attach [attached] is empty and this is inert.
@@ -46,16 +46,16 @@ fun SpanCollector.reportTrace(status: TraceStatus, attached: List<Throwable> = e
     val hook = config?.faultHook
     val all = spans
     val root = all.firstOrNull { it.parentId == null } ?: return
+    val tree = TraceTreeIndex(all, root)
 
     val entries = ArrayList<WalkEntry>()
     fun walk(span: Span) {
-        val children = all.childrenOf(span)
-        val birthplaces = span.birthplaceExceptionsAmong(all)
+        val birthplaces = tree.birthplaceExceptionsOf(span)
         span.events.filter { it.reportable() }.sortedBy { it.atNanos }.forEach { event ->
             val collected = if (event is ExceptionEvent) event in birthplaces else true
             if (collected) entries += WalkEntry(span, event)
         }
-        children.forEach(::walk)
+        tree.childrenOf(span).forEach(::walk)
     }
     walk(root)
 
@@ -102,43 +102,81 @@ private fun ReportAdapter.viewOf(entries: List<WalkEntry>): Sequence<TraceRecord
         .filter { policy.accepts(it.span, it.event) }
         .map { it.span.recordOf(it.event) }
 
-/** Children of [parent], ordered by start — the tree edge is [Span.parentId] → [Span.spanId]. */
-internal fun List<Span>.childrenOf(parent: Span): List<Span> =
-    filter { it.parentId == parent.spanId }.sortedBy { it.startNanos }
-
 /**
- * The [ExceptionEvent]s on this span that are **birthplaces** — the crash records that belong here. Decided
- * **per event by lineage key** (ADR-015), not once per span: an event is a birthplace iff **no descendant
- * span carries an [ExceptionEvent] with the same [ExceptionEvent.lineageKey]**.
+ * One immutable topology view for a report/render operation. Children are grouped and sorted once rather
+ * than found by scanning the complete span list at every node. Birthplaces are indexed in the same post-order
+ * traversal, so report and [renderTree] share both ordering and exception-dedup semantics.
  *
- * A single failure climbing the tree is re-recorded on every enclosing span ([dev.kotrace.span]); each copy
- * shares the deepest original's canonical key ([dev.kotrace.event.lineageKeyOf]), so only the deepest span is
- * a birthplace and the ancestors' copies are dropped — the ADR-005 climb collapse, but keyed by lineage so it
- * survives coroutine stacktrace-recovery copies and so a **recover-and-rethrow-different** flow no longer
- * drops the escaping failure: two unrelated throwables have different keys, so both report, each at its span
- * (B01). Keys are compared by **identity** (an [java.util.IdentityHashMap]-backed set), never `equals`, so a
- * throwable overriding equality cannot merge distinct lineages.
+ * [birthplaceExceptionsOf] decides per event by lineage key (ADR-015): an event belongs to this span iff no
+ * descendant carries the same [ExceptionEvent.lineageKey]. A single climbing failure therefore collapses to
+ * its deepest span, while unrelated failures remain distinct. Identity-backed sets preserve the contract for
+ * throwables with hostile or value-based `equals` implementations.
  *
- * A span with no [ExceptionEvent] yields an empty list (it emits no crash record), so the old throwable-less
- * ERROR leaf still shadows nothing (ADR-005). Shared by [reportTrace] and [renderTree]; [all] is the whole
- * span list, walked to test descendants.
+ * Subtree key sets use small-to-large merging: a child set is reused after its birthplace result is final,
+ * and smaller sibling sets merge into the largest. This avoids copying every accumulated key at each parent;
+ * a trace without exceptions allocates no lineage sets.
  */
-internal fun Span.birthplaceExceptionsAmong(all: List<Span>): List<ExceptionEvent> {
-    val mine = events.filterIsInstance<ExceptionEvent>()
-    if (mine.isEmpty()) return emptyList()
-    val byId = all.associateBy(Span::spanId)
-    fun descendsFromThis(candidate: Span): Boolean {
-        var cursor = byId[candidate.parentId]
-        while (cursor != null) {
-            if (cursor.spanId == spanId) return true
-            cursor = byId[cursor.parentId]
-        }
-        return false
+internal class TraceTreeIndex(all: List<Span>, root: Span) {
+    private val childrenByParentId: Map<String, List<Span>> = indexChildren(all)
+
+    private var birthplacesBySpan: IdentityHashMap<Span, List<ExceptionEvent>>? = null
+
+    init {
+        indexBirthplaces(root)
     }
-    val descendantKeys: MutableSet<Any> = Collections.newSetFromMap(IdentityHashMap())
-    all.asSequence()
-        .filter { it.spanId != spanId && descendsFromThis(it) }
-        .flatMap { it.events.asSequence().filterIsInstance<ExceptionEvent>() }
-        .forEach { descendantKeys += it.lineageKey }
-    return mine.filter { it.lineageKey !in descendantKeys }
+
+    /** Children of [parent], ordered by start — the tree edge is [Span.parentId] → [Span.spanId]. */
+    fun childrenOf(parent: Span): List<Span> = childrenByParentId[parent.spanId].orEmpty()
+
+    /** The exception events that belong at [span], excluding copies of a lineage found below it. */
+    fun birthplaceExceptionsOf(span: Span): List<ExceptionEvent> = birthplacesBySpan?.get(span).orEmpty()
+
+    private fun indexBirthplaces(span: Span): MutableSet<Any>? {
+        var subtreeKeys: MutableSet<Any>? = null
+        childrenOf(span).forEach { child ->
+            val childKeys = indexBirthplaces(child) ?: return@forEach
+            val accumulated = subtreeKeys
+            when {
+                accumulated == null -> subtreeKeys = childKeys
+                accumulated.size < childKeys.size -> {
+                    childKeys.addAll(accumulated)
+                    subtreeKeys = childKeys
+                }
+                else -> accumulated.addAll(childKeys)
+            }
+        }
+
+        val mine = span.events.filterIsInstance<ExceptionEvent>()
+        if (mine.isEmpty()) return subtreeKeys
+
+        val descendantKeys = subtreeKeys
+        val birthplaces = if (descendantKeys == null) {
+            mine
+        } else {
+            mine.filter { it.lineageKey !in descendantKeys }
+        }
+        val indexed = birthplacesBySpan ?: IdentityHashMap<Span, List<ExceptionEvent>>().also {
+            birthplacesBySpan = it
+        }
+        indexed[span] = birthplaces
+
+        val allKeys = descendantKeys ?: identitySet()
+        mine.forEach { allKeys += it.lineageKey }
+        return allKeys
+    }
+
+    private fun identitySet(): MutableSet<Any> = Collections.newSetFromMap(IdentityHashMap())
+
+    private fun indexChildren(all: List<Span>): Map<String, List<Span>> {
+        if (all.size <= 1) return emptyMap()
+        val indexed = HashMap<String, MutableList<Span>>()
+        all.forEach { span ->
+            val parentId = span.parentId ?: return@forEach
+            indexed.getOrPut(parentId, ::ArrayList) += span
+        }
+        indexed.values.forEach { children ->
+            if (children.size > 1) children.sortBy(Span::startNanos)
+        }
+        return indexed
+    }
 }
