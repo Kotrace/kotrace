@@ -10,6 +10,7 @@ mockk = "1.14.11"
 # the Android module applies no kotlin plugin, and `compileSdk` uses the `version = release(N)` DSL.
 agp = "9.1.1"
 room = "2.8.4"
+jmh = "1.37"
 androidCompileSdk = "36"
 androidMinSdk = "28"
 
@@ -20,6 +21,8 @@ junit = { module = "junit:junit", version.ref = "junit" }
 okhttp = { module = "com.squareup.okhttp3:okhttp", version.ref = "okhttp" }
 mockk = { module = "io.mockk:mockk", version.ref = "mockk" }
 room-runtime = { module = "androidx.room:room-runtime", version.ref = "room" }
+jmh-core = { module = "org.openjdk.jmh:jmh-core", version.ref = "jmh" }
+jmh-generator-annprocess = { module = "org.openjdk.jmh:jmh-generator-annprocess", version.ref = "jmh" }
 
 [plugins]
 kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }

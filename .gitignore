@@ -6,3 +6,7 @@ local.properties
 .idea/
 .kotlin/
 .DS_Store
+
+# Local JMH raw output; commit analysis/metadata, not machine-specific logs or JSON samples.
+benchmarks/results/**/*.json
+benchmarks/results/**/*.log

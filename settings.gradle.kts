@@ -24,6 +24,10 @@ include(":kotrace-room")
 // of kotrace module versions, so consumers align them without a version on each dependency.
 include(":kotrace-bom")
 
+// Local performance harness only. It depends on the core project but is neither published nor imported by
+// consumers; keeping JMH here prevents benchmark dependencies from leaking into kotrace's runtime surface.
+include(":benchmarks")
+
 // `:demo` is a runnable showcase, not a published artifact — nested/parallel tracing and the OkHttp
 // `traceparent` glue, driven end-to-end against a throwaway in-process server. Never published.
 include(":demo")
