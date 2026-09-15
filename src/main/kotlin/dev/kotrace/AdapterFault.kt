@@ -1,10 +1,12 @@
 package dev.kotrace
 
 /**
- * The fan-out phase a fault was contained in (ADR-014) — passed to an [AdapterFaultHook] so a consumer can
- * tell a live breadcrumb failure from a report failure.
+ * The phase a fault was contained in — passed to an [AdapterFaultHook] so a consumer can tell a live
+ * breadcrumb failure from a report failure. [LIVE], [SPANLESS_LIVE] and [REPORT] are fan-out phases (ADR-014);
+ * [RETURNED_OUTCOME] is the auto-root value mapper (ADR-016), which is a report-time input, not an adapter —
+ * it is reported with `adapter = null` and, when contained, the trace falls back to [TraceStatus.OK].
  */
-enum class FaultPhase { LIVE, SPANLESS_LIVE, REPORT }
+enum class FaultPhase { LIVE, SPANLESS_LIVE, REPORT, RETURNED_OUTCOME }
 
 /**
  * An **opt-in** diagnostic hook (ADR-014) invoked when a fan-out phase contains a fault — a throwing
@@ -13,8 +15,10 @@ enum class FaultPhase { LIVE, SPANLESS_LIVE, REPORT }
  * default (no hook) swallows the fault silently so a broken sink can never crash the traced operation.
  *
  * Carried on [TraceConfig]. Contract:
- * - `adapter` is the sink whose region threw, or `null` for a shared, per-event record-construction fault
- *   that has no single owner (the event is then not delivered to any accepting adapter).
+ * - `adapter` is the sink whose region threw, or `null` for a fault with no single adapter owner: a shared,
+ *   per-event record-construction fault (the event is then not delivered to any accepting adapter), or a
+ *   throwing auto-root value mapper ([FaultPhase.RETURNED_OUTCOME], ADR-016 — the trace then reports
+ *   [TraceStatus.OK] with no attachments).
  * - A **non-fatal** throw from [onAdapterFault] itself is swallowed; a JVM-fatal one
  *   ([VirtualMachineError]/[ThreadDeath]/[LinkageError]) is rethrown.
  * - **Per-thread reentrancy**: while a hook is running on a thread, a further fault on that thread is dropped
@@ -93,5 +97,20 @@ internal fun <R : Any> guardShared(phase: FaultPhase, hook: AdapterFaultHook?, b
     } catch (t: Throwable) {
         if (t.isFatalFault()) throw t
         notifyFault(phase, null, hook, t)
+        null
+    }
+
+/**
+ * Runs the auto-root return-value mapper (ADR-016): a non-fatal fault returns `null` (the caller then reports
+ * [TraceStatus.OK]) and is routed with `adapter = null`; a fatal is rethrown. Unlike [guardShared] the [hook]
+ * is a **supplier resolved only on a fault**, so a successful mapper never resolves config ahead of the
+ * report — preserving the ADR-016 `markEnd → mapper → report/config-resolution` ordering.
+ */
+internal fun <R : Any> guardReturnedOutcome(hook: () -> AdapterFaultHook?, block: () -> R): R? =
+    try {
+        block()
+    } catch (t: Throwable) {
+        if (t.isFatalFault()) throw t
+        notifyFault(FaultPhase.RETURNED_OUTCOME, null, hook(), t)
         null
     }

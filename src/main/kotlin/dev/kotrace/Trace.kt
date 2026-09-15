@@ -75,6 +75,54 @@ suspend fun <T> span(
 }
 
 /**
+ * Return-aware [span] (ADR-016): identical to [span] except that, **when this call auto-roots** (neither a
+ * [SpanContext] nor a [SpanCollector] in context — ADR-013's null/null state), the trace's [TraceStatus] on a
+ * **normal return** is chosen by [returnedOutcome] from the returned value rather than fixed to
+ * [TraceStatus.OK]. This is the entry point for a **failure-as-value** consumer: a domain failure that is
+ * *returned* (not thrown) can still report `ERROR` and carry trace-level orphan failures via
+ * [TraceOutcome.attached] (ADR-012).
+ *
+ * Core keeps the escaping outcomes: an escaping [CancellationException] is [TraceStatus.CANCELLED], any other
+ * escaping throwable is [TraceStatus.ERROR] — the mapper is **not** consulted for either, and the application
+ * throwable is rethrown unchanged. [returnedOutcome] runs **exactly once**, on a normal return, **only** when
+ * this call auto-roots; in every other context state (child, manual-boundary root, identified-but-uncollected)
+ * it is **never invoked** and the enclosing root or a manual [reportTrace] owns the single report. Make it
+ * **pure, fast and non-suspending**: it is report configuration evaluated on the traced coroutine's critical
+ * path, not application logic — do not use it for side effects.
+ *
+ * A **non-fatal** throw from [returnedOutcome] is contained (it never alters the returned value or control
+ * flow): the trace falls back to [TraceOutcome] `(OK, emptyList())` and the fault is surfaced through the
+ * configured [AdapterFaultHook] with [FaultPhase.RETURNED_OUTCOME] and `adapter = null`. A mapper-thrown
+ * [CancellationException] is contained the same way (it is not trace cancellation — the block already returned
+ * normally). A **JVM-fatal** mapper fault is rethrown and no report is attempted.
+ *
+ * Marking the root span for a returned failure (and recording its birthplace throwable so the crash sink
+ * receives it) stays the block's job, via the suspend-safe [dev.kotrace.event.addException] on
+ * [currentSpan] — a returned `ERROR` verdict does not itself flip the root [SpanStatus], and it need not: a
+ * crash adapter self-gates on the trace [TraceStatus] the mapper returns.
+ *
+ * @sample dev.kotrace.samples.SpanSamples.spanReturnedOutcomeUsage
+ */
+suspend fun <T> span(
+    name: String,
+    attributes: Map<String, String> = emptyMap(),
+    links: List<TraceLink> = emptyList(),
+    returnedOutcome: (T) -> TraceOutcome,
+    block: suspend () -> T,
+): T {
+    val context = currentCoroutineContext()
+    val spanCollector = context[SpanCollector]
+    val spanContext = context[SpanContext]
+    if (spanContext == null && spanCollector == null) {
+        return autoRootSpanReturning(name, attributes, links, returnedOutcome, block)
+    }
+    // Non-auto-root: the mapper is inert (ADR-016). Delegate to the plain span — a child, a manual-boundary
+    // root, or identified-but-uncollected, exactly as the zero-config overload would resolve it; the enclosing
+    // root or a manual reportTrace owns the single report.
+    return span(name, attributes, links, block)
+}
+
+/**
  * The auto-root boundary (ADR-013): install a fresh [SpanCollector], let the recursion open+register the
  * root and run [block] (the collector is now in context, so the nested [span] takes the instrumentation
  * path), then [reportTrace] the outcome **before** the collector context exits — so the collector and any
@@ -109,14 +157,78 @@ private suspend fun <T> autoRootSpan(
  * preserve it and attach the failure as suppressed (never let a `finally` throw replace the app throwable).
  * On a normally-completing block a report failure propagates as itself; a JVM-fatal failure always does.
  */
-private fun reportAutoRoot(collector: SpanCollector, status: TraceStatus, escaped: Throwable?) {
+private fun reportAutoRoot(
+    collector: SpanCollector,
+    status: TraceStatus,
+    escaped: Throwable?,
+    attached: List<Throwable> = emptyList(),
+) {
     try {
-        collector.reportTrace(status)
+        collector.reportTrace(status, attached)
     } catch (reportFailure: Throwable) {
         if (reportFailure.isFatalFault()) throw reportFailure
         if (escaped != null) escaped.alsoSuppress(reportFailure) else throw reportFailure
     }
 }
+
+/**
+ * The value-aware auto-root boundary (ADR-016): same lifecycle as [autoRootSpan] — install the collector, let
+ * the recursion open+register+run+end the root — but derive the report from the **returned value** via
+ * [returnedOutcome] on a normal return, and from the escaping throwable otherwise. Reports **after** the root
+ * has ended (the inner [span]'s `finally`) and **before** the collector context exits, mirroring ADR-013's
+ * ordering and strict/report precedence (via [reportAutoRoot]).
+ */
+private suspend fun <T> autoRootSpanReturning(
+    name: String,
+    attributes: Map<String, String>,
+    links: List<TraceLink>,
+    returnedOutcome: (T) -> TraceOutcome,
+    block: suspend () -> T,
+): T {
+    val collector = SpanCollector()
+    return withContext(collector) {
+        val value = try {
+            span(name, attributes, links, block)
+        } catch (t: Throwable) {
+            // Escaping outcome is core's, not the mapper's: CancellationException → CANCELLED, else ERROR;
+            // report with the escaped throwable so a strict-mode report failure rides it as suppressed.
+            reportAutoRoot(collector, if (t is CancellationException) TraceStatus.CANCELLED else TraceStatus.ERROR, t)
+            throw t
+        }
+        // Normal return: the root has already ended (span's finally), so the mapper never runs inside the
+        // inner span's try/catch and a mapper fault can neither mark the root ERROR nor become its birthplace.
+        val outcome = runReturnedOutcome(returnedOutcome, value)
+        reportAutoRoot(collector, outcome.status, escaped = null, attached = outcome.attached)
+        value
+    }
+}
+
+/**
+ * Runs the return-value [returnedOutcome] mapper under fault isolation (ADR-016): a **non-fatal** throw is
+ * contained ([guardReturnedOutcome] routes it to the [AdapterFaultHook] with [FaultPhase.RETURNED_OUTCOME] and
+ * `adapter = null`) and the trace falls back to [TraceOutcome] `(OK, emptyList())` — `OK` because that is the
+ * verdict the zero-config overload would report for this same normal return, so a broken mapper never invents
+ * a failure. A JVM-fatal mapper fault is rethrown by [guardReturnedOutcome] (no report attempted). The hook is
+ * resolved lazily (only on a fault), so a successful mapper never resolves config ahead of the report.
+ */
+private fun <T> runReturnedOutcome(returnedOutcome: (T) -> TraceOutcome, value: T): TraceOutcome =
+    guardReturnedOutcome(::quietFaultHook) { returnedOutcome(value) } ?: TraceOutcome(TraceStatus.OK)
+
+/**
+ * The [AdapterFaultHook] for mapper-fault routing, resolved defensively and **only on a fault** (via
+ * [guardReturnedOutcome]'s lazy supplier), so a successful mapper never resolves config ahead of the report.
+ * Under strict-uninstalled mode [resolvedThreadConfig] throws (ADR-011), but that is the report path's
+ * concern (surfaced there), not the mapper's — so a non-fatal resolution failure yields a null hook (the
+ * fault is then swallowed, as it would be with no hook installed). A JVM-fatal resolution failure still
+ * propagates.
+ */
+private fun quietFaultHook(): AdapterFaultHook? =
+    try {
+        resolvedThreadConfig()?.faultHook
+    } catch (t: Throwable) {
+        if (t.isFatalFault()) throw t
+        null
+    }
 
 /**
  * Opens a span in the current context and registers it into [currentThreadCollector], for **non-suspend** code

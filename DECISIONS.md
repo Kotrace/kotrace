@@ -20,3 +20,4 @@ open only the ADR you need.
 | [013](decisions/adr-013-auto-root-span.md) | A top-level `span` self-owns its trace and reports at the outcome (auto-root, iff no span/collector in context) — no new verb | Accepted | 2026-09-12 |
 | [014](decisions/adr-014-adapter-fault-isolation.md) | Per-adapter fault isolation across every fan-out phase (live / span-less / report) + opt-in diagnostic hook | Accepted | 2026-09-12 |
 | [015](decisions/adr-015-exception-origin-token.md) | Birthplace dedup by a stable, fail-open exception lineage key, not "deepest throwable-bearing span" (fixes recover-and-rethrow-different drop) | Accepted | 2026-09-13 |
+| [016](decisions/adr-016-auto-root-returned-outcome.md) | A return-aware `span` overload: auto-root maps the *returned value* to the trace outcome (failure-as-value) — amends ADR-013 | Accepted | 2026-09-14 |

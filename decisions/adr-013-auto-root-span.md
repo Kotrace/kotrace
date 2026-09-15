@@ -142,6 +142,12 @@ first root `reportTrace` finds ([`Report.kt:45`](../src/main/kotlin/dev/kotrace/
 
 ### Failure-as-data stays on the explicit escape hatch
 
+> **Amended by [ADR-016](adr-016-auto-root-returned-outcome.md) (2026-09-14).** Failure-as-**value** is no
+> longer expressible *only* through a hand-seeded collector: a return-aware `span` overload lets auto-root map
+> the returned value to `(TraceStatus, attached)`. The paragraph below describes the behavior of the
+> **original zero-config overload**, which is unchanged; the manual `reportTrace(status, attached)` path
+> remains **an** option for bespoke boundaries. The paragraph as originally written follows.
+
 A standalone `span` that *returns* a `Result.failure` (or a domain failure value) auto-reports **`OK`** —
 nothing escaped. Terminal-failure-as-data (a saga's suppressed rollback throwables, the ADR-012 case) is
 **not** expressible through the zero-arg `span`; a consumer with that need pre-seeds a manual collector and
@@ -216,8 +222,10 @@ containment.
   specific footgun this closes is *forgetting a boundary* on a bare top-level span — that omission can no
   longer silently drop the trace. (It is not a claim that *no* trace can go unreported: the
   identified-but-uncollected state stays live-only by design, failure-as-data returned by the block reports
-  `OK`, and process death is out of scope — see below.) The manual `SpanCollector` + `reportTrace` path stays
-  for bespoke control and for failure-as-data.
+  `OK` **through this (zero-config) overload** — a returned failure gets a non-`OK` verdict only through the
+  return-aware overload of [ADR-016](adr-016-auto-root-returned-outcome.md) — and process death is out of
+  scope — see below.) The manual `SpanCollector` + `reportTrace` path stays for bespoke control and remains
+  an option for failure-as-data.
 - **Behavioral migration: a formerly live-only top-level `span` now reports.** A top-level span opened with
   no collector previously reached only live adapters; it now also invokes report adapters at its outcome. An
   adapter that is both live and report will see the live record and then the report record — intended

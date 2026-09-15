@@ -14,11 +14,13 @@ import dev.kotrace.TraceAdapter
 import dev.kotrace.TraceLink
 import dev.kotrace.TracePolicy
 import dev.kotrace.event.TraceRecord
+import dev.kotrace.TraceOutcome
 import dev.kotrace.TraceStatus
 import dev.kotrace.event.ExceptionRecord
 import dev.kotrace.renderTree
 import dev.kotrace.UnredactedTraceRead
 import dev.kotrace.currentSpan
+import dev.kotrace.event.addException
 import dev.kotrace.event.emitNamed
 import dev.kotrace.event.log
 import dev.kotrace.event.toJson
@@ -72,6 +74,14 @@ import java.util.concurrent.atomic.AtomicReference
  * can no longer silently drop the trace. The `FailureExport` below receives the failure report at the
  * outcome purely because `checkout` failed — nothing in `main` reports it. (The manual `SpanCollector` path
  * survives for bespoke control — the user-report flow at the end keeps a collector so it can `renderTree`.)
+ *
+ * **Failure-as-value (ADR-016).** `checkout` fails by *throwing* — the outcome auto-root derives from
+ * completion. A `refund` saga at the end shows the other shape: its domain failure is a **returned value**,
+ * not a throw. It uses the return-aware `span(returnedOutcome = …) { }` overload to map the returned
+ * `Payout.Failed` to `ERROR` and ride the saga's rollback throwables up as trace-level `attached` orphans
+ * (ADR-012). The birthplace cause is recorded on the root with the suspend-safe `addException` (a returned
+ * `ERROR` verdict does not itself stamp the span). Nothing is thrown, yet `FailureExport` still receives the
+ * failure report — with both the birthplace cause and the attached rollback throwables.
  *
  * **Adapter fault isolation (ADR-014).** A telemetry sink must never corrupt the traced operation.
  * [FaultyLive] throws while `span` is recording the escaping `card declined` throwable — the most damaging
@@ -234,6 +244,9 @@ fun main() = runBlocking<Unit> {
         println("checkout failed with: ${outcome.exceptionOrNull()?.message}")
         println("adapter faults contained + observed by the hook: ${faultWatch.faults}")
     }
+    // Capture checkout's birthplace now — the refund saga below also fails and would otherwise overwrite the
+    // shared export's last-seen crash record.
+    val checkoutCrash = export.crash
 
     // Cross-trace correlation (ADR-009): a follow-up "user reports the failure" flow is deliberately its
     // own trace, yet it is *about* the checkout that just failed. Open the report trace carrying a TraceLink
@@ -257,11 +270,20 @@ fun main() = runBlocking<Unit> {
         println(reportCollector.spans.renderTree())
     }
 
+    // Failure-as-value (ADR-016): the refund saga fails by *returning* a Payout.Failed — nothing is thrown.
+    // The return-aware span maps that value to ERROR and rides the rollback throwables up as attached orphans,
+    // so FailureExport still fires. Contrast with checkout, whose ERROR came from an escaping throwable.
+    println()
+    println("── live watch · refund saga (failure is a RETURNED value, not a throw — ADR-016) ──")
+    val payout = refundSaga()
+    println()
+    println("refund saga returned $payout — nothing was thrown, yet the failure was exported above")
+
     println()
     println("traceparent seen by backend: ${seenTraceparent.get()}")
     // The report is the sole birthplace authority (ADR-005): read the crash off the export, not a helper
     // that recomputes it. throwable.message is fine here — this is a local human console read, not a sink.
-    export.crash?.let { println("birthplace: ${it.operation} — ${it.throwable.message}") }
+    checkoutCrash?.let { println("checkout birthplace: ${it.operation} — ${it.throwable.message}") }
 }
 
 /**
@@ -307,3 +329,42 @@ private suspend fun checkout(
         error("card declined")
     }
 }
+
+/** A refund outcome carried as a **value** (ADR-016): a failure is *returned*, not thrown. */
+private sealed interface Payout {
+    data class Settled(val cents: Int) : Payout
+    /** [cause] is the birthplace throwable; [rollbackErrors] are the saga's suppressed unwinding throwables. */
+    data class Failed(val cause: Throwable, val rollbackErrors: List<Throwable>) : Payout
+}
+
+/**
+ * A saga whose failure is a **returned value** (ADR-016), not a throw. The return-aware `span` overload maps
+ * the returned [Payout] to a trace outcome: [Payout.Settled] → `OK`, [Payout.Failed] → `ERROR` carrying the
+ * rollback throwables as trace-level `attached` orphans (ADR-012). The birthplace [Payout.Failed.cause] is
+ * recorded on the root span with the suspend-safe [addException] so the crash sink receives it — a returned
+ * `ERROR` verdict does not itself stamp the span. Because auto-root still reports, `FailureExport` fires with
+ * no throw in sight.
+ */
+private suspend fun refundSaga(): Payout =
+    span(
+        name = "refund",
+        returnedOutcome = { result: Payout ->
+            when (result) {
+                is Payout.Settled -> TraceOutcome(TraceStatus.OK)
+                is Payout.Failed -> TraceOutcome(TraceStatus.ERROR, attached = result.rollbackErrors)
+            }
+        },
+    ) {
+        currentSpan()?.log(lvl("INFO")) { "refund requested" }
+        span("gateway.refund") {
+            currentSpan()?.log(lvl("INFO")) { "calling gateway" }
+            delay(10)
+        }
+        // The gateway rejects and unwinding the ledger throws while rolling back — but neither escapes the
+        // flow: the failure is returned as a value, with the rollback throwable riding on it.
+        val cause = IllegalStateException("gateway rejected refund")
+        val rollback = IllegalStateException("ledger reversal failed during rollback")
+        currentSpan()?.log(lvl("ERROR")) { "refund failed; rolled back" }
+        currentSpan()?.addException(cause) // birthplace on the root; the returned value carries the verdict
+        Payout.Failed(cause, listOf(rollback))
+    }
