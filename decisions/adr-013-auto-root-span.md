@@ -142,11 +142,15 @@ first root `reportTrace` finds ([`Report.kt:45`](../src/main/kotlin/dev/kotrace/
 
 ### Failure-as-data stays on the explicit escape hatch
 
-> **Amended by [ADR-016](adr-016-auto-root-returned-outcome.md) (2026-09-14).** Failure-as-**value** is no
-> longer expressible *only* through a hand-seeded collector: a return-aware `span` overload lets auto-root map
-> the returned value to `(TraceStatus, attached)`. The paragraph below describes the behavior of the
-> **original zero-config overload**, which is unchanged; the manual `reportTrace(status, attached)` path
-> remains **an** option for bespoke boundaries. The paragraph as originally written follows.
+> **Amended by [ADR-016](adr-016-auto-root-returned-outcome.md) (2026-09-14), then
+> [ADR-017](adr-017-merge-span-overloads-default-returned-outcome.md) (2026-09-18).** Failure-as-**value** is no
+> longer expressible *only* through a hand-seeded collector: auto-root can map the returned value to
+> `(TraceStatus, attached)`. ADR-016 delivered this as a **second overload**; ADR-017 merged it into the single
+> `span`'s **defaulted** `returnedOutcome` parameter and collapsed this ADR's OK-only `autoRootSpan` and
+> ADR-016's `autoRootSpanReturning` into **one** mapper-carrying `autoRootSpan`. The paragraph below describes
+> the **zero-config normal-return behavior** (`OK`), which is unchanged — it is now the default mapper's verdict;
+> the manual `reportTrace(status, attached)` path remains **an** option for bespoke boundaries. The paragraph as
+> originally written follows.
 
 A standalone `span` that *returns* a `Result.failure` (or a domain failure value) auto-reports **`OK`** —
 nothing escaped. Terminal-failure-as-data (a saga's suppressed rollback throwables, the ADR-012 case) is

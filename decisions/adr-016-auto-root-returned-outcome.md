@@ -1,7 +1,10 @@
 # ADR-016 — A return-aware `span` overload: auto-root maps the *returned value* to the trace outcome (failure-as-value)
 
 - **Date:** 2026-09-14
-- **Status:** Accepted
+- **Status:** Accepted — **two-overload shape superseded by [ADR-017](adr-017-merge-span-overloads-default-returned-outcome.md)**
+  (2026-09-18): the return-aware form is now the single `span`'s **defaulted** `returnedOutcome` parameter, not a
+  separate overload. Everything else in this ADR — the mapper contract, fault isolation, precedence, and the
+  failure-as-value behavior — stands; only § Source compatibility's two-overload packaging is replaced.
 - **Affects:** `dev.kotrace.span` (`Trace.kt`) gains a **second, advanced overload** carrying a required
   `returnedOutcome: (T) -> TraceOutcome` mapper; a new public `TraceOutcome` value type
   (`TraceStatus` + `attached: List<Throwable>`). The existing zero-config `span` overload is **unchanged**.
@@ -213,6 +216,11 @@ defensive copy is required — the concern is duplication (do not put a span-rec
 retention.
 
 ## Source compatibility
+
+> **Superseded by [ADR-017](adr-017-merge-span-overloads-default-returned-outcome.md) (2026-09-18).** The
+> two-overload shape below was retired: `returnedOutcome` became a **defaulted** parameter on a single `span`,
+> knowingly accepting the positional-in-parentheses break this section engineered around (no product caller uses
+> that shape). The analysis below is retained for the rationale it records.
 
 **Additive, and a drop-in because the original overload is retained.** The hazard is precise, and it is *not*
 the trailing-lambda form: a trailing lambda always binds to the final `block` parameter, and Kotlin *can*

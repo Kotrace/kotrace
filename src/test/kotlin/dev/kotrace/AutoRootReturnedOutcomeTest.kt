@@ -308,15 +308,14 @@ class AutoRootReturnedOutcomeTest {
 
     // --- Overload resolution & multiplicity ---
 
-    @Test fun `existing call shapes still bind the zero-config overload`() = runTest {
+    @Test fun `surviving call shapes bind the single span function`() = runTest {
         val report = CollectingReport()
         Kotrace.install(listOf(report))
-        // The actual compat hazard shape: block passed as the FOURTH positional argument, in parentheses
-        // (not a trailing lambda). This is what would break had returnedOutcome been inserted before block on
-        // one overload; with the original overload retained it still binds unambiguously and reports OK.
-        span("positional", emptyMap(), emptyList(), { })
-        // And the trailing-lambda form, which was never at risk.
+        // Merging the two overloads into one (returnedOutcome defaulted, before block) intentionally drops the
+        // block-as-4th-positional shape `span(name, attrs, links, { })` — that position now binds
+        // returnedOutcome, so the block must be a trailing lambda. These surviving shapes report OK by default:
         span("trailing") { }
+        span("with-attrs", emptyMap(), emptyList()) { }
         assertEquals(2, report.reports)
         assertTrue(report.statuses.all { it == TraceStatus.OK })
     }

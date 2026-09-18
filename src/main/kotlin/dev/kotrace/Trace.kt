@@ -9,26 +9,45 @@ import java.security.SecureRandom
 /**
  * Opens a span, closes it on return, and marks it ERROR (recording the throwable) on the way out —
  * **rethrowing unchanged**. Named for the node it opens (a span), not the tree (ADR-003); the non-suspend
- * counterpart is [startSpan].
+ * counterpart is [startSpan]. One function serves every use: [returnedOutcome] defaults to [alwaysOkOutcome]
+ * and is consulted **only when this call auto-roots** (ADR-016) — pass it for failure-as-value, omit it otherwise.
  *
  * **Auto-root (ADR-013).** A `span` opened with *neither* a current span *nor* a [SpanCollector] in context
  * owns the whole trace: it installs a collector, opens the root, runs [block], and calls [reportTrace] once
- * at the outcome (return → [TraceStatus.OK], an escaping [CancellationException] → [TraceStatus.CANCELLED],
- * any other escaping throwable → [TraceStatus.ERROR]) — the application throwable always rethrown. Any other
- * context state is the instrumentation-only path below: with a collector present the span is a child (or a
- * manual-boundary root the consumer reports itself); with a span present but no collector it is a child for
- * identity/live only. The consumer therefore only ever writes `span { }`; the outermost one is the boundary.
+ * at the outcome. The **escaping** outcomes are core's: an escaping [CancellationException] →
+ * [TraceStatus.CANCELLED], any other escaping throwable → [TraceStatus.ERROR] — the application throwable
+ * always rethrown. On a **normal return** the trace's [TraceStatus] is chosen by [returnedOutcome] from the
+ * returned value; the default [alwaysOkOutcome] fixes it to [TraceStatus.OK], while a **failure-as-value**
+ * consumer can report a *returned* (not thrown) domain failure as `ERROR` and carry trace-level orphan
+ * failures via [TraceOutcome.attached] (ADR-012). [returnedOutcome] runs **exactly once**, on a normal
+ * return, and only when this call auto-roots; in every other context state it is **never invoked**.
+ *
+ * Any other context state is the instrumentation-only path below: with a collector present the span is a child
+ * (or a manual-boundary root the consumer reports itself); with a span present but no collector it is a child
+ * for identity/live only. The consumer therefore only ever writes `span { }`; the outermost one is the
+ * boundary, and [returnedOutcome] is inert on every non-auto-root span.
  *
  * This is instrumentation, not error handling: [span] only observes and rethrows, so a caller may wrap
  * a body in it and still handle failures inside however it likes. ERROR propagates up the tree naturally
  * — the rethrown throwable passes through every enclosing [span], marking each ancestor.
  *
+ * Make [returnedOutcome] **pure, fast and non-suspending**: it is report configuration on the traced
+ * coroutine's critical path, not application logic — no side effects. A **non-fatal** throw from it is
+ * contained (the trace falls back to [TraceOutcome] `(OK, emptyList())` and the fault is surfaced through the
+ * configured [AdapterFaultHook] with [FaultPhase.RETURNED_OUTCOME] and `adapter = null`); a mapper-thrown
+ * [CancellationException] is contained the same way; a **JVM-fatal** mapper fault is rethrown and no report is
+ * attempted. Because the mapper runs after the root has ended (the inner [span]'s `finally`), a mapper fault
+ * can neither flip the root [SpanStatus] nor become its birthplace — marking the root for a returned failure
+ * stays the block's job, via the suspend-safe [dev.kotrace.event.addException] on [currentSpan].
+ *
  * @sample dev.kotrace.samples.SpanSamples.spanUsage
+ * @sample dev.kotrace.samples.SpanSamples.spanReturnedOutcomeUsage
  */
 suspend fun <T> span(
     name: String,
     attributes: Map<String, String> = emptyMap(),
     links: List<TraceLink> = emptyList(),
+    returnedOutcome: (T) -> TraceOutcome = alwaysOkOutcome,
     block: suspend () -> T,
 ): T {
     val context = currentCoroutineContext()
@@ -38,8 +57,11 @@ suspend fun <T> span(
     val spanCollector = context[SpanCollector]
     val spanContext = context[SpanContext]
     if (spanContext == null && spanCollector == null) {
-        return autoRootSpan(name, attributes, links, block)
+        return autoRootSpan(name, attributes, links, returnedOutcome, block)
     }
+    // Non-auto-root: returnedOutcome is inert (only the auto-root consults it, ADR-016). This is a child, a
+    // manual-boundary root, or an identified-but-uncollected span; the enclosing root or a manual reportTrace
+    // owns the single report.
     val opened = createSpan(
         spanContext?.span,
         name, attributes, links,
@@ -75,81 +97,12 @@ suspend fun <T> span(
 }
 
 /**
- * Return-aware [span] (ADR-016): identical to [span] except that, **when this call auto-roots** (neither a
- * [SpanContext] nor a [SpanCollector] in context — ADR-013's null/null state), the trace's [TraceStatus] on a
- * **normal return** is chosen by [returnedOutcome] from the returned value rather than fixed to
- * [TraceStatus.OK]. This is the entry point for a **failure-as-value** consumer: a domain failure that is
- * *returned* (not thrown) can still report `ERROR` and carry trace-level orphan failures via
- * [TraceOutcome.attached] (ADR-012).
- *
- * Core keeps the escaping outcomes: an escaping [CancellationException] is [TraceStatus.CANCELLED], any other
- * escaping throwable is [TraceStatus.ERROR] — the mapper is **not** consulted for either, and the application
- * throwable is rethrown unchanged. [returnedOutcome] runs **exactly once**, on a normal return, **only** when
- * this call auto-roots; in every other context state (child, manual-boundary root, identified-but-uncollected)
- * it is **never invoked** and the enclosing root or a manual [reportTrace] owns the single report. Make it
- * **pure, fast and non-suspending**: it is report configuration evaluated on the traced coroutine's critical
- * path, not application logic — do not use it for side effects.
- *
- * A **non-fatal** throw from [returnedOutcome] is contained (it never alters the returned value or control
- * flow): the trace falls back to [TraceOutcome] `(OK, emptyList())` and the fault is surfaced through the
- * configured [AdapterFaultHook] with [FaultPhase.RETURNED_OUTCOME] and `adapter = null`. A mapper-thrown
- * [CancellationException] is contained the same way (it is not trace cancellation — the block already returned
- * normally). A **JVM-fatal** mapper fault is rethrown and no report is attempted.
- *
- * Marking the root span for a returned failure (and recording its birthplace throwable so the crash sink
- * receives it) stays the block's job, via the suspend-safe [dev.kotrace.event.addException] on
- * [currentSpan] — a returned `ERROR` verdict does not itself flip the root [SpanStatus], and it need not: a
- * crash adapter self-gates on the trace [TraceStatus] the mapper returns.
- *
- * @sample dev.kotrace.samples.SpanSamples.spanReturnedOutcomeUsage
+ * The always-OK return mapper the zero-config [span] supplies to [autoRootSpan] (ADR-013): a normal return is
+ * fixed to [TraceStatus.OK], while the escaping outcomes stay core's (decided in [autoRootSpan], not here).
+ * Non-capturing, so the compiler emits it as a singleton — the zero-config auto-root path allocates no mapper.
+ * Contravariance lets this `(Any?) -> …` stand in for the `(T) -> …` mapper parameter at any `T`.
  */
-suspend fun <T> span(
-    name: String,
-    attributes: Map<String, String> = emptyMap(),
-    links: List<TraceLink> = emptyList(),
-    returnedOutcome: (T) -> TraceOutcome,
-    block: suspend () -> T,
-): T {
-    val context = currentCoroutineContext()
-    val spanCollector = context[SpanCollector]
-    val spanContext = context[SpanContext]
-    if (spanContext == null && spanCollector == null) {
-        return autoRootSpanReturning(name, attributes, links, returnedOutcome, block)
-    }
-    // Non-auto-root: the mapper is inert (ADR-016). Delegate to the plain span — a child, a manual-boundary
-    // root, or identified-but-uncollected, exactly as the zero-config overload would resolve it; the enclosing
-    // root or a manual reportTrace owns the single report.
-    return span(name, attributes, links, block)
-}
-
-/**
- * The auto-root boundary (ADR-013): install a fresh [SpanCollector], let the recursion open+register the
- * root and run [block] (the collector is now in context, so the nested [span] takes the instrumentation
- * path), then [reportTrace] the outcome **before** the collector context exits — so the collector and any
- * ambient [TraceConfig] are still resolved. The collector is overlaid alone; config is inherited, never
- * frozen here (ADR-010).
- */
-private suspend fun <T> autoRootSpan(
-    name: String,
-    attributes: Map<String, String>,
-    links: List<TraceLink>,
-    block: suspend () -> T,
-): T {
-    val collector = SpanCollector()
-    return withContext(collector) {
-        var status = TraceStatus.OK
-        var escaped: Throwable? = null
-        try {
-            span(name, attributes, links, block)
-        } catch (t: Throwable) {
-            escaped = t
-            status = if (t is CancellationException) TraceStatus.CANCELLED else TraceStatus.ERROR
-            throw t
-        } finally {
-            reportAutoRoot(collector, status, escaped)
-        }
-    }
-}
+private val alwaysOkOutcome: (Any?) -> TraceOutcome = { TraceOutcome(TraceStatus.OK) }
 
 /**
  * Reports the auto-root trace with strict-mode precedence (ADR-013): if reporting throws — e.g. strict
@@ -172,13 +125,24 @@ private fun reportAutoRoot(
 }
 
 /**
- * The value-aware auto-root boundary (ADR-016): same lifecycle as [autoRootSpan] — install the collector, let
- * the recursion open+register+run+end the root — but derive the report from the **returned value** via
- * [returnedOutcome] on a normal return, and from the escaping throwable otherwise. Reports **after** the root
- * has ended (the inner [span]'s `finally`) and **before** the collector context exits, mirroring ADR-013's
- * ordering and strict/report precedence (via [reportAutoRoot]).
+ * The single auto-root boundary (ADR-013 + ADR-016): install a fresh [SpanCollector], let the recursion
+ * open+register+run+end the root (the collector is now in context, so the nested [span] takes the
+ * instrumentation path), then [reportTrace] the outcome **before** the collector context exits — so the
+ * collector and any ambient [TraceConfig] are still resolved (overlaid alone; config inherited, never frozen
+ * here — ADR-010).
+ *
+ * The report's status on a **normal return** comes from [returnedOutcome] applied to the returned value: the
+ * zero-config [span] passes [alwaysOkOutcome], fixing its normal return to [TraceStatus.OK] (ADR-013), while a
+ * failure-as-value consumer maps a returned domain failure to `ERROR` with attached orphans (ADR-016). The
+ * **escaping** outcomes are always core's, never the mapper's: an escaping [CancellationException] →
+ * [TraceStatus.CANCELLED], any other escaping throwable → [TraceStatus.ERROR], the throwable rethrown
+ * unchanged. [returnedOutcome] runs **exactly once**, on a normal return, and only here — never on a child, a
+ * manual-boundary root, or an identified-but-uncollected span. Because it runs after the inner [span]'s
+ * `finally` (root already ended), a mapper fault can neither flip the root [SpanStatus] nor become its
+ * birthplace. Reports **after** the root has ended and **before** the collector context exits, with
+ * strict/report precedence via [reportAutoRoot].
  */
-private suspend fun <T> autoRootSpanReturning(
+private suspend fun <T> autoRootSpan(
     name: String,
     attributes: Map<String, String>,
     links: List<TraceLink>,
@@ -188,7 +152,10 @@ private suspend fun <T> autoRootSpanReturning(
     val collector = SpanCollector()
     return withContext(collector) {
         val value = try {
-            span(name, attributes, links, block)
+            // Recurse to open+run+end the root via the instrumentation path (collector now in context, so
+            // this call never auto-roots). returnedOutcome is left at its default here — a non-auto-root span
+            // never consults it; this boundary owns the single report below.
+            span(name, attributes, links, block = block)
         } catch (t: Throwable) {
             // Escaping outcome is core's, not the mapper's: CancellationException → CANCELLED, else ERROR;
             // report with the escaped throwable so a strict-mode report failure rides it as suppressed.
