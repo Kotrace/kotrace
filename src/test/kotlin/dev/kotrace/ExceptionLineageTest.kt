@@ -5,9 +5,11 @@ import dev.kotrace.event.ExceptionRecord
 import dev.kotrace.event.SpanEvent
 import dev.kotrace.event.addException
 import dev.kotrace.event.lineageKeyOf
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withContext
 import org.junit.Assert.assertEquals
@@ -317,6 +319,40 @@ class ExceptionLineageTest {
         val key = lineageKeyOf(chain[0]) // must not walk the whole 150-deep chain
         assertSame("the walk stops at the depth bound (100 steps)", chain[100], key)
         assertNotSame("it did not run to the tail", chain[150], key)
+    }
+
+    // --- Canary: unlike the forged-frame unit tests above, this drives REAL kotlinx.coroutines stacktrace
+    // --- recovery so it holds the frame-name contract (COROUTINE_BOUNDARY_FRAME) against the live library. If a
+    // --- future coroutines release renames the boundary frame, kotrace degrades silently (duplicate crash
+    // --- records, never a dropped failure — fail open); this test turns that silent degrade into a red build.
+    @Test
+    fun `CANARY - kotrace recognizes the boundary frame real coroutine recovery splices`() = runBlocking {
+        val original = IllegalStateException("canary")
+        // Two real dispatcher switches: recovery copies the exception as it unwinds through each withContext
+        // boundary, splicing its artificial boundary frame into the copy.
+        val caught = runCatching {
+            withContext(Dispatchers.Default) {
+                withContext(Dispatchers.IO) { throw original }
+            }
+        }.exceptionOrNull()!!
+
+        // Detect that a copy was actually made by identity — frame-naming-independent — so the assertion below
+        // only runs when recovery truly fired. Recovery is on under `-ea` (Gradle's test default); if some
+        // environment runs without it, skip rather than pass vacuously. If this skip ever fires in CI, CI is not
+        // running the canary — fix the test JVM args, don't ignore it.
+        org.junit.Assume.assumeTrue(
+            "coroutine stacktrace recovery not active (assertions disabled?) — canary could not run",
+            caught !== original,
+        )
+
+        // The contract: coroutines really spliced a boundary frame AND kotrace's matcher recognized it, so the
+        // recovery copy canonicalizes back to the original. A renamed frame makes lineageKeyOf stop stepping and
+        // this goes red — update COROUTINE_BOUNDARY_FRAME in TraceException.kt to the new frame name.
+        assertSame(
+            "kotrace no longer recognizes the real coroutine boundary frame — update COROUTINE_BOUNDARY_FRAME",
+            original,
+            lineageKeyOf(caught),
+        )
     }
 
     @OptIn(UnredactedTraceRead::class)

@@ -10,8 +10,9 @@ import java.util.Locale
  * flattened line carries but a raw [SpanEvent] does not; a backend rebuilds the tree from them.
  *
  * Sealed to three kinds, one per [SpanEvent] kind a span produces: a [LogRecord] (breadcrumb), a
- * [NamedRecord] (named/analytics event), and an [ExceptionRecord] (the crash, from an [ExceptionEvent] at
- * the birthplace — it bypasses every policy gate).
+ * [NamedRecord] (named/analytics event), and an [ExceptionRecord] (the crash, from an [ExceptionEvent] — carried
+ * with an [ExceptionOrigin] on the report path; a default view keeps only the birthplace, gated on
+ * [dev.kotrace.TracePolicy.acceptsPropagatedException] and [dev.kotrace.TracePolicy.acceptsEvent], ADR-019).
  */
 sealed interface TraceRecord {
     /**
@@ -65,12 +66,17 @@ sealed interface AttributedRecord : TraceRecord {
  * it is how [dev.kotrace.event.addException]'s record-level `info` reaches the record without riding the
  * object-only [ExceptionEvent] (ADR-005/ADR-010).
  */
-internal fun Span.recordOf(event: SpanEvent, extraInfo: Map<String, String> = emptyMap()): TraceRecord {
+internal fun Span.recordOf(
+    event: SpanEvent,
+    extraInfo: Map<String, String> = emptyMap(),
+    origin: ExceptionOrigin? = null,
+): TraceRecord {
     val info = if (extraInfo.isEmpty()) info.toMap() else info.toMap() + extraInfo
     return when (event) {
         is LogEvent -> LogRecord(traceId, spanId, parentId, name, event.atNanos, scopeId, info, links, event.attributes, event.message, event.sensitive)
         is NamedEvent -> NamedRecord(traceId, spanId, parentId, name, event.atNanos, scopeId, info, links, event.name, event.attributes)
-        is ExceptionEvent -> ExceptionRecord(traceId, spanId, parentId, name, event.atNanos, scopeId, info, links, event.throwable)
+        // origin (ADR-019) classifies a report exception (BIRTHPLACE/PROPAGATED); the live path passes null.
+        is ExceptionEvent -> ExceptionRecord(traceId, spanId, parentId, name, event.atNanos, scopeId, info, links, event.throwable, origin)
     }
 }
 
@@ -120,6 +126,9 @@ fun TraceRecord.toJson(): String = buildString {
             // sink for PII (see Span's invariant). The full message lives on record.throwable, for an adapter
             // that routes it to a crash reporter — the sink allowed to hold PII. Correlate the two by trace_id.
             appendField("exception", record.throwable.javaClass.name)
+            // exception_origin is emitted only for a PROPAGATED copy (ADR-019): BIRTHPLACE and live/null omit
+            // it, so a default birthplace-only report is byte-identical to pre-ADR-019 — parallel to scope_id.
+            if (record.origin == ExceptionOrigin.PROPAGATED) { append(','); appendField("exception_origin", "propagated") }
         }
     }
     appendObject("info", info)

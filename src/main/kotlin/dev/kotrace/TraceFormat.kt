@@ -34,7 +34,9 @@ fun List<Span>.renderTree(): String {
         // carry ERROR status up the path. Every selected exception renders inline, in timestamp order with
         // the log lines, so a span holding two distinct failures shows both `error:` lines.
         val birthplaces = tree.birthplaceExceptionsOf(span)
-        span.events.sortedBy { it.atNanos }.forEach { event ->
+        // Read the same per-span snapshot the birthplace index used (ADR-019), so rendering is internally
+        // consistent with the classification — a late off-thread append can't be shown yet unclassified.
+        tree.eventsOf(span).sortedBy { it.atNanos }.forEach { event ->
             val line = when (event) {
                 is LogEvent -> "${event.attributes}: ${event.message}"
                 is NamedEvent -> "event ${event.name} ${event.attributes}"

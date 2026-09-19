@@ -128,6 +128,14 @@ private fun Throwable.isRecoveryWrapperOf(cause: Throwable): Boolean =
  * `trace_id` is the sole join key between the two sinks. Without it, operations can see *that* a trace
  * failed in the log store but cannot pull its detail from the crash reporter.
  */
+/**
+ * Whether an emitted [ExceptionRecord] is the failure's **origin** or a **copy** re-recorded as it climbed
+ * the tree (ADR-019). The report classifies every exception record it emits ([BIRTHPLACE] = deepest span
+ * carrying the lineage, [PROPAGATED] = an ancestor copy); the **live** path emits an exception before the tree
+ * exists, so birthplace cannot be known there and a live record carries `origin = null` (unclassified).
+ */
+enum class ExceptionOrigin { BIRTHPLACE, PROPAGATED }
+
 data class ExceptionRecord(
     override val traceId: String?,
     override val spanId: String?,
@@ -138,6 +146,13 @@ data class ExceptionRecord(
     override val info: Map<String, String>,
     override val links: List<TraceLink>,
     val throwable: Throwable,
+    /**
+     * Birthplace-vs-propagated classification (ADR-019). `null` on a **live** record (unclassified — the tree
+     * is incomplete when it is emitted). On a **report** record it is [ExceptionOrigin.BIRTHPLACE] or
+     * [ExceptionOrigin.PROPAGATED]; the default report view emits only the birthplaces (a crash sink stays
+     * one-per-lineage-per-branch), a `acceptsPropagatedException` adapter also receives the propagated copies.
+     */
+    val origin: ExceptionOrigin? = null,
 ) : TraceRecord
 
 /**
@@ -148,12 +163,14 @@ data class ExceptionRecord(
  * Like every event verb it appends unconditionally (there is no capture gate — ADR-002); a layer-filtered
  * trace must never lose its crash. A live adapter then sees it iff its policy [dev.kotrace.accepts] the
  * [ExceptionEvent], which by default keeps it (a crash carries no `acceptsSpan`/sensitive gate, only the
- * opt-in [dev.kotrace.TracePolicy.acceptsEvent]). The report path is unchanged: the appended event still fans out
- * once, at the birthplace ([dev.kotrace.reportTrace]).
+ * opt-in [dev.kotrace.TracePolicy.acceptsEvent]). On the report path the appended event reaches the **default**
+ * view once, at the birthplace ([dev.kotrace.reportTrace]); an [dev.kotrace.TracePolicy.acceptsPropagatedException]
+ * adapter also sees the ancestor copies, origin-marked (ADR-019).
  *
  * Note the throwable climbs the tree: it is re-recorded on every enclosing span as it rethrows
- * ([dev.kotrace.span]), so a live watch sees one line per ancestor — deepest (birthplace) first. Report
- * dedups that to the single birthplace record; live deliberately does not, showing the propagation trail.
+ * ([dev.kotrace.span]), so a live watch sees one line per ancestor — deepest (birthplace) first. The **default**
+ * report view dedups that to the single birthplace record (an opt-in view keeps the whole marked climb); live
+ * deliberately does not, showing the propagation trail.
  *
  * [info] is optional record-level metadata (ADR-010): it merges over the span's [dev.kotrace.Span.info] onto
  * the emitted [ExceptionRecord.info] **without** touching the [ExceptionEvent], which stays object-only (a

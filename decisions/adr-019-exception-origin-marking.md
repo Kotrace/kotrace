@@ -125,8 +125,12 @@ default, mislabelled under opt-in). Structured children have joined by report ti
 boundary this cannot happen; but a hand-seeded collector or an off-thread bridge append is not covered by that
 assumption. The fix is to snapshot each span's events **once** (`tree.eventsOf(span)`) and feed the *same* list
 to both the birthplace index and the walk, so classification is internally consistent regardless of a late
-writer. This also makes ADR-019 strictly no-worse than today for the racy case (today the late event is
-silently dropped; here it is consistently classified against the same snapshot).
+writer. This defines an explicit **snapshot cutoff**: an event appended *after* a span is indexed is not in
+the report (for any kind — a late `LogEvent` too), and every event *in* the snapshot is classified against that
+same snapshot. That is a deliberate, consistent cutoff rather than the pre-ADR-019 behavior where a late
+`ExceptionEvent` could be walked-but-mislabelled and a late `LogEvent` walked-and-included depending on
+interleaving. For an auto-root trace (structured children joined before report) there is no late writer and
+nothing changes; the cutoff only bites a hand-seeded/off-thread-bridge append, which was already racy.
 
 `attached` orphan entries (ADR-012, appended post-walk, [`Report.kt:62`](../src/main/kotlin/dev/kotrace/Report.kt:62))
 are stamped `BIRTHPLACE` — they are origins with no deeper copy.

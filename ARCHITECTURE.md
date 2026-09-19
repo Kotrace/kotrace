@@ -293,10 +293,12 @@ sealed interface TraceAdapter { policy: TracePolicy }
   └─ ReportAdapter { onReport(status, records: Sequence) }  // whole tree, at the end
 
 interface TracePolicy {
-  acceptsSpan(span): Boolean        // per-span breadcrumb filter — reads span.attributes ONLY (fixed,
-                                    //   birth-set); never span.info (late) — the race-free invariant, ADR-001
-  acceptsEvent(event): Boolean      // per-event filter over SpanEvent (e.g. a "level" attribute threshold)
-  acceptsSensitive: Boolean         // receive sensitive records? default false — fail-closed
+  acceptsSpan(span): Boolean            // per-span breadcrumb filter — reads span.attributes ONLY (fixed,
+                                        //   birth-set); never span.info (late) — the race-free invariant, ADR-001
+  acceptsEvent(event): Boolean          // per-event filter over SpanEvent (e.g. a "level" attribute threshold)
+  acceptsSensitive: Boolean             // receive sensitive records? default false — fail-closed
+  acceptsPropagatedException: Boolean   // receive PROPAGATED climb copies, or birthplaces only? default false
+                                        //   — report-only, ADR-019
 }
 ```
 
@@ -306,10 +308,18 @@ interface TracePolicy {
   `if (status == TraceStatus.OK) return`; `records` is a lazy `Sequence`, so a skipped outcome forces no walk or
   allocation. There is no separate `reports(status)` predicate — it would just re-hand the status the
   callback already has.
-- **One walk, N views.** `SpanCollector.reportTrace(status)` walks the tree once into `(span, record)` entries;
-  each adapter gets a lazy view filtered by *its* policy. `ExceptionRecord` always passes; a `LogRecord`
-  passes `acceptsSpan(span)` ∧ `acceptsEvent(event)` ∧ (`!sensitive` ∨ `acceptsSensitive`). `NamedRecord`s
-  are **not** in the report path — analytics is a live concern (below).
+- **One walk, N views.** `SpanCollector.reportTrace(status)` walks the tree once into `(span, event, origin)`
+  entries; each adapter gets a lazy view filtered by *its* policy. A `LogRecord` passes `acceptsSpan(span)` ∧
+  `acceptsEvent(event)` ∧ (`!sensitive` ∨ `acceptsSensitive`). `NamedRecord`s are **not** in the report path —
+  analytics is a live concern (below).
+- **Birthplace vs propagated is a per-adapter view, not a global truncation** (ADR-019). The walk no longer
+  drops a climbing exception's ancestor copies; it collects the whole climb and stamps each `ExceptionRecord`
+  `BIRTHPLACE` (deepest span carrying the lineage, ADR-015) or `PROPAGATED` (an ancestor copy). The view drops
+  `PROPAGATED` unless the adapter opts in via `acceptsPropagatedException` — applied **before** `acceptsEvent`,
+  so a default (crash) adapter is never invoked on a dropped copy and still sees birthplaces only, exactly as
+  before. An opt-in (log/trace-viz) adapter receives the full marked climb off the *same* walk. `toJson` emits
+  `"exception_origin":"propagated"` only for a `PROPAGATED` record, so the default report is byte-identical.
+  A live `ExceptionRecord` is unclassified (`origin = null`) — the tree is incomplete when it is emitted.
 
 ### Live vs report — two timings, one mechanism
 
@@ -321,8 +331,9 @@ interface TracePolicy {
 A **named/analytics** event fires **live** (on success too), never tail-buffered for failure — that is the
 right lifecycle for product data. A **log breadcrumb** rides both: live if a live adapter is watching, and
 buffered to the end report. The **exception** rides both too: live as it is thrown (a watch sees it climb
-the tree, deepest first, ungated by trace status), and once at report — deduped to the birthplace, gated on
-failure. Live is awareness; report is the crash verdict (§8). Building the live record is skipped
+the tree, deepest first, ungated by trace status), and at report — the default view deduped to the birthplace,
+gated on failure, an `acceptsPropagatedException` adapter seeing the whole marked climb (ADR-019). Live is
+awareness; report is the crash verdict (§8). Building the live record is skipped
 entirely when no live adapter is registered, so a production report-only trace pays nothing per event.
 
 ### Tail, not head

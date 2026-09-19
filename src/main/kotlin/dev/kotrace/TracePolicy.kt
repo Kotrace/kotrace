@@ -37,6 +37,16 @@ interface TracePolicy {
      * (fail-closed): a new adapter never leaks user data by omission.
      */
     val acceptsSensitive: Boolean get() = false
+
+    /**
+     * Does this adapter receive the **PROPAGATED** copies of a climbing exception, or only the single
+     * **BIRTHPLACE** per lineage (ADR-019)? Default `false` — the birthplace-only report of ADR-005, so a
+     * crash reporter is never handed N duplicate crash groups. A log / trace-visualisation adapter sets `true`
+     * to receive the whole marked climb (each record's [dev.kotrace.event.ExceptionRecord.origin] tells the
+     * two apart). **Report-only**: the live path is per-event and already un-deduped, so this gate does not
+     * apply there — it is read only by the report `viewOf`, not by [accepts].
+     */
+    val acceptsPropagatedException: Boolean get() = false
 }
 
 /**

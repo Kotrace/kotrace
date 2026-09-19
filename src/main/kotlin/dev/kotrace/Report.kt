@@ -1,6 +1,7 @@
 package dev.kotrace
 
 import dev.kotrace.event.ExceptionEvent
+import dev.kotrace.event.ExceptionOrigin
 import dev.kotrace.event.LogEvent
 import dev.kotrace.event.NamedEvent
 import dev.kotrace.event.SpanEvent
@@ -21,14 +22,17 @@ import java.util.IdentityHashMap
  * work (see the [ReportAdapter.onReport] sample).
  *
  * The walk collects, per span, every event [SpanEvent.reportable] admits, in time order — each
- * [dev.kotrace.event.LogEvent], and, at the birthplace only ([TraceTreeIndex.birthplaceExceptionsOf]), the span's
- * [dev.kotrace.event.ExceptionEvent]s. Report membership is that one declared predicate, not an implicit
- * filter: a [dev.kotrace.event.NamedEvent] is not reportable — a product/analytics occurrence fanned out
- * live (see [LiveAdapter]), not tail-buffered for failure — and a future event kind must classify itself
- * there or fail to compile.
- * Each adapter filters the collected entries through its [TracePolicy] ([accepts]); the [dev.kotrace.event.ExceptionEvent]
- * is subject only to [TracePolicy.acceptsEvent], which defaults to keeping it, so a breadcrumb filter never
- * swallows the crash cause unless a policy explicitly covers exceptions.
+ * [dev.kotrace.event.LogEvent] and **every** [dev.kotrace.event.ExceptionEvent] on the climb, each stamped
+ * [dev.kotrace.event.ExceptionOrigin] BIRTHPLACE (deepest span carrying the lineage,
+ * [TraceTreeIndex.birthplaceExceptionsOf]) or PROPAGATED (an ancestor copy) — ADR-019. Report membership is that one
+ * declared predicate, not an implicit filter: a [dev.kotrace.event.NamedEvent] is not reportable — a
+ * product/analytics occurrence fanned out live (see [LiveAdapter]), not tail-buffered for failure — and a future
+ * event kind must classify itself there or fail to compile.
+ * Each adapter filters the collected entries through its own view ([viewOf]): the birthplace **dedup** is now a
+ * per-adapter gate ([TracePolicy.acceptsPropagatedException], default drops PROPAGATED, so a default crash sink
+ * still sees birthplaces only), applied *before* [TracePolicy.acceptsEvent] (which still gates a surviving
+ * [dev.kotrace.event.ExceptionEvent] and defaults to keeping it — a breadcrumb filter never swallows the crash
+ * cause unless a policy explicitly covers exceptions).
  *
  * [attached] carries **trace-level orphan failures** — throwables that belong to the trace as a whole but
  * are the birthplace of no span, the canonical case being a saga's suppressed rollback throwables collected
@@ -51,9 +55,19 @@ fun SpanCollector.reportTrace(status: TraceStatus, attached: List<Throwable> = e
     val entries = ArrayList<WalkEntry>()
     fun walk(span: Span) {
         val birthplaces = tree.birthplaceExceptionsOf(span)
-        span.events.filter { it.reportable() }.sortedBy { it.atNanos }.forEach { event ->
-            val collected = if (event is ExceptionEvent) event in birthplaces else true
-            if (collected) entries += WalkEntry(span, event)
+        // Read the SAME event snapshot the birthplace index used (ADR-019): a late off-thread/bridge append
+        // between indexing and the walk would otherwise be collected here yet missing from `birthplaces`,
+        // mislabelling it. One snapshot per span keeps classification internally consistent.
+        tree.eventsOf(span).filter { it.reportable() }.sortedBy { it.atNanos }.forEach { event ->
+            // No drop (ADR-019): every exception copy is collected and stamped BIRTHPLACE (deepest carrying the
+            // lineage) or PROPAGATED (an ancestor copy); a non-exception event has no origin. The per-adapter
+            // gate in viewOf decides which survive, so a crash sink still sees birthplaces only by default.
+            val origin = when {
+                event !is ExceptionEvent -> null
+                event in birthplaces -> ExceptionOrigin.BIRTHPLACE
+                else -> ExceptionOrigin.PROPAGATED
+            }
+            entries += WalkEntry(span, event, origin)
         }
         tree.childrenOf(span).forEach(::walk)
     }
@@ -61,7 +75,8 @@ fun SpanCollector.reportTrace(status: TraceStatus, attached: List<Throwable> = e
 
     if (attached.isNotEmpty()) {
         val now = System.nanoTime()
-        attached.forEach { entries += WalkEntry(root, ExceptionEvent(it, now)) }
+        // Orphans are origins with no deeper copy — stamped BIRTHPLACE so the propagated gate never drops them.
+        attached.forEach { entries += WalkEntry(root, ExceptionEvent(it, now), ExceptionOrigin.BIRTHPLACE) }
     }
 
     // Guard the entire synchronous onReport per adapter (ADR-014): the adapter consumes its lazy view
@@ -73,14 +88,15 @@ fun SpanCollector.reportTrace(status: TraceStatus, attached: List<Throwable> = e
     }
 }
 
-private class WalkEntry(val span: Span, val event: SpanEvent)
+private class WalkEntry(val span: Span, val event: SpanEvent, val origin: ExceptionOrigin?)
 
 /**
  * Whether an event enters the failure **report** at all — the one declared statement of report membership.
  * Exhaustive over the sealed [SpanEvent], so a future event kind fails to compile until it is classified
  * here, rather than being silently omitted by whatever [reportTrace] happens to filter. This gates *whether* an
- * event is reportable, not *how* it is collected: [reportTrace] still branches a [LogEvent] (one record per span)
- * from an [ExceptionEvent] (the birthplace throwable, once).
+ * event is reportable, not *how* it is collected: the walk retains every reportable [LogEvent] and every
+ * [ExceptionEvent] copy (origin-stamped), and the per-adapter [viewOf] decides which survive — a default view
+ * dedups the exception climb to its birthplace, an opt-in one keeps the whole climb (ADR-019).
  *
  * A [NamedEvent] is a product/analytics occurrence — live-only, fanned out to a [LiveAdapter] as it happens,
  * never tail-buffered for failure — so it is not reportable.
@@ -97,10 +113,18 @@ internal fun SpanEvent.reportable(): Boolean = when (this) {
  * unless the policy's [TracePolicy.acceptsEvent] deliberately drops it (default: kept). Only when an entry
  * survives is its [dev.kotrace.event.TraceRecord] built — a [LogEvent]'s lazy message resolves here, once.
  */
-private fun ReportAdapter.viewOf(entries: List<WalkEntry>): Sequence<TraceRecord> =
-    entries.asSequence()
+private fun ReportAdapter.viewOf(entries: List<WalkEntry>): Sequence<TraceRecord> {
+    // Read the propagated gate ONCE, and only when the sequence is consumed (ADR-019): reading it eagerly at
+    // viewOf-build time would let a throwing getter abort before an adapter's status self-gate ran.
+    val keepPropagated by lazy { policy.acceptsPropagatedException }
+    return entries.asSequence()
+        // Propagated gate FIRST — before policy.accepts — so a default adapter's policy is never invoked on a
+        // dropped copy (its side effects, and a throwing policy, stay off the dropped entries): the pre-ADR-019
+        // "policy never sees a non-birthplace" invariant is preserved exactly.
+        .filter { keepPropagated || it.origin != ExceptionOrigin.PROPAGATED }
         .filter { policy.accepts(it.span, it.event) }
-        .map { it.span.recordOf(it.event) }
+        .map { it.span.recordOf(it.event, origin = it.origin) }
+}
 
 /**
  * One immutable topology view for a report/render operation. Children are grouped and sorted once rather
@@ -121,6 +145,13 @@ internal class TraceTreeIndex(all: List<Span>, root: Span) {
 
     private var birthplacesBySpan: IdentityHashMap<Span, List<ExceptionEvent>>? = null
 
+    /**
+     * One immutable **event snapshot per span** (ADR-019), taken once during indexing and reused by the walk
+     * ([eventsOf]). [Span.events] is copy-on-write and may receive a late off-thread/bridge append; indexing
+     * and walking the *same* snapshot keeps birthplace classification consistent regardless of such a writer.
+     */
+    private val eventsBySpan = IdentityHashMap<Span, List<SpanEvent>>()
+
     init {
         indexBirthplaces(root)
     }
@@ -131,7 +162,16 @@ internal class TraceTreeIndex(all: List<Span>, root: Span) {
     /** The exception events that belong at [span], excluding copies of a lineage found below it. */
     fun birthplaceExceptionsOf(span: Span): List<ExceptionEvent> = birthplacesBySpan?.get(span).orEmpty()
 
+    /** The single event snapshot indexed for [span] — the walk reads this, not [Span.events], for consistency. */
+    fun eventsOf(span: Span): List<SpanEvent> = eventsBySpan[span].orEmpty()
+
     private fun indexBirthplaces(span: Span): MutableSet<Any>? {
+        // Snapshot this span's events ONCE, before anything reads them, so the walk sees exactly what the
+        // birthplace index saw (ADR-019). Taken for every span, including exception-free ones (the walk needs
+        // it for logs too), so it precedes the mine.isEmpty() early return below.
+        val events = span.events.toList()
+        eventsBySpan[span] = events
+
         var subtreeKeys: MutableSet<Any>? = null
         childrenOf(span).forEach { child ->
             val childKeys = indexBirthplaces(child) ?: return@forEach
@@ -146,7 +186,7 @@ internal class TraceTreeIndex(all: List<Span>, root: Span) {
             }
         }
 
-        val mine = span.events.filterIsInstance<ExceptionEvent>()
+        val mine = events.filterIsInstance<ExceptionEvent>()
         if (mine.isEmpty()) return subtreeKeys
 
         val descendantKeys = subtreeKeys
