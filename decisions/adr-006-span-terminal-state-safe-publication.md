@@ -58,7 +58,7 @@ single source of truth — it is **not** folded into `State`, which would duplic
   a handful per span. Negligible against the trace's own allocations, and in line with the class already
   paying for `events` / `info` thread-safety.
 - **Not tested by a race.** A data race is not deterministically unit-testable; `SpanStateTest` covers the
-  behaviour (fresh span reads OK/open; `end` publishes both and routes the throwable through `events`).
+  behavior (fresh span reads OK/open; `end` publishes both and routes the throwable through `events`).
   Correctness is by construction, not by test — stated plainly rather than implied.
 
 ## Rejected alternatives

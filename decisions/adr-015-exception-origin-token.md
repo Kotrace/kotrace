@@ -48,7 +48,7 @@ The proxy holds only while there is one throwable per branch. It cannot distingu
 two unrelated failures.
 
 **Why not just dedup by throwable identity (`===`).** That is what the structural heuristic exists to avoid:
-kotlinx.coroutines *stacktrace recovery* copies a throwable across each `withContext` boundary
+The kotlinx.coroutines *stacktrace recovery* copies a throwable across each `withContext` boundary
 ([`Trace.kt`](../src/main/kotlin/dev/kotrace/Trace.kt) catch comment), so the "same" climbing throwable is a
 **different object** at each enclosing span when recovery is on (`-ea` / debug). Identity dedup would then fail
 to collapse the climb and report the throwable N times. The dedup key must survive that copy.
@@ -97,8 +97,8 @@ deeper" is needed:
 2. While the current object is a **recognized coroutine stacktrace-recovery wrapper**, step to its `cause`. A
    wrapper is recognized by **three** conjuncts, biased to false negatives (a missed copy costs a duplicate
    record; a false positive would drop the escaping failure — the B01 direction):
-   1. **its own** stack trace carries a coroutine **boundary** artificial frame — kotlinx.coroutines 1.11.0
-      splices the exact class name `_COROUTINE._BOUNDARY` in as a copy crosses a `withContext` (older versions a
+   1. **its own** stack trace carries a coroutine **boundary** artificial frame, which kotlinx.coroutines 1.11.0
+      splices in as the exact class name `_COROUTINE._BOUNDARY` when a copy crosses a `withContext` (older versions a
       `(Coroutine boundary)` class name). Match the boundary frame *specifically*, **not** `_COROUTINE._CREATION`
       (the debug creation-stack frame, which appears on ordinary exceptions built inside a coroutine) nor any
       other `_COROUTINE*` frame; the wrapper carries the boundary frame, the original underneath does not;
@@ -162,7 +162,7 @@ Leaving the object as its own identity (fail open) replaces it.
 
 - **Fail-open per-event lineage key, canonicalized from proven recovery edges (this ADR).** Correct for both
   the single climb and recover-and-rethrow-different; never drops the escaping failure. Cost is deriving/reading
-  a key. Risk is confined to "which cause edges are recovery copies", quarantined behind the test matrix, and
+  a key. Risk is confined to "which cause edges are recovery copies," quarantined behind the test matrix, and
   bounded by fail-open.
 - **Deepest-cause identity or `(class, message)` fallback — rejected.** Reproduces B01 for `throw B(cause = A)`
   and collides on identical class/message; see Context and Decision.
@@ -170,7 +170,7 @@ Leaving the object as its own identity (fail open) replaces it.
   with strict-mode suppression, and breaks under suppression-disabled throwables.
 - **Global `IdentityHashMap`/`WeakHashMap<Throwable, Key>` — rejected.** Internally contradictory: the climbing
   object is a *copy*, so a map keyed by the pre-copy object misses on the next boundary. `IdentityHashMap` also
-  holds strong references (leaks throwables) and `WeakHashMap` is equality- not identity-keyed; they are not
+  holds strong references (leaks throwables) and `WeakHashMap` is keyed by equality, not identity; they are not
   interchangeable, and neither is thread-safe for the parallel-children case. The canonical object serves as the
   key without an external map.
 - **Keep the structural heuristic (status quo) — rejected.** Silently drops the escaping throwable in a real,

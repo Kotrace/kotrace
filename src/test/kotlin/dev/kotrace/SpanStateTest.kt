@@ -8,7 +8,7 @@ import org.junit.Test
 
 /**
  * The terminal-state safe-publication (D1 / ADR-006): [Span.status] / [Span.endNanos] read off one atomic
- * [State][Span] pair. Behavioural cover for the refactor — the race itself is not unit-testable; correctness
+ * [State][Span] pair. Behavioral cover for the refactor — the race itself is not unit-testable; correctness
  * is by construction (single atomic publish = happens-before + consistent pair).
  */
 class SpanStateTest {

@@ -6,7 +6,7 @@ import dev.kotrace.resolvedThreadConfig
 
 /**
  * A log line on a span ([message] + [attributes]) — the diagnostic breadcrumb kind of event. Severity is
- * an attribute (e.g. a `"level"` key), set and interpreted by the consumer; kotrace does not rank it.
+ * an attribute (e.g., a `"level"` key), set and interpreted by the consumer; kotrace does not rank it.
  *
  * [message] is built lazily from the provider passed at construction, so an event no adapter accepts never
  * pays to build its string — it is resolved only at fan-out, once a [dev.kotrace.TracePolicy] [dev.kotrace.accepts]

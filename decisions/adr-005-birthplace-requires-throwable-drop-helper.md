@@ -69,7 +69,7 @@ from `collector.birthplaceSpan()` to reading the `ExceptionRecord` its `ReportAd
 
 ## Rejected alternatives
 
-- **Unify onto the existing leaf-most predicate (keep "no ERROR child", no throwable check).** This is the
+- **Unify onto the existing leaf-most predicate (keep "no ERROR child," no throwable check).** This is the
   buggy definition — it drops an ancestor's throwable behind a throwable-less ERROR leaf. Rejected: it is the
   cause, not a candidate.
 - **Keep `birthplaceSpan()` but have it delegate to the shared predicate.** Removes the divergence, but a
@@ -78,5 +78,5 @@ from `collector.birthplaceSpan()` to reading the `ExceptionRecord` its `ReportAd
   something the report cannot, and it does not.
 - **Gate only the immediate children (`children.none { it.exception != null }`).** Correct for the coroutine
   path (the throwable climbs every level) but misses a throwable nested below an intermediate throwable-less
-  bridge span. Rejected in favour of the full-subtree walk — cheap on small traces, and unconditionally
+  bridge span. Rejected in favor of the full-subtree walk — cheap on small traces, and unconditionally
   correct.

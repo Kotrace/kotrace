@@ -8,7 +8,7 @@ import dev.kotrace.event.SpanEvent
 /**
  * A consumer's fan-out **decisions**, carried by every [TraceAdapter] and separate from where the adapter
  * routes a record. Three gates — [acceptsSpan], [acceptsEvent], [acceptsSensitive] — applied identically
- * at live emit and report fan-out (see [accepts]). Every gate defaults open-but-safe: spans and events
+ * at live emit time and report fan-out (see [accepts]). Every gate defaults open-but-safe: spans and events
  * pass, sensitive records don't, so a bare policy is a working, fail-closed policy.
  */
 interface TracePolicy {
@@ -40,7 +40,7 @@ interface TracePolicy {
 }
 
 /**
- * Combines the gates for one [event] on one [span] — the single predicate used at both live emit and
+ * Combines the gates for one [event] on one [span] — the single predicate used at both live emit time and
  * report fan-out. [TracePolicy.acceptsSpan] and [TracePolicy.acceptsSensitive] apply only to the attributed
  * kinds; an [dev.kotrace.event.ExceptionEvent] is gated by [TracePolicy.acceptsEvent] alone (no span/sensitive
  * filter — a crash is not a layer breadcrumb).

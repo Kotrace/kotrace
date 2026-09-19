@@ -20,7 +20,7 @@ events on a span whose coroutine context carries a `TraceConfig`. Two consequenc
    (ADR-002's goal) must fall back to calling its sink directly, so the sink is reached two ways.
 2. **There is no correlation level above a trace.** `trace_id` identifies one bounded operation. There
    is no key that groups *many* operations plus their surrounding orphan emits into one session/journey
-   — "everything that happened while handling this notification", "this app session".
+   — "everything that happened while handling this notification," "this app session."
 
 ## Decision
 
@@ -78,7 +78,7 @@ events on a span whose coroutine context carries a `TraceConfig`. Two consequenc
   after (double-install a hard error); documented as the one global. Thread-safe publication required. A
   per-flow `TraceConfig` override remains for a flow that needs different sinks.
 - `scope_id` is nullable on the wire; existing traces and tooling are unaffected until a scope is opened.
-- One active scope per context (innermost). A scope **stack** is **not** modelled — YAGNI until a real
+- One active scope per context (innermost). A scope **stack** is **not** modeled — YAGNI until a real
   nested-scope need appears.
 
 ## Rejected

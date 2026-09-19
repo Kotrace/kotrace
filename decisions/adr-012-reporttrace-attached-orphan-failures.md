@@ -45,7 +45,7 @@ With an empty `attached` (the default) the function is byte-for-byte its old sel
 - A consumer routes trace-level orphan failures through kotrace's report fan-out instead of calling its sink
   directly — the fan-out stays the single authority (ADR-002) for this class of failure too.
 - They ride the **report** path only: they are known as values after the block returns, so they cannot be a
-  live-as-it-happens event without the producer (e.g. the saga) emitting them itself. Report-path parity
+  live-as-it-happens event without the producer (e.g., the saga) emitting them itself. Report-path parity
   matches how the birthplace failure of a raise-only trace is handled.
 - Correlation is the root's own — `operation` = the root span name, one `trace_id` shared with the tree —
   because the record is built from the root span via `recordOf`. No new correlation shape.

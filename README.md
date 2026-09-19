@@ -5,7 +5,7 @@ A tiny, coroutine-native span tracer for Kotlin/JVM. Builds a per-flow tree of s
 client↔backend correlation — with **no OpenTelemetry SDK** on either side. The wire format is the
 contract, so an OTel upgrade later is additive.
 
-> Design & rationale (why the pieces are shaped this way, and vs OpenTelemetry): **[ARCHITECTURE.md](ARCHITECTURE.md)**.
+> Design & rationale (why the pieces are shaped this way, and vs. OpenTelemetry): **[ARCHITECTURE.md](ARCHITECTURE.md)**.
 
 - `Span` / `SpanStatus` — one unit of work and its outcome.
 - `span(name) { … }` — opens a child of the ambient span, closes it on return, marks it `ERROR` and
@@ -27,12 +27,12 @@ contract, so an OTel upgrade later is additive.
   `parent_span_id`, to every `ReportAdapter` in the resolved `TraceConfig`. Backends group by any of the ids.
   The searchable counterpart to `renderTree`.
 - `Kotrace.install(adapters)` / `Kotrace.install { … }` — the **process-wide fan-out config** (ADR-010),
-  installed once at startup (read-only after; a second install throws; the provider overload resolves lazily
+  installed once at startup (read-only after; a second installation throws; the provider overload resolves lazily
   on first fan-out, DI-friendly). Every path resolves `currentThreadConfig() ?: Kotrace.defaultConfig()`, so
   a per-flow `TraceConfig` overlaid on the context **overrides** the global for that flow, while span-less
   emits and non-suspend entrypoints — which carry no context — still reach the adapters. Report needs a
   `SpanCollector`: a top-level suspend `span { }` **auto-roots** one and reports at its outcome (ADR-013), so
-  the report boundary is implicit; a flow that only ever does span-less emits (no top-level `span`) stays
+  the report boundary is implicit; a flow that only ever performs span-less emission (no top-level `span`) stays
   live-only by construction.
   - **Registering adapters — build the list, no builder DSL.** kotrace takes a plain `List<TraceAdapter>`;
     the provider overload (`install { … }`) plus stdlib `buildList` *is* the conditional-registration idiom —
@@ -227,7 +227,7 @@ Room.databaseBuilder(context, AppDatabase::class.java, "app.db")
     .build()
 ```
 
-Only the parameterised SQL text (symbols, `?` placeholders) is logged — never the bound values, which can
+Only the parameterized SQL text (symbols, `?` placeholders) is logged — never the bound values, which can
 carry user data. kotrace has no severity taxonomy, so the level is just a `"level"` attribute you pass; SQL
 is high-volume, so tag it at a level your capture policy drops by default (e.g. `DEBUG`).
 

@@ -171,7 +171,7 @@ class AdapterFaultIsolationTest {
             override fun onReport(status: TraceStatus, records: Sequence<TraceRecord>) { records.toList() }
         }
         val hook = RecordingHook()
-        // No live adapter ⇒ the message resolves only at report, inside onReport (guarded), never at emit.
+        // No live adapter ⇒ the message resolves only at report, inside onReport (guarded), never at emit time.
         val thrown = runCatching {
             withContext(TraceConfig(listOf(consuming), hook)) {
                 span("op") { currentSpan()?.log { throw RuntimeException("report msg boom") } }

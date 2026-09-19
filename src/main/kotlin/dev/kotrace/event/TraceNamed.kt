@@ -5,7 +5,7 @@ import dev.kotrace.TraceLink
 import dev.kotrace.resolvedThreadConfig
 
 /**
- * A named, structured occurrence on a span ([name] + [attributes]) — the OTel `event.name` shape, e.g. a
+ * A named, structured occurrence on a span ([name] + [attributes]) — the OTel `event.name` shape, e.g., a
  * product-analytics event. kotrace stays generic: it never names "analytics"; the meaning lives in the
  * consumer's adapter (consent, destination). [attributes] values are static symbols/ids, never user
  * content (EH-MON-4) unless the consuming adapter is explicitly gated for it.

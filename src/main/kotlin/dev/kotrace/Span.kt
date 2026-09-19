@@ -18,7 +18,7 @@ enum class SpanStatus { OK, ERROR }
  *
  * [name], every [attributes] value and every [events] message are **static symbols only** — a Span fans
  * out to general-purpose, broad-access sinks (a JSON log store via [dev.kotrace.event.toJson], a backend
- * via `traceparent`) that are the wrong place for user data: searchable by a wide audience, multi-purpose,
+ * via `traceparent`) that are the wrong place for user data: searchable by a wide audience, multipurpose,
  * and shipped onward past easy recall. Keeping every field a symbol is what makes those sinks PII-safe by
  * construction. The raw [Throwable] on an [dev.kotrace.event.ExceptionEvent] is the **sole exception** —
  * its `message` is not fully in our control (stdlib/third-party interpolate user data) — and it is therefore
@@ -27,7 +27,7 @@ enum class SpanStatus { OK, ERROR }
  *
  * [attributes] are the span's **fixed, birth-set filter dimensions** — an immutable [Map] settled at
  * construction (a `layer`, say). They are the only per-span input a [dev.kotrace.TracePolicy.acceptsSpan]
- * gate reads, and because they never change they filter identically at live emit and report (ADR-001). A
+ * gate reads, and because they never change they filter identically at live emit time and report (ADR-001). A
  * value known only *late* (a result like `http.status`) is **not** an attribute — it is emitted [info]
  * ([putInfo]); it must never become a filter key.
  *

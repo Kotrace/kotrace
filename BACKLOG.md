@@ -42,17 +42,17 @@ flow — is fixed: birthplace now dedups per `ExceptionEvent` by a stable, fail-
   coroutine context (in-memory). If the process dies mid-trace (user swipes the app away, OS OOM-kill,
   force-stop, or a fatal crash), that code never runs and the tree is lost — the trace produces **no
   report**. Only live emits already fanned before death survive, and only if their sink persisted them
-  off-process (e.g. a Crashlytics `recordException`/`log` written to disk). A cooperative
+  off-process (e.g., a Crashlytics `recordException`/`log` written to disk). A cooperative
   `CancellationException` is **not** this case: the process is alive, so `observe` still fans
   `reportTrace(CANCELLED)`. **Why now:** an interrupted operation is generally not a failure (same basis
   as gating CANCELLED out of the crash sink), so losing its report is usually correct, not a defect.
   **Cost:** kotrace cannot answer "how many operations died in-flight across process death" — a start
-  with no end is invisible; a consumer needing that must model it out-of-band (e.g. a paired
+  with no end is invisible; a consumer needing that must model it out-of-band (e.g., a paired
   start/end analytics `event`, the gap measured backend-side) rather than from the trace tree.
   **Trigger to repay:** a concrete need to observe in-flight-at-death traces, or attach a kotrace span
   tree to a platform fatal. **Likely shape (heavy):** a live adapter that journals span state to disk and
   replays on next launch (the OTel-agent persistent-queue model) — a large scope change to kotrace's
-  in-process, in-memory report model. **Probably won't-do** until such a need is real; logged so the
+  in-process, in-memory report model. **Probably won't do** until such a need is real; logged so the
   boundary is known, not silently assumed.
 
 ### Tests
@@ -64,4 +64,4 @@ _None._
 The full-source code review of 2026-08-22 has been fully triaged: every bug fixed (see
 [DECISIONS.md](DECISIONS.md) ADR-004…008), the terminal-state debt fixed (ADR-006), the KDoc-drift debt
 fixed (ADR-007), the `renderTree` PII debt fixed (ADR-008), and the `ThreadContextElement`-mirror debt
-resolved as **won't-do (YAGNI at three)** — re-open only when a fourth mirrored context element appears.
+resolved as **won't do (YAGNI at three)** — re-open only when a fourth mirrored context element appears.

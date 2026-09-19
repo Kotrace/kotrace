@@ -90,7 +90,7 @@ enum class FaultPhase { LIVE, SPANLESS_LIVE, REPORT }
 - **Input:** the phase, the adapter whose region threw (`null` for a shared record-construction fault), and
   the caught `Throwable`.
 - **Default:** absent ⇒ the fault is swallowed silently (release-safe: telemetry failing must not surface).
-  A consumer opts a hook in to observe faults — e.g. log or count them (a debug build that wants a hard stop
+  A consumer opts a hook in to observe faults — e.g., log or count them (a debug build that wants a hard stop
   signals it out of band, since the hook's own throw is swallowed — see below).
 - **Which `Throwable`s are contained.** Ordinary exceptions, an adapter-injected `CancellationException`, and
   `AssertionError` are caught and routed to the hook. **`VirtualMachineError` (incl. `OutOfMemoryError`,

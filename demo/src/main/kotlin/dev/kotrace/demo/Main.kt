@@ -210,7 +210,7 @@ fun main() = runBlocking<Unit> {
     // contains — release would install neither.
     val export = FailureExport()
     val faultWatch = FaultWatch()
-    // FaultyLive is installed BEFORE LiveWatch on purpose: it fails first, so LiveWatch printing afterwards
+    // FaultyLive is installed BEFORE LiveWatch on purpose: it fails first, so LiveWatch printing afterward
     // is honest proof that a contained fault does not starve the siblings that follow it (ADR-014).
     Kotrace.install(listOf(FaultyLive(), LiveWatch(), export), faultWatch)
 

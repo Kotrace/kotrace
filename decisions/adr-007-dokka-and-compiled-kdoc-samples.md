@@ -7,7 +7,7 @@
 
 ## Context
 
-KDoc code examples were hand-written strings. Nothing compiled them, so they drifted from the real API — a
+KDoc code examples were handwritten strings. Nothing compiled them, so they drifted from the real API — a
 copy-paste example once read `if (status != TraceStatus.Error) return`, which does not compile (`ERROR` is
 the constant). The canonical `ReportAdapter` self-gate is exactly the snippet a consumer pastes, so drift
 there is high-impact.

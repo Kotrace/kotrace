@@ -7,7 +7,7 @@ package dev.kotrace.event
  * [NamedEvent] analytics occurrence, both carrying free [AttributedEvent.attributes]) and an
  * [ExceptionEvent] (the birthplace throwable, carrying the raw object and no attributes).
  *
- * [atNanos] is `System.nanoTime()` at emit, used only to order events within the tree render — not a
+ * [atNanos] is `System.nanoTime()` at emit time, used only to order events within the tree render — not a
  * wall clock.
  */
 sealed interface SpanEvent {
@@ -16,7 +16,7 @@ sealed interface SpanEvent {
 
 /**
  * An event carrying free-form [attributes] — the shared shape of a [LogEvent] and a [NamedEvent]. Values
- * are static symbols/ids, never user content (EH-MON-4); severity, tag and layer all ride here rather
+ * are static symbols/ids, never user content (EH-MON-4); severity, tag, and layer all ride here rather
  * than as typed fields, so kotrace neither ranks nor interprets them — the consumer's [dev.kotrace.TracePolicy] does.
  *
  * [ExceptionEvent] is deliberately **not** an `AttributedEvent`: its `Throwable` is its data, so an

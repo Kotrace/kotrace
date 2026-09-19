@@ -62,7 +62,7 @@ there, so it can never be silently dropped from a failure report.
 
 ### Vocabulary
 
-The canonical words. kotrace **owns** these — a consumer (e.g. the Camailux `:core:common` facade)
+The canonical words. kotrace **owns** these — a consumer (e.g., the Camailux `:core:common` facade)
 references them and adds its own binding terms on top; it does not redefine them. The four verbs never
 interchange.
 
@@ -115,7 +115,7 @@ A span carries **two** string→string channels, split by role (ADR-001):
   once the response returns). It rides onto every `TraceRecord` as payload but is **never** a filter key.
 
 The split is a correctness invariant, not tidiness: a value known only late (a result) cannot be a filter
-input, because at live emit its presence varies with event order — a policy filtering on it would race. So
+input, because at live emit time its presence varies with event order — a policy filtering on it would race. So
 late values are info (payload), fixed birth values are attributes (filter). See §4 and ADR-001.
 
 ### `SpanEvent` — a capture-time occurrence (sealed)
@@ -207,7 +207,7 @@ These are **four separate boundaries**, decoupled on purpose: a span can have a 
 collector (untraced-but-identified); the config is orthogonal to both. Why a `ThreadContextElement` and not
 a bare `ThreadLocal`: a coroutine resumes on different threads, so the mirror must be re-established on every
 resume and restored on the way out — that is exactly the `updateThreadContext`/`restoreThreadContext`
-contract. `AbstractCoroutineContextElement` supplies only the `key` plumbing; it could be hand-written.
+contract. `AbstractCoroutineContextElement` supplies only the `key` plumbing; it could be handwritten.
 
 ### `SpanCollector` is per-trace and ephemeral
 
@@ -225,10 +225,10 @@ process-wide, so it lives in `Kotrace`, the install-once fan-out config. Every f
 `TraceConfig` on the context (`withContext(collector + TraceConfig(...))`) is an **override** for that flow.
 This is what lets a **span-less emit** and a non-suspend root fan out with no coroutine to carry adapters.
 `Kotrace.install(...)` publishes the config once at startup through an `AtomicReference` (safe publication);
-it is read-only after, and a second install is a hard error (fail-closed, no silent replace). It is the sole
+it is read-only after, and a second installation is a hard error (fail-closed, no silent replace). It is the sole
 mutable process state in the library, documented as such — and optional: with nothing installed and no
 override, every path is a safe no-op. (Report needs a `SpanCollector`: a top-level suspend `span` auto-roots
-one (ADR-013); a non-suspend flow or a flow that only does span-less emits has none, so it is live-only by
+one (ADR-013); a non-suspend flow or a flow that only performs span-less emission has none, so it is live-only by
 construction.)
 
 **Setup guidance.** Under DI (Hilt/Koin), resolve the adapters from the graph and `install` once at app
@@ -247,7 +247,7 @@ through uncaught is marked — and it stops exactly where a `try/catch` handled 
 control-flow information: a deep-search over the finished tree **cannot** distinguish "error handled and
 recovered" (trace OK) from "error escaped" (trace failed), because both leave the same error at the
 birthplace. Propagated `status` records where the exception actually stopped; that is why it must be set as
-the exception travels, not derived afterwards.
+the exception travels, not derived afterward.
 
 ```mermaid
 flowchart TB

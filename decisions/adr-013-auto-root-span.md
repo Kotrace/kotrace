@@ -210,7 +210,7 @@ containment.
   removed and a per-use decision; the nested-throw form is a runtime landmine (constraint 2); and it does
   not remove silent loss (forgetting it loses the trace), catching omission only in builds where a strict
   mode is armed. It buys visibility of the boundary at the cost of everything the maintainer optimizes for.
-- **Auto-derive status from the finished tree ("any descendant `ERROR`") — rejected.** A read-time search
+- **Auto-derive status from the finished tree (any descendant `ERROR`) — rejected.** A read-time search
   cannot tell a handled-and-recovered failure from an escaped one; both leave the same birthplace error
   ([`ARCHITECTURE.md:235`](../ARCHITECTURE.md:235)). Status must come from whether the throwable escaped the
   root, which the block's completion states exactly, and which alone distinguishes `CANCELLED`.
@@ -235,7 +235,7 @@ containment.
   adapter that is both live and report will see the live record and then the report record — intended
   two-phase behavior. The one existing assertion that changes is
   [`SpanlessScopeTest.kt:194`](../src/test/kotlin/dev/kotrace/SpanlessScopeTest.kt:194) ("no `SpanCollector`,
-  no `reportTrace` — live-only by design", at the test starting
+  no `reportTrace` — live-only by design," at the test starting
   [`:188`](../src/test/kotlin/dev/kotrace/SpanlessScopeTest.kt:188)); several other top-level-span tests now
   run the report path but keep their assertions (no `ReportAdapter`, or an already-supplied collector) and
   are worth explicit report-count coverage.

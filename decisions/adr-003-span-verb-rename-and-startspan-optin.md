@@ -23,14 +23,14 @@ Two problems, both felt first by a newcomer.
 **1. The names are inconsistent, and one of them is wrong by kotrace's own vocabulary.** ARCHITECTURE
 § Vocabulary makes `trace` (one tree / `trace_id`) and `span` (one node) canonical and non-interchangeable;
 CLAUDE.md restates it ("the four verbs never interchange"). Yet `trace(name) { }` opens **one span** — a
-node, not a tree — and usually a *child*, not a root. It is named after the wrong altitude (tree vs node)
-and implies the wrong thing (start-the-trace vs open-a-child). `startSpan` names the same underlying
+node, not a tree — and usually a *child*, not a root. It is named after the wrong altitude (tree vs. node)
+and implies the wrong thing (start-the-trace vs. open-a-child). `startSpan` names the same underlying
 operation correctly. So the two public entry points do the same thing — open a span, child-or-root — under
 two different nouns, one of which the project's own glossary forbids. A reader cannot infer the rule
 because there isn't one; it is drift.
 
 **2. `startSpan` is silently misusable from suspend code, with no compiler signal.** It is a plain
-function, so it compiles anywhere. Called inside a suspend function it *appears* to work — the thread
+function, so it compiles anywhere. Called inside a suspend function, it *appears* to work — the thread
 mirror holds the active span at the call instant, so the new span parents and collects. But `startSpan`
 never installs itself into the coroutine context (no `withContext(SpanContext)`). So any nested suspend
 `trace`/`currentSpan()` reads the **old** ambient span as its parent, not the `startSpan` node. The nested
