@@ -35,45 +35,49 @@ import java.util.concurrent.atomic.AtomicReference
  */
 object Kotrace {
 
-    /** Memoizing holder: the provider resolves exactly once, on the first [defaultConfig] read (safe publication). */
-    private val installed = AtomicReference<Lazy<TraceConfig>?>(null)
+    /**
+     * The one immutable installed holder (ADR-010/018): the lazily-resolved [TraceConfig] **and** the
+     * process-wide [FailureDetector], published together through a single [AtomicReference] so they can never
+     * be observed torn and a failed second install mutates neither. The `config` provider resolves exactly
+     * once, on the first [defaultConfig] read (safe publication); the `failureDetector` is a plain reference
+     * read directly (it does **not** force the config provider — ADR-018 keeps detection off the lazy path).
+     */
+    private class Installed(val config: Lazy<TraceConfig>, val failureDetector: FailureDetector?)
+
+    private val installed = AtomicReference<Installed?>(null)
 
     /** Strict-uninstalled latch (ADR-011): when armed, a fan-out that resolves no config is a hard error. */
     private val strict = AtomicBoolean(false)
 
     /**
-     * Publishes the process-wide fan-out [adapters] (live and report). Call once at startup. Throws
-     * [IllegalStateException] on a second call — the config is read-only after install. An empty list
-     * installs a no-op config (fan-out reaches nowhere).
+     * Publishes the process-wide fan-out [adapters], with an optional [faultHook] (ADR-014) and an optional
+     * process-wide [failureDetector] (ADR-018, returned-failure classification). Call once at startup. Throws
+     * [IllegalStateException] on a second call — the holder is read-only after install. An empty list installs
+     * a no-op config; a null [failureDetector] (the default) leaves returned-value detection off (today's
+     * behavior). Snapshots the list now, not on first fan-out, so a later mutation can't change the config.
      */
-    fun install(adapters: List<TraceAdapter>) = install(adapters, null)
-
-    /**
-     * Publishes the process-wide fan-out [adapters] with an optional [faultHook] (ADR-014) observing faults
-     * contained during fan-out — so the hook covers the normal global setup, not only per-flow overrides.
-     * Same install-once contract.
-     */
-    fun install(adapters: List<TraceAdapter>, faultHook: AdapterFaultHook?) {
-        // Snapshot now, not on first fan-out: a caller mutating the list after install (or concurrently)
-        // must not silently change — or empty — the installed config.
+    fun install(
+        adapters: List<TraceAdapter>,
+        faultHook: AdapterFaultHook? = null,
+        failureDetector: FailureDetector? = null,
+    ) {
         val snapshot = adapters.toList()
-        install(faultHook) { snapshot }
+        install(faultHook, failureDetector) { snapshot }
     }
 
     /**
      * Publishes the process-wide fan-out config from a [provider] resolved **lazily**, exactly once, on the
-     * first fan-out that reads it — so a consumer can register the config before its DI graph is ready and
-     * defer building the adapters until first use. Same install-once contract as the list overload: a second
-     * call throws.
+     * first fan-out that reads it — so a consumer can register before its DI graph is ready and defer building
+     * the adapters until first use — with an optional [faultHook] (ADR-014) and process-wide [failureDetector]
+     * (ADR-018). Same install-once contract: a second call throws. The [failureDetector] is stored eagerly
+     * alongside the lazy config in the one [Installed] holder.
      */
-    fun install(provider: () -> List<TraceAdapter>) = install(null, provider)
-
-    /**
-     * Lazy [provider] overload carrying an optional [faultHook] (ADR-014). Same install-once, lazy-resolve
-     * contract as [install]`(provider)`.
-     */
-    fun install(faultHook: AdapterFaultHook?, provider: () -> List<TraceAdapter>) {
-        val holder = lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
+    fun install(
+        faultHook: AdapterFaultHook? = null,
+        failureDetector: FailureDetector? = null,
+        provider: () -> List<TraceAdapter>,
+    ) {
+        val config = lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
             val adapters = try {
                 provider()
             } catch (t: Throwable) {
@@ -88,13 +92,20 @@ object Kotrace {
             }
             TraceConfig(adapters.toList(), faultHook)
         }
-        if (!installed.compareAndSet(null, holder)) {
+        if (!installed.compareAndSet(null, Installed(config, failureDetector))) {
             error("Kotrace config already installed; it is install-once (ADR-010)")
         }
     }
 
     /** The installed process-wide [TraceConfig], or null if none — the fallback when no context override exists. */
-    internal fun defaultConfig(): TraceConfig? = installed.get()?.value
+    internal fun defaultConfig(): TraceConfig? = installed.get()?.config?.value
+
+    /**
+     * The installed process-wide [FailureDetector] (ADR-018), or null if none. Read directly — it does **not**
+     * force the lazy config provider — so resolving a span's detector on the normal-return path never triggers
+     * adapter construction or the strict-uninstalled latch. Null ⇒ no returned-value detection.
+     */
+    internal fun failureDetector(): FailureDetector? = installed.get()?.failureDetector
 
     /**
      * Arms the **strict-uninstalled** check (ADR-011): from now on, a fan-out that resolves to no config — no

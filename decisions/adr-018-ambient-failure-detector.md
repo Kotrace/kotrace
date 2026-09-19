@@ -370,10 +370,22 @@ consumer needing the true production origin marks it explicitly at the producer.
 
 ## Source compatibility
 
-- **`Kotrace.install(...)`** gains a **trailing defaulted** parameter on each overload (`failureDetector =
-  null`). Source-compatible for existing calls; **binary**: the `install` JVM signatures change, so a
-  pre-compiled caller needs a recompile (a stale caller of the old signature would get `NoSuchMethodError`, per
-  ADR-017's analysis of the same shape).
+- **`Kotrace.install(...)`** is consolidated from **four** explicit overloads to **two** defaulted ones —
+  `install(adapters, faultHook = null, failureDetector = null)` and `install(faultHook = null,
+  failureDetector = null, provider)`. **Source break, narrow and swept.** The trailing-lambda and
+  named/positional-list forms are unaffected: `install(list)`, `install(list, hook)`, `install { … }`,
+  `install(hook) { … }` all resolve to the two survivors. What breaks is a **positional provider** call —
+  `install(providerVal)` or `install(hookVal, providerVal)` where the provider is passed as a *positional
+  argument variable*, not a trailing lambda — because the provider slot now follows two defaulted parameters
+  it cannot skip positionally. A sweep of `src`, `demo`, `benchmarks`, the integration modules, and the
+  reference consumer found **no** call sites of that shape (all installs are `install(list[, hook])` or a
+  trailing-lambda provider) — but an unknown external consumer of the positional-provider form remains
+  possible, so this is documented as a real break, not claimed away. The compatibility stated here is
+  **Kotlin-source** compatibility: a **Java** caller has no default arguments, so a recompiled Java caller of
+  the former one-/two-argument *list* overloads breaks too (those JVM methods disappear → `NoSuchMethodError`),
+  even though the Kotlin call sites do not — the same class of release break ADR-017 accepted for `span`'s
+  positional form. Restoring the old shapes as extra forwarding overloads is possible if an external
+  positional-provider (or Java) caller ever needs it.
 - **`TraceConfig` is unchanged** — the detector does not live there (§ Config home).
 - **`span(...)`** gains a **defaulted** `failureDetector` **before** `block`. A trailing lambda still binds
   `block` and Kotlin skips the defaulted parameters before it, so `span(name) { }`, `span(name, attrs, links)

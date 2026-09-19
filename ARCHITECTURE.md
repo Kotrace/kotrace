@@ -471,11 +471,17 @@ the live `Throwable` as a field.
 kotrace's whole consumer surface is: the `span`/log/`addNamed` verbs, the `TraceAdapter`/`TracePolicy`
 interfaces, `TraceConfig`, and `reportTrace`. **The common host writes only `span { }`** — a top-level one
 auto-roots and reports at its outcome (ADR-013), so the report boundary needs no explicit `reportTrace`. A
-**failure-as-value** host — one whose domain failures are *returned* (not thrown) — writes the return-aware
-`span(returnedOutcome = …) { }` overload instead (ADR-016): the mapper turns the returned value into the
-trace's `TraceStatus` and rides trace-level orphan failures up as `attached` (ADR-012), still a single
-`span { }`-shaped boundary. `reportTrace` (and a hand-seeded `SpanCollector`) stays for genuinely bespoke
-boundaries. A host implements adapters that bridge `TraceRecord` → its own sinks and never
+**failure-as-value** host — one whose domain failures are *returned* (not thrown) — installs a process-wide
+`failureDetector` (`Kotrace.install(failureDetector = { (it as? Result<*>)?.exceptionOrNull() })`, ADR-018): on
+**every** span it turns a returned failure value into the same span-level `ERROR` + birthplace a thrown one
+gets (via the propagation recorder, so a returned failure's climb dedups to one birthplace like a thrown one),
+and at the auto-root a root-returned failure supplies the default trace verdict by precedence — a returned
+`CancellationException` → `CANCELLED` (mirroring a thrown escaping one), any other detected throwable →
+`ERROR`, else `OK`. It is overridable per-call (`span(failureDetector = …) { }`), including a local opt-out
+`{ null }`. `span(returnedOutcome = …) { }` (ADR-016) remains for *overriding* that verdict at the auto-root
+(remap a status, force `OK`, or ride trace-level orphan failures up as `attached`, ADR-012) — an explicit
+`returnedOutcome` wins over the detector default. Still a single `span { }`-shaped boundary. `reportTrace`
+(and a hand-seeded `SpanCollector`) stays for genuinely bespoke boundaries. A host implements adapters that bridge `TraceRecord` → its own sinks and never
 touches the `Span` tree; an optional `AdapterFaultHook` on the config observes any fault contained during
 fan-out (ADR-014). The reference consumer (Camailux) keeps *all* kotrace naming inside one module: a
 `CrashAdapter` (records → crash reporter), an `AnalyticsAdapter` (`NamedRecord` → analytics), a debug
