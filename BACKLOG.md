@@ -55,6 +55,29 @@ flow — is fixed: birthplace now dedups per `ExceptionEvent` by a stable, fail-
   in-process, in-memory report model. **Probably won't do** until such a need is real; logged so the
   boundary is known, not silently assumed.
 
+- **D03 — no configured handling for value-only (non-`Throwable`) domain failures.**
+  [ADR-018](decisions/adr-018-ambient-failure-detector.md)'s `failureDetector: (Any?) -> Throwable?` covers
+  a **returned** failure that carries a `Throwable` (the `Result.failure` case, whose payload is always a
+  `Throwable`). A failure modeled as a **plain value** — `Either.Left(DomainError)`, an arrow-kt `Raise`, a
+  sealed `DomainError` — has no `Throwable`, so it can drive neither `ExceptionRecord.throwable` (the crash
+  reporter needs a live object) nor `lineageKeyOf` (no cause chain). Today such a failure is handled the way
+  [ARCHITECTURE §8](ARCHITECTURE.md) already prescribes for any non-throwable structured error: a manual
+  `currentSpan()?.log(ERROR) { … }` breadcrumb, plus (at the auto-root) `returnedOutcome` mapping it to the
+  trace verdict. **Why now:** unknown whether the domain even models failures value-only — if everything is
+  `Result<T>`, ADR-018 already covers it and this is **YAGNI**. **Cost:** a value-only-failure consumer
+  hand-writes the breadcrumb at each boundary (the same manual step ADR-018 removed for the `Throwable`
+  case), and gets no configured "what is a domain failure" rule. **Trigger to repay:** a consumer that
+  models domain failures as non-`Throwable` values and wants them auto-recorded. **Likely shape:** a
+  `domainFailureClassifier` (value → a symbol-only `LogEvent(ERROR)` descriptor, routed to the **log/report**
+  path, never the crash path), i.e. the *log analog* of ADR-018's `failureDetector`. Two variants weighed and
+  **not** decided: **(A)** ambient per-span (accepts N breadcrumbs on a returned-value climb — `LogEvent`s do
+  not dedup, so **no birthplace** for value-only failures); **(B)** verdict-level only — no per-span
+  auto-record, the failure rides `returnedOutcome` to `TraceStatus` plus **one** explicit breadcrumb at the
+  producing layer (leans B: a domain failure is an expected outcome, not a crash climbing a tree, so the
+  birthplace machinery is over-scoped for it). Related: ADR-018 (`failureDetector`, the `Throwable` case),
+  ADR-005/ADR-015 (birthplace / lineage key — unavailable without a `Throwable`), ADR-016 (`returnedOutcome`
+  trace verdict), ADR-001 (symbol-only, PII-safe fields).
+
 ### Tests
 
 _None._
