@@ -23,7 +23,7 @@ enum class SpanStatus { OK, ERROR }
  * and shipped onward past easy recall. Keeping every field a symbol is what makes those sinks PII-safe by
  * construction. The raw [Throwable] on an [dev.kotrace.event.ExceptionEvent] is the **sole exception** —
  * its `message` is not fully in our control (stdlib/third-party interpolate user data) — and it is therefore
- * confined to a crash reporter: a sink purpose-built to hold PII (isolated, purpose-limited, retention-bound
+ * confined to a crash reporter: a sink purpose-built to hold PII (isolated, purpose-limited, retention-bound,
  * and deletable). It must never be rendered onto the [dev.kotrace.event.toJson] / backend path.
  *
  * [attributes] are the span's **fixed, birth-set filter dimensions** — an immutable [Map] settled at
@@ -82,7 +82,7 @@ class Span(
      * [AtomicReference] (D1 / ADR-006). Two guarantees fall out. **Consistency:** a reader gets a coherent
      * pair, never `status == ERROR` with a torn `endNanos`. **Visibility:** each publish is a happens-before
      * edge, so a read is correct even off an unsynchronized thread — not only after the structured-concurrency
-     * join the report already crosses; that keeps a future pre-join / mid-flight reader (e.g. a live
+     * join the report already crosses; that keeps a future pre-join / mid-flight reader (e.g., a live
      * dashboard) safe without leaning on the join.
      *
      * The birthplace throwable is deliberately **not** here — it lives in [events] (copy-on-write), its single

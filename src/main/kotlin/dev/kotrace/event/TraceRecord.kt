@@ -30,7 +30,7 @@ sealed interface TraceRecord {
     /**
      * The correlation umbrella above [traceId] (`scope ⊇ trace ⊇ span`, ADR-010) — the ambient
      * [dev.kotrace.withScope] id active when this record was emitted, or null outside any scope. A **plain
-     * correlation key**: never subject to duration, outcome, the report path or waterfall rendering — those
+     * correlation key**: never subject to duration, outcome, the report path, or waterfall rendering — those
      * are trace semantics. A span opened inside a scope stamps it alongside [traceId]; a span-less emit
      * inside a scope carries it alone. Rendered by [toJson] only when non-null (back-compat).
      */

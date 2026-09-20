@@ -36,7 +36,7 @@ data class NamedRecord(
  * `addEvent`: it pairs with [addException] (verb + kind), and every verb adds *an* event, so the umbrella
  * word would mislead. A named event is live-only (not reportable) and, like every verb, stored
  * unconditionally then filtered at fan-out (ADR-002); kotrace stays generic — "analytics" is a consumer
- * concern realised in a [dev.kotrace.LiveAdapter], not here.
+ * concern realized in a [dev.kotrace.LiveAdapter], not here.
  *
  * Called on a span in hand: a suspend caller reaches it via `currentSpan()?.addNamed(...)`; a non-suspend
  * bridge holding the span calls it directly, or resolves via `currentThreadSpan()`. Config (live adapters)

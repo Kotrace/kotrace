@@ -42,7 +42,7 @@ data class LogRecord(
 ) : AttributedRecord
 
 /**
- * The log verb — appends a log [message] with [attributes] to this span. Severity, tag and the like ride
+ * The log verb — appends a log [message] with [attributes] to this span. Severity, tag, and the like ride
  * in [attributes] as consumer symbols; kotrace neither ranks nor names them. [sensitive] classifies the
  * [message] as carrying user data (a captured body); whether it is fanned out is each adapter's
  * [dev.kotrace.TracePolicy.acceptsSensitive] decision (see [LogEvent.sensitive]). The [message] provider is

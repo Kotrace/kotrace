@@ -25,7 +25,7 @@ import java.security.SecureRandom
  * trace-level orphan failures via [TraceOutcome.attached] (ADR-012). [returnedOutcome] runs **exactly once**,
  * on a normal return, and only when this call auto-roots; in every other context state it is **never invoked**.
  *
- * **Verdict precedence when auto-rooting on a normal return (ADR-018).** An explicit [returnedOutcome] (i.e.
+ * **Verdict precedence when auto-rooting on a normal return (ADR-018).** An explicit [returnedOutcome] (i.e.,
  * not the default) wins; otherwise the trace verdict comes from the **root's own detected failure**: a returned
  * [CancellationException] → [TraceStatus.CANCELLED] (the same as a thrown escaping one), any other detected
  * throwable → [TraceStatus.ERROR], else [TraceStatus.OK]. So a [failureDetector] alone (no [returnedOutcome])
@@ -33,14 +33,14 @@ import java.security.SecureRandom
  * recorded on the span yet reported `OK`.
  *
  * **`failureDetector` sees `T` — do not discard the returned value.** The detector is run on what [block]
- * returns. If the `span` call sits in a **`Unit`-expected position** and its result is discarded (e.g. it is
+ * returns. If the `span` call sits in a **`Unit`-expected position** and its result is discarded (e.g., it is
  * the last expression of a `() -> Unit` lambda), Kotlin infers `T = Unit` and the detector receives `Unit`,
  * not the `Result` — so nothing is detected. A failure-as-value caller *uses* the returned value (returns it
  * up), so `T` is the real type; bind it (`val r: Result<X> = span(name) { … }`) rather than calling `span`
  * as a value-discarding statement.
  *
  * Any other context state is the instrumentation-only path below: with a collector present the span is a child
- * (or a manual-boundary root the consumer reports itself); with a span present but no collector it is a child
+ * (or a manual-boundary root the consumer reports itself); with a span present but no collector, it is a child
  * for identity/live only. The consumer therefore only ever writes `span { }`; the outermost one is the
  * boundary, and [returnedOutcome] is inert on every non-auto-root span.
  *
@@ -173,10 +173,10 @@ private fun <T> detectReturnedFailure(span: Span, detector: (T) -> Throwable?, v
 }
 
 /**
- * Reports the auto-root trace with strict-mode precedence (ADR-013): if reporting throws — e.g. strict
+ * Reports the auto-root trace with strict-mode precedence (ADR-013): if reporting throws — e.g., strict
  * [resolvedThreadConfig] with nothing installed (ADR-011) — and an application throwable already [escaped],
  * preserve it and attach the failure as suppressed (never let a `finally` throw replace the app throwable).
- * On a normally-completing block a report failure propagates as itself; a JVM-fatal failure always does.
+ * On a normally completing block a report failure propagates as itself; a JVM-fatal failure always does.
  */
 private fun reportAutoRoot(
     collector: SpanCollector,
