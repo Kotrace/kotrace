@@ -13,27 +13,23 @@ import java.util.IdentityHashMap
  * symbolication and grouping. It has no attributes, so a [dev.kotrace.TracePolicy] filtering on them leaves it alone;
  * only a policy that explicitly inspects an [ExceptionEvent] in [dev.kotrace.TracePolicy.acceptsEvent] can drop it.
  */
-class ExceptionEvent(
+class ExceptionEvent internal constructor(
     val throwable: Throwable,
     override val atNanos: Long,
-) : SpanEvent {
     /**
      * Stable **lineage key** for report/render dedup (ADR-015). Birthplace selection collapses events that
      * share a key to the deepest span carrying it, so one failure climbing the tree reports once. The key is
      * an object compared by **identity** (see [dev.kotrace.TraceTreeIndex.birthplaceExceptionsOf]).
      *
-     * The default is a **fresh, distinct** identity: a consumer-recorded event (public [addException]) is its
-     * own lineage and is never deduped away. Only the internal propagation recorder ([recordPropagatedException])
-     * overwrites it via [stampLineage] with the canonical key, so a *climb* — the same failure re-recorded on
-     * each enclosing span — collapses. Not a constructor parameter, so the public 2-arg constructor's JVM
-     * descriptor is unchanged.
+     * Defaults to a **fresh, distinct** identity: a consumer-recorded event (public [addException]) is its own
+     * lineage and is never deduped away. Only the internal propagation recorder ([recordPropagatedException])
+     * passes the canonical [lineageKeyOf] key, so a *climb* — the same failure re-recorded on each enclosing
+     * span — collapses. `internal` on both the constructor and this property keeps the key out of the public
+     * API: an event can only enter a span's timeline through a verb (ADR-002/emit), and [dev.kotrace.Span.events]
+     * is read-only, so no consumer can construct or inject one with a chosen key.
      */
-    internal var lineageKey: Any = Any()
-        private set
-
-    /** Stamps the canonical [lineageKey]; called by [recordPropagatedException] before the event is emitted. */
-    internal fun stampLineage(key: Any): ExceptionEvent = apply { lineageKey = key }
-}
+    internal val lineageKey: Any = Any(),
+) : SpanEvent
 
 /**
  * The exact class name of the artificial **boundary** frame kotlinx.coroutines splices into a
@@ -72,7 +68,7 @@ private const val MAX_RECOVERY_DEPTH = 100
  * **Total by contract.** [Throwable.cause] / [Throwable.message] / [Throwable.stackTrace] are all overridable,
  * so a hostile throwable can throw from any of them. This must never propagate: the internal recorder runs on
  * the failure path — including [dev.kotrace.end], which (unlike the suspend `span` catch) has no strict-mode
- * guard around it. A non-fatal accessor throw is swallowed and we fail open on the last object safely held;
+ * guard around it. A non-fatal accessor throw is swallowed, and we fail to open on the last object safely held;
  * only a JVM-fatal fault is rethrown.
  */
 internal fun lineageKeyOf(throwable: Throwable): Any {
@@ -117,18 +113,6 @@ private fun Throwable.isRecoveryWrapperOf(cause: Throwable): Boolean =
         stackTrace.any { it.className == COROUTINE_BOUNDARY_FRAME || it.className.contains(COROUTINE_BOUNDARY_LEGACY) }
 
 /**
- * The crash record — identity + the birthplace [throwable]. Synthesised from an [ExceptionEvent] at
- * fan-out; it carries no attributes, so a policy filtering on them keeps it by default — only a policy that
- * covers exceptions ([dev.kotrace.TracePolicy.acceptsEvent]) can drop the crash cause.
- *
- * Two-sink PII split (see [dev.kotrace.Span]'s invariant): the raw [throwable] — the one field allowed to
- * carry user data — must go **only** to a crash reporter, never to the general [toJson] log path (which
- * renders the class name only). An adapter routing it there **must stamp [traceId] as a searchable key on
- * the crash report** (e.g. Crashlytics `setCustomKey("trace_id", traceId)` before `recordException`);
- * `trace_id` is the sole join key between the two sinks. Without it, operations can see *that* a trace
- * failed in the log store but cannot pull its detail from the crash reporter.
- */
-/**
  * Whether an emitted [ExceptionRecord] is the failure's **origin** or a **copy** re-recorded as it climbed
  * the tree (ADR-019). The report classifies every exception record it emits ([BIRTHPLACE] = deepest span
  * carrying the lineage, [PROPAGATED] = an ancestor copy); the **live** path emits an exception before the tree
@@ -136,6 +120,18 @@ private fun Throwable.isRecoveryWrapperOf(cause: Throwable): Boolean =
  */
 enum class ExceptionOrigin { BIRTHPLACE, PROPAGATED }
 
+/**
+ * The crash record — identity + the birthplace [throwable]. Synthesized from an [ExceptionEvent] at
+ * fan-out; it carries no attributes, so a policy filtering on them keeps it by default — only a policy that
+ * covers exceptions ([dev.kotrace.TracePolicy.acceptsEvent]) can drop the crash cause.
+ *
+ * Two-sink PII split (see [dev.kotrace.Span]'s invariant): the raw [throwable] — the one field allowed to
+ * carry user data — must go **only** to a crash reporter, never to the general [toJson] log path (which
+ * renders the class name only). An adapter routing it there **must stamp [traceId] as a searchable key on
+ * the crash report** (e.g., Crashlytics `setCustomKey("trace_id", traceId)` before `recordException`);
+ * `trace_id` is the sole join key between the two sinks. Without it, operations can see *that* a trace
+ * failed in the log store but cannot pull its detail from the crash reporter.
+ */
 data class ExceptionRecord(
     override val traceId: String?,
     override val spanId: String?,
@@ -195,7 +191,7 @@ fun Span.addException(cause: Throwable, info: Map<String, String> = emptyMap()) 
  * makes the climbing object a different instance at each boundary.
  */
 internal fun Span.recordPropagatedException(cause: Throwable) {
-    emit(ExceptionEvent(cause, System.nanoTime()).stampLineage(lineageKeyOf(cause)), resolvedThreadConfig())
+    emit(ExceptionEvent(cause, System.nanoTime(), lineageKeyOf(cause)), resolvedThreadConfig())
 }
 
 /** The birthplace throwable recorded on this span, if any — the first [ExceptionEvent] on its timeline. */

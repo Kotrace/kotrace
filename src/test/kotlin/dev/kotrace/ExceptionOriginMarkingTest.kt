@@ -213,11 +213,11 @@ class ExceptionOriginMarkingTest {
     @Test fun `TraceTreeIndex snapshots events once - a late append is unseen by eventsOf and classification`() {
         val root = Span("t", "0000000000000001", null, "root", 0)
         val first = ExceptionEvent(IllegalStateException("first"), 1)
-        root.events += first
+        root.eventBuffer += first
 
         val index = TraceTreeIndex(listOf(root), root) // snapshot taken here, in the constructor
 
-        root.events += ExceptionEvent(IllegalStateException("late"), 2) // appended AFTER indexing
+        root.eventBuffer += ExceptionEvent(IllegalStateException("late"), 2) // appended AFTER indexing
 
         assertEquals("eventsOf returns the index-time snapshot, not the live list", listOf<SpanEvent>(first), index.eventsOf(root))
         assertEquals("classification used that same snapshot — the late event is invisible to it",

@@ -1,6 +1,7 @@
 package dev.kotrace
 
 import dev.kotrace.event.SpanEvent
+import java.util.Collections
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicReference
@@ -54,13 +55,27 @@ class Span(
     links: List<TraceLink> = emptyList(),
     val scopeId: String? = null,
 ) {
-    /** Birth-set filter dimensions — defensively copied so a caller mutating its map after construction can't desync live vs report. */
+    /** Birth-set filter dimensions — defensively copied so a caller mutating its map after construction can't desync live vs. report. */
     val attributes: Map<String, String> = attributes.toMap()
 
     /** Birth-set cross-trace edges — defensively copied for the same reason as [attributes]. */
     val links: List<TraceLink> = links.toList()
 
-    val events: MutableList<SpanEvent> = CopyOnWriteArrayList()
+    /**
+     * The mutable copy-on-write backing buffer — the **sole** append target ([dev.kotrace.event.emit], reached
+     * through the log / named / exception verbs). Kept `internal` so an event only ever enters the timeline
+     * through a verb (and thus through fan-out); consumers read [events] but cannot append.
+     */
+    internal val eventBuffer: MutableList<SpanEvent> = CopyOnWriteArrayList()
+
+    /**
+     * The span's timeline as a **read-only** view: a [TracePolicy] and the report/format path read and
+     * pattern-match events here, but cannot append — nor cast back to a [MutableList] to force one in
+     * ([Collections.unmodifiableList] throws on any mutator). It wraps the live [eventBuffer], so iteration
+     * still delegates to the copy-on-write snapshot. Read off the report/consumer path only (never hot
+     * [dev.kotrace.event.emit], which appends to [eventBuffer] directly), so the per-access wrapper is free.
+     */
+    val events: List<SpanEvent> get() = Collections.unmodifiableList(eventBuffer)
 
     /**
      * The span's terminal state — [status] and [endNanos] — as one immutable pair published through a single

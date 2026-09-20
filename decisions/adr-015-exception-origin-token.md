@@ -1,7 +1,7 @@
 # ADR-015 — Birthplace dedup by a stable, fail-open exception lineage key, not "deepest throwable-bearing span"
 
 - **Date:** 2026-09-13
-- **Status:** Accepted
+- **Status:** Accepted (amended 2026-09-20 — see [Amendment](#amendment-2026-09-20--lineagekey-moved-into-an-internal-constructor))
 - **Affects:** `isBirthplaceAmong` and the report walk (`Report.kt`), the exception verb (`event/TraceException.kt`
   `addException`, `ExceptionEvent`), and `renderTree` (`TraceFormat.kt`, shares birthplace selection). A
   **behavioral change** to which exception records a report contains: (1) the recover-and-rethrow-different case
@@ -86,6 +86,8 @@ open: when lineage cannot be proven, keep the record.** Concretely:
   still changes the constructor's descriptor. Carry it as a **body `var`/property** set only by the internal
   recorder (via an internal factory or secondary path), or make the expanded constructor private and keep the
   original public signature as a secondary constructor. Either way, no ABI change to the public constructor.
+  **Superseded by the 2026-09-20 amendment** — once `Span.events` became read-only there is no consumer path
+  that constructs or injects an `ExceptionEvent`, so the public constructor's ABI no longer needs preserving.
 
 ### How the key is computed (canonicalize, don't chase causes)
 
@@ -239,5 +241,32 @@ Leaving the object as its own identity (fail open) replaces it.
   with two distinct failures (both `error:` lines present) and a single climb (one line).
 
 ---
+
+## Amendment (2026-09-20) — `lineageKey` moved into an internal constructor
+
+The original decision carried `lineageKey` as a body `var` (set by an internal `stampLineage`) **solely** to
+avoid changing the public two-argument `ExceptionEvent` constructor's JVM descriptor. That constraint assumed a
+consumer could record a failure by constructing an `ExceptionEvent` and placing it on a span. That path no
+longer exists: `Span.events` was made a **read-only** view over an `internal` copy-on-write buffer, so the only
+way an event reaches a span's timeline is through a verb (`addException` / `log` / `addNamed`) → `emit`. With no
+consumer construction path, preserving the public constructor's ABI buys nothing.
+
+`ExceptionEvent` therefore now takes `lineageKey` as a defaulted **constructor `val`** behind an `internal`
+primary constructor:
+
+```kotlin
+class ExceptionEvent internal constructor(
+    val throwable: Throwable,
+    override val atNanos: Long,
+    internal val lineageKey: Any = Any(),
+) : SpanEvent
+```
+
+- The **type** stays public (a sealed `SpanEvent` branch that a `TracePolicy.acceptsEvent` override inspects and
+  that consumers read off `Span.events`); only the **constructor** and the **key** are `internal`.
+- `lineageKey` is now an immutable `val`, and `stampLineage` is gone — the propagation recorder passes
+  `lineageKeyOf(cause)` as the third argument; every other site uses the `Any()` default (own lineage).
+- The two-recording-paths rule is unchanged; only its mechanism moved from post-construction mutation to a
+  constructor argument.
 
 [← All decisions](../DECISIONS.md)

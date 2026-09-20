@@ -20,7 +20,7 @@ import dev.kotrace.guardShared
  * crash is never dropped and a filtered breadcrumb is still stored (just not fanned out).
  */
 internal fun Span.emit(event: SpanEvent, config: TraceConfig?, extraInfo: Map<String, String> = emptyMap()) {
-    events += event
+    eventBuffer += event
     val liveAdapters = config?.liveAdapters ?: return
     if (liveAdapters.isEmpty()) return
     val hook = config.faultHook
