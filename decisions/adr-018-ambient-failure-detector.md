@@ -2,15 +2,17 @@
 
 - **Date:** 2026-09-19
 - **Status:** Accepted
+- **Amended:** 2026-09-21 — the root detector result now travels in an internal `SpanCompletion<T>` rather
+  than a mutable field on `Span`; behavior and precedence are unchanged.
 - **Affects:** adds an optional process-wide `failureDetector: (Any?) -> Throwable?` to `Kotrace.install(...)`
   ([`Kotrace.kt:56`](../src/main/kotlin/dev/kotrace/Kotrace.kt:56)) — a separate field, **not** on `TraceConfig`
   (§ Config home); adds a **defaulted per-call override** `failureDetector: (T) -> Throwable?` to `span(...)`
-  ([`Trace.kt:46`](../src/main/kotlin/dev/kotrace/Trace.kt:46)), forwarded through the auto-root recursion
-  ([`Trace.kt:158`](../src/main/kotlin/dev/kotrace/Trace.kt:158)); runs the resolved detector on the **normal
+  ([`Trace.kt`](../src/main/kotlin/dev/kotrace/Trace.kt)); runs the resolved detector on the **normal
   return** of **every** span, so a returned failure gets the same `markStatus(ERROR)` +
-  `recordPropagatedException(throwable)` the `catch` gives a thrown one ([`Trace.kt:75`](../src/main/kotlin/dev/kotrace/Trace.kt:75)).
-  Adds `FaultPhase.FAILURE_DETECTOR` (ADR-014) and one **internal** `Span.detectedFailure: Throwable?` field
-  (never on any `TraceRecord`). At the **auto-root**, when the root detector fires and no explicit
+  `recordPropagatedException(throwable)` the `catch` gives a thrown one. Adds
+  `FaultPhase.FAILURE_DETECTOR` (ADR-014); the root's result is returned through a private
+  `SpanCompletion<T>` and never stored on `Span` or any `TraceRecord`. At the **auto-root**, when the root
+  detector fires and no explicit
   `returnedOutcome` was supplied, the default trace verdict is `CANCELLED` if the detected throwable is a
   `CancellationException`, else `ERROR` (a **precedence chain**, not a second authority — § How `failureDetector`
   relates to `TraceStatus`). **No change** to `TraceConfig`, `TraceOutcome`, `reportTrace`, the report/live
@@ -204,18 +206,16 @@ success/transformed value** (a `Result.success`, or a `Result.failure(differentE
 that span does not fire, and ancestors see a non-failure (or a *new* lineage). Use per-call opt-out only for a
 span whose returned failure is genuinely not a failure *and* is not forwarded up as-is.
 
-### Where it runs — every span's normal-return path (root included, via the recursion)
+### Where it runs — every span's normal-return path (root included, via one execution path)
 
-**Non-auto-root span** ([`Trace.kt:71-96`](../src/main/kotlin/dev/kotrace/Trace.kt:71)) — capture the return
-value, run the detector before returning; `catch`/`finally` unchanged. **The auto-root's root span is opened
-here too**, because the auto-root branch installs the collector and then *recurses* into `span(...)` (now
-non-auto-root); so detection for the root happens on this one path, exactly once:
+`executeSpan` captures the return value and runs the detector before returning; `catch`/`finally` are unchanged.
+Both ordinary spans and the auto-root's root use this helper, so detection happens on one path, exactly once:
 
 ```kotlin
 return try {
     val value = withContext(SpanContext(opened)) { block() }
-    if (detector != null) detectReturnedFailure(opened, detector, value)   // NEW — analog of the catch below
-    value
+    val detectedFailure = detector?.let { detectReturnedFailure(opened, it, value) }
+    SpanCompletion(value, detectedFailure)
 } catch (t: Throwable) {
     opened.markStatus(SpanStatus.ERROR)
     try { opened.recordPropagatedException(t) } catch (rf: Throwable) { if (rf.isFatalFault()) throw rf; t.alsoSuppress(rf) }
@@ -224,28 +224,38 @@ return try {
     opened.markEnd(System.nanoTime())
 }
 
-private fun <T> detectReturnedFailure(span: Span, detector: (T) -> Throwable?, value: T) {
-    val failure = guardDetector(span, value, detector) ?: return   // detector fault or null → not a failure
-    span.detectedFailure = failure                                 // internal (ADR-018) — read by the auto-root verdict
-    span.markStatus(SpanStatus.ERROR)                              // uniform: any detected throwable, incl. Cancellation
-    try { span.recordPropagatedException(failure) }                // recorded like a thrown one (option D)
+private fun <T> detectReturnedFailure(span: Span, detector: (T) -> Throwable?, value: T): Throwable? {
+    val failure = guardDetector(::quietFaultHook) { detector(value) } ?: return null
+    span.markStatus(SpanStatus.ERROR)                               // uniform: any detected throwable, incl. Cancellation
+    try { span.recordPropagatedException(failure) }                 // recorded like a thrown one (option D)
     catch (rf: Throwable) { if (rf.isFatalFault()) throw rf /* else contain: never fail a returning op to record */ }
+    return failure
 }
 ```
 
-`Span` gains one **internal** field `detectedFailure: Throwable?` (default `null`), written only by
-`detectReturnedFailure`. It is the **authoritative** record of "this span's detector fired, with this
-throwable", replacing the earlier `root.status == ERROR` proxy (Codex review: `status` is a general-purpose
-field a bridge `end(ERROR)` or a future writer could set without a detector firing). It never crosses to an
-adapter (not on any `TraceRecord`).
+`SpanCompletion<T>` is the **authoritative** result of "this span's detector fired, with this throwable". It
+replaces both the earlier `root.status == ERROR` proxy and the first implementation's mutable
+`Span.detectedFailure` side channel: `status` is a general-purpose field a bridge `end(ERROR)` or a future
+writer could set without a detector firing, while completion metadata belongs to execution control flow rather
+than the persistent trace model. The envelope is private and never crosses to an adapter.
 
-**Auto-root** — forwards the detector into the recursion so the root is detected by the path above, then
-derives the **trace verdict** by precedence (§ next):
+**Auto-root** — executes the root through the same helper, then derives the **trace verdict** by precedence
+(§ next):
 
 ```kotlin
 // inside autoRootSpan(name, attributes, links, returnedOutcome, failureDetector, block):
-val value = span(name, attributes, links, failureDetector = failureDetector, block = block)  // opens+detects+ends root
-val detected = collector.rootSpan()?.detectedFailure  // authoritative: the throwable the root's detector returned, or null
+val completion = executeSpan(
+    parent = null,
+    collector = collector,
+    name = name,
+    attributes = attributes,
+    links = links,
+    scopeId = scopeId,
+    failureDetector = failureDetector,
+    block = block,
+)
+val value = completion.value
+val detected = completion.detectedFailure
 val outcome = when {
     returnedOutcome !== alwaysOkOutcome     -> runReturnedOutcome(returnedOutcome, value)   // explicit wins (+ attached)
     detected is CancellationException       -> TraceOutcome(TraceStatus.CANCELLED)          // option D: returned cancellation
@@ -256,9 +266,9 @@ reportAutoRoot(collector, outcome.status, escaped = null, attached = outcome.att
 // escaping-throwable branch unchanged: core owns CANCELLED/ERROR, neither detector nor returnedOutcome consulted.
 ```
 
-The verdict keys on `root.detectedFailure` (set only by the root's own detector — no child writes it), not on
-`root.status`, so it is unambiguous even though a detected `CancellationException` also marks the root span
-`ERROR`: `status` is the span's, `detectedFailure` is the verdict's input.
+The verdict keys on the root's completion result, not on `root.status`, so it is unambiguous even though a
+detected `CancellationException` also marks the root span `ERROR`: `status` is the span's, completion metadata
+is the verdict's input.
 
 ### The non-suspend bridge (`startSpan` / `end`) is deliberately unchanged
 
@@ -474,7 +484,7 @@ consumer needing the true production origin marks it explicitly at the producer.
   `OK`; whether it reaches a crash reporter depends on that adapter's status gate (§ crash-sink gating in
   ADR-019).
 - **Detector *throwing* (not returning) is contained.** A detector that **throws** on a **succeeding** return
-  does not fail the operation: value returned unchanged, span `OK`, `detectedFailure` unset, hook fires with
+  does not fail the operation: value returned unchanged, span `OK`, completion carries no failure, hook fires with
   `phase = FAILURE_DETECTOR`, `adapter == null`; a detector-**thrown** `CancellationException` is contained
   (trace **not** made `CANCELLED`); JVM-fatal rethrown. Contrast the returned-`CancellationException` case above.
 - **Fault-hook routing (whole-config precedence).** A detector fault in a flow carrying a per-flow
@@ -486,11 +496,14 @@ consumer needing the true production origin marks it explicitly at the producer.
   `resolvedThreadConfig()`. (A top-level auto-root still fires strict on its *report*, as today; the assertion
   is that detector *resolution* does not.)
 - **Auto-root paths.** Ambient detector fires at the root (verdict `ERROR`, or `CANCELLED` for a returned
-  cancellation); a top-level per-call `failureDetector = { … }` reaches the root through the recursion (not
+  cancellation); a top-level per-call `failureDetector = { … }` reaches the root execution path (not
   lost); a top-level `failureDetector = { null }` disables detection for the root only. Detection happens
-  exactly once per span; `root.detectedFailure` drives the verdict, not `root.status`.
-- **Zero-config unchanged.** No detector anywhere → the full existing suite passes; no per-span allocation on
-  the return path.
+  exactly once per span; the root `SpanCompletion` drives the verdict, not `root.status`.
+- **Zero-config behavior unchanged.** No detector anywhere → the full existing suite passes. A normal return
+  now produces one small, short-lived completion envelope per span; the caller unwraps it immediately and it
+  does not escape at the source level, so the JIT *may* elide it — but the allocation crosses `executeSpan`'s
+  suspend/continuation boundary (materialized into the state machine, returned as `Any?`), so scalar
+  replacement is not guaranteed.
 
 ---
 

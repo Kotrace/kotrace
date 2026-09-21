@@ -115,16 +115,6 @@ class Span(
     }
 
     /**
-     * The throwable this span's own `failureDetector` returned on a normal return (ADR-018), or null. Written
-     * only by the detection path (`detectReturnedFailure` in `Trace.kt`) once, on the span's own return, and
-     * read only by the auto-root to derive the trace verdict — after the structured-concurrency join, so a plain
-     * `var` is safe (no cross-thread race; the writer and reader are ordered by the coroutine return). It is
-     * **internal**: never lifted onto a [dev.kotrace.event.TraceRecord]; the recorded failure still lives in
-     * [events] as an [dev.kotrace.event.ExceptionEvent] like a thrown one.
-     */
-    internal var detectedFailure: Throwable? = null
-
-    /**
      * Late-known **emitted info** — a result value stamped after the span opens (`http.status` once the
      * response returns). Distinct from [attributes] on both axes: it is *dynamic* (written mid-span, final
      * at the end) and it is **info, never a filter key** — it flows onto every emitted [dev.kotrace.event.TraceRecord] as

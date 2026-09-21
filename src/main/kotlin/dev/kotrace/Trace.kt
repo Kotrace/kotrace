@@ -53,7 +53,7 @@ import java.security.SecureRandom
  * contained (the trace falls back to [TraceOutcome] `(OK, emptyList())` and the fault is surfaced through the
  * configured [AdapterFaultHook] with [FaultPhase.RETURNED_OUTCOME] and `adapter = null`); a mapper-thrown
  * [CancellationException] is contained the same way; a **JVM-fatal** mapper fault is rethrown and no report is
- * attempted. Because the mapper runs after the root has ended (the inner [span]'s `finally`), a mapper fault
+ * attempted. Because the mapper runs after the root execution helper's `finally`, a mapper fault
  * can neither flip the root [SpanStatus] nor become its birthplace. Marking the root span for a returned
  * failure is now [failureDetector]'s job (ADR-018), not the block's — a [failureDetector] throw is contained
  * the same way ([FaultPhase.FAILURE_DETECTOR]); a detector returning the *stable* throwable a value carries is
@@ -77,17 +77,51 @@ suspend fun <T> span(
     val spanCollector = context[SpanCollector]
     val spanContext = context[SpanContext]
     if (spanContext == null && spanCollector == null) {
-        return autoRootSpan(name, attributes, links, returnedOutcome, failureDetector, block)
+        return autoRootSpan(
+            name,
+            attributes,
+            links,
+            context[ScopeContext]?.scopeId,
+            returnedOutcome,
+            failureDetector,
+            block,
+        )
     }
     // Non-auto-root: returnedOutcome is inert (only the auto-root consults it, ADR-016). This is a child, a
     // manual-boundary root, or an identified-but-uncollected span; the enclosing root or a manual reportTrace
     // owns the single report.
-    val opened = createSpan(
-        spanContext?.span,
-        name, attributes, links,
-        context[ScopeContext]?.scopeId,
-    )
-    spanCollector?.add(opened)
+    return executeSpan(
+        parent = spanContext?.span,
+        collector = spanCollector,
+        name = name,
+        attributes = attributes,
+        links = links,
+        scopeId = context[ScopeContext]?.scopeId,
+        failureDetector = failureDetector,
+        block = block,
+    ).value
+}
+
+/** A normally completed span's value plus the detector result needed only by its auto-root owner. */
+private class SpanCompletion<T>(val value: T, val detectedFailure: Throwable?)
+
+/**
+ * Opens, registers, runs and closes one span. The completion envelope keeps the root detector's control-flow
+ * result out of the persistent [Span] model while still carrying it to [autoRootSpan] without a second detector
+ * invocation. A thrown block never produces a completion; it follows the unchanged record-and-rethrow path.
+ */
+private suspend fun <T> executeSpan(
+    parent: Span?,
+    collector: SpanCollector?,
+    name: String,
+    attributes: Map<String, String>,
+    links: List<TraceLink>,
+    scopeId: String?,
+    failureDetector: (T) -> Throwable?,
+    block: suspend () -> T,
+): SpanCompletion<T> {
+    val opened = createSpan(parent, name, attributes, links, scopeId)
+    collector?.add(opened)
     // Resolve the returned-failure detector once (ADR-018): the per-call override if given, else the
     // process-wide detector — a direct read that never forces config resolution or the strict latch. null
     // (nothing installed, no override) ⇒ no detection on the normal-return path below.
@@ -97,10 +131,10 @@ suspend fun <T> span(
         // Overlay only the element — withContext already inherits the current context. Passing the
         // whole currentCoroutineContext() would re-inject its Job and break structured concurrency.
         val value = withContext(SpanContext(opened)) { block() }
-        // NEW (ADR-018): a returned failure is treated like a thrown one — mark ERROR + record the throwable,
+        // A returned failure is treated like a thrown one — mark ERROR + record the throwable,
         // the value-shaped analog of the catch below. Runs only on a *normal* return; on a throw the catch owns it.
-        if (detector != null) detectReturnedFailure(opened, detector, value)
-        value
+        val detectedFailure = detector?.let { detectReturnedFailure(opened, it, value) }
+        SpanCompletion(value, detectedFailure)
     } catch (t: Throwable) {
         // ERROR marks the whole failing path as the throwable rethrows through each enclosing span.
         // Which span is the *birthplace* is decided at read time by lineage key (ADR-015, see
@@ -154,15 +188,14 @@ private val InheritAmbient: (Any?) -> Throwable? = { null }
  * Records a returned failure like a thrown one (ADR-018). Runs [detector] on [value] under fault isolation
  * ([guardDetector] — a non-fatal detector throw, including a detector-*thrown* [CancellationException], is
  * contained as "no failure" and routed with [FaultPhase.FAILURE_DETECTOR]); a non-null result marks the span
- * [SpanStatus.ERROR], is stashed on [Span.detectedFailure] for the auto-root verdict, and is recorded via the
- * propagation path (canonical lineage key, so a returned failure's climb collapses to one birthplace,
- * ADR-015). A detector that *returns* a [CancellationException] is a failure like any other here — only the
- * auto-root *verdict* treats it specially (→ `CANCELLED`). Recording never fails a succeeding return: a
- * non-fatal record failure is contained, a JVM-fatal one rethrown.
+ * [SpanStatus.ERROR], is returned to the caller for the auto-root verdict, and is recorded via the propagation
+ * path (canonical lineage key, so a returned failure's climb collapses to one birthplace, ADR-015). A detector
+ * that *returns* a [CancellationException] is a failure like any other here — only the auto-root *verdict*
+ * treats it specially (→ `CANCELLED`). Recording never fails a succeeding return: a non-fatal record failure
+ * is contained, a JVM-fatal one rethrown.
  */
-private fun <T> detectReturnedFailure(span: Span, detector: (T) -> Throwable?, value: T) {
-    val failure = guardDetector(::quietFaultHook) { detector(value) } ?: return
-    span.detectedFailure = failure
+private fun <T> detectReturnedFailure(span: Span, detector: (T) -> Throwable?, value: T): Throwable? {
+    val failure = guardDetector(::quietFaultHook) { detector(value) } ?: return null
     span.markStatus(SpanStatus.ERROR)
     try {
         span.recordPropagatedException(failure)
@@ -170,6 +203,7 @@ private fun <T> detectReturnedFailure(span: Span, detector: (T) -> Throwable?, v
         if (recordFailure.isFatalFault()) throw recordFailure
         // contain: telemetry recording must never turn a returning operation into a throw
     }
+    return failure
 }
 
 /**
@@ -193,22 +227,21 @@ private fun reportAutoRoot(
 }
 
 /**
- * The single auto-root boundary (ADR-013 + ADR-016): install a fresh [SpanCollector], let the recursion
- * open+register+run+end the root (the collector is now in context, so the nested [span] takes the
- * instrumentation path), then [reportTrace] the outcome **before** the collector context exits — so the
+ * The single auto-root boundary (ADR-013 + ADR-016): install a fresh [SpanCollector], open+register+run+end the
+ * root through [executeSpan], then [reportTrace] the outcome **before** the collector context exits — so the
  * collector and any ambient [TraceConfig] are still resolved (overlaid alone; config inherited, never frozen
  * here — ADR-010).
  *
  * The report's status on a **normal return** follows the precedence chain (ADR-018): an **explicit**
  * [returnedOutcome] (`!== alwaysOkOutcome`) wins and maps the returned value (a failure-as-value consumer maps
  * a returned domain failure to `ERROR` with attached orphans, ADR-016); otherwise the **root's own detected
- * failure** (read from [Span.detectedFailure], set by [detectReturnedFailure] on the forwarded [failureDetector])
- * defaults the verdict — a returned [CancellationException] → [TraceStatus.CANCELLED], any other detected
- * throwable → [TraceStatus.ERROR]; otherwise [TraceStatus.OK]. The **escaping** outcomes are always core's,
+ * failure** (carried by [SpanCompletion] from [detectReturnedFailure]) defaults the verdict — a returned
+ * [CancellationException] → [TraceStatus.CANCELLED], any other detected throwable → [TraceStatus.ERROR];
+ * otherwise [TraceStatus.OK]. The **escaping** outcomes are always core's,
  * never a mapper's: an escaping [CancellationException] → [TraceStatus.CANCELLED], any other escaping throwable
  * → [TraceStatus.ERROR], the throwable rethrown unchanged. [returnedOutcome] runs **exactly once**, on a normal
  * return, and only here — never on a child, a manual-boundary root, or an identified-but-uncollected span.
- * Because it runs after the inner [span]'s `finally` (root already ended), a mapper fault can neither flip the
+ * Because it runs after [executeSpan]'s `finally` (root already ended), a mapper fault can neither flip the
  * root [SpanStatus] nor become its birthplace. Reports **after** the root has ended and **before** the
  * collector context exits, with strict/report precedence via [reportAutoRoot].
  */
@@ -216,18 +249,24 @@ private suspend fun <T> autoRootSpan(
     name: String,
     attributes: Map<String, String>,
     links: List<TraceLink>,
+    scopeId: String?,
     returnedOutcome: (T) -> TraceOutcome,
     failureDetector: (T) -> Throwable?,
     block: suspend () -> T,
 ): T {
     val collector = SpanCollector()
     return withContext(collector) {
-        val value = try {
-            // Recurse to open+run+end the root via the instrumentation path (collector now in context, so
-            // this call never auto-roots). returnedOutcome is left at its default here — a non-auto-root span
-            // never consults it; this boundary owns the single report below. failureDetector IS forwarded, so
-            // the root's own returned value is detected on that instrumentation path exactly once (ADR-018).
-            span(name, attributes, links, failureDetector = failureDetector, block = block)
+        val completion = try {
+            executeSpan(
+                parent = null,
+                collector = collector,
+                name = name,
+                attributes = attributes,
+                links = links,
+                scopeId = scopeId,
+                failureDetector = failureDetector,
+                block = block,
+            )
         } catch (t: Throwable) {
             // Escaping outcome is core's, not the mapper's: CancellationException → CANCELLED, else ERROR;
             // report with the escaped throwable so a strict-mode report failure rides it as suppressed.
@@ -237,9 +276,10 @@ private suspend fun <T> autoRootSpan(
         // Normal return: the root has already ended (span's finally). Verdict precedence (ADR-018): an explicit
         // returnedOutcome wins; else the root's own detected failure supplies the default — a returned
         // CancellationException → CANCELLED (mirror of the escaping-cancellation case above), any other detected
-        // throwable → ERROR; else OK. Read root.detectedFailure (authoritative, set only by the root's own
-        // detector), never the general-purpose SpanStatus.
-        val detected = collector.spans.firstOrNull { it.parentId == null }?.detectedFailure
+        // throwable → ERROR; else OK. Read the root completion's detector result, never the general-purpose
+        // SpanStatus or the best-effort event timeline.
+        val value = completion.value
+        val detected = completion.detectedFailure
         val outcome = when {
             returnedOutcome !== alwaysOkOutcome -> runReturnedOutcome(returnedOutcome, value)
             detected is CancellationException -> TraceOutcome(TraceStatus.CANCELLED)

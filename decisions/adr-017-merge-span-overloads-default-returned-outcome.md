@@ -2,6 +2,9 @@
 
 - **Date:** 2026-09-18
 - **Status:** Accepted
+- **Amended:** 2026-09-21 — ADR-018's `SpanCompletion<T>` refactor replaced the internal root-opening
+  recursion with a shared `executeSpan` helper; the merged public API and mapper behavior decided here are
+  unchanged.
 - **Affects:** `dev.kotrace.span` (`Trace.kt`) collapses from **two overloads** to **one** function whose
   `returnedOutcome: (T) -> TraceOutcome` parameter is **defaulted** to a new private singleton `alwaysOkOutcome`
   ([`Trace.kt:46`](../src/main/kotlin/dev/kotrace/Trace.kt:46), [`Trace.kt:50`](../src/main/kotlin/dev/kotrace/Trace.kt:50),
@@ -69,10 +72,11 @@ suspend fun <T> span(
   mapper `m`, not the default.
 - `autoRootSpanReturning` is deleted; the surviving `autoRootSpan`
   ([`Trace.kt:145`](../src/main/kotlin/dev/kotrace/Trace.kt:145)) is the ADR-016 value-aware body verbatim.
-- The internal recursion that opens the root via the instrumentation path passes the block by **name** —
+- At adoption, the internal recursion that opened the root via the instrumentation path passed the block by **name** —
   `span(name, attributes, links, block = block)` ([`Trace.kt:158`](../src/main/kotlin/dev/kotrace/Trace.kt:158)) —
   because the fourth positional slot is now `returnedOutcome`; the recursion never auto-roots (a collector is in
-  context), so leaving `returnedOutcome` at its default is correct.
+  context), so leaving `returnedOutcome` at its default is correct. The later ADR-018 amendment replaced this
+  recursion with `executeSpan`, which has no `returnedOutcome` parameter.
 - `(Any?) -> TraceOutcome` stands in for the `(T) -> TraceOutcome` parameter and default at every `T` by
   function-parameter **contravariance** — no cast, verified by compile.
 
