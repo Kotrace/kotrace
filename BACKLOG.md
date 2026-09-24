@@ -55,28 +55,22 @@ flow — is fixed: birthplace now dedups per `ExceptionEvent` by a stable, fail-
   in-process, in-memory report model. **Probably won't do** until such a need is real; logged so the
   boundary is known, not silently assumed.
 
-- **D03 — no configured handling for value-only (non-`Throwable`) domain failures.**
-  [ADR-018](decisions/adr-018-ambient-failure-detector.md)'s `failureDetector: (Any?) -> Throwable?` covers
-  a **returned** failure that carries a `Throwable` (the `Result.failure` case, whose payload is always a
-  `Throwable`). A failure modeled as a **plain value** — `Either.Left(DomainError)`, an arrow-kt `Raise`, a
-  sealed `DomainError` — has no `Throwable`, so it can drive neither `ExceptionRecord.throwable` (the crash
-  reporter needs a live object) nor `lineageKeyOf` (no cause chain). Today such a failure is handled the way
-  [ARCHITECTURE §8](ARCHITECTURE.md) already prescribes for any non-throwable structured error: a manual
-  `currentSpan()?.log(ERROR) { … }` breadcrumb, plus (at the auto-root) `returnedOutcome` mapping it to the
-  trace verdict. **Why now:** unknown whether the domain even models failures value-only — if everything is
-  `Result<T>`, ADR-018 already covers it and this is **YAGNI**. **Cost:** a value-only-failure consumer
-  hand-writes the breadcrumb at each boundary (the same manual step ADR-018 removed for the `Throwable`
-  case), and gets no configured "what is a domain failure" rule. **Trigger to repay:** a consumer that
-  models domain failures as non-`Throwable` values and wants them auto-recorded. **Likely shape:** a
-  `domainFailureClassifier` (value → a symbol-only `LogEvent(ERROR)` descriptor, routed to the **log/report**
-  path, never the crash path), i.e. the *log analog* of ADR-018's `failureDetector`. Two variants weighed and
-  **not** decided: **(A)** ambient per-span (accepts N breadcrumbs on a returned-value climb — `LogEvent`s do
-  not dedup, so **no birthplace** for value-only failures); **(B)** verdict-level only — no per-span
-  auto-record, the failure rides `returnedOutcome` to `TraceStatus` plus **one** explicit breadcrumb at the
-  producing layer (leans B: a domain failure is an expected outcome, not a crash climbing a tree, so the
-  birthplace machinery is over-scoped for it). Related: ADR-018 (`failureDetector`, the `Throwable` case),
-  ADR-005/ADR-015 (birthplace / lineage key — unavailable without a `Throwable`), ADR-016 (`returnedOutcome`
-  trace verdict), ADR-001 (symbol-only, PII-safe fields).
+- **D03 — value-only domain failures have no machine-readable failure record.**
+  [ADR-020](decisions/adr-020-value-only-failure-classifier.md)'s ambient `FailureClassifier` now handles a
+  **returned** failure with no `Throwable`: `ReturnedFailure.ValueOnly` marks every returning span `ERROR` and
+  supplies the auto-root's default `TraceStatus.ERROR`, without the consumer misusing `Span.end(ERROR)` or
+  synthesizing a fake exception. It deliberately emits no `SpanEvent`/`TraceRecord`. A report containing no
+  other events therefore reaches an adapter as `onReport(ERROR, emptySequence())`; until D01 is repaid, that
+  sequence also exposes no `trace_id`, operation, timing, or span status. **Why retained:** classification is
+  fixed, but a safe symbolic reason such as `login.already_exists` is still absent from machine egress. This is
+  intentional for expected validation failures (they stay out of crash telemetry), not a bug in the verdict.
+  **Trigger to repay:** a consumer needs to search, count, or route value-only failures automatically by a
+  safe symbolic code. **Likely shape:** either an explicit producer breadcrumb (today's escape hatch) or a
+  dedicated symbol-only failure record with a defined occurrence key/dedup and adapter routing contract. Do
+  **not** synthesize a `Throwable`, serialize the domain object, or silently model it as `LogEvent(ERROR)`:
+  severity belongs to the consumer, ambient logs duplicate on the returned-value climb, and a report adapter
+  may route logs into a crash reporter. Related: ADR-020 (status-only classification), D01 (span-granular
+  export), ADR-001 (symbol-only, PII-safe fields), ADR-015 (throwable lineage is unavailable here).
 
 ### Tests
 

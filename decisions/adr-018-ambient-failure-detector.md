@@ -3,7 +3,10 @@
 - **Date:** 2026-09-19
 - **Status:** Accepted
 - **Amended:** 2026-09-21 — the root detector result now travels in an internal `SpanCompletion<T>` rather
-  than a mutable field on `Span`; behavior and precedence are unchanged.
+  than a mutable field on `Span`; behavior and precedence are unchanged. **Superseded in callback shape and
+  terminology by [ADR-020](adr-020-value-only-failure-classifier.md) on 2026-09-22:** the current API is
+  `FailureClassifier = (Any?) -> ReturnedFailure?`, with `ValueOnly` and `CausedBy(Throwable)` results;
+  ADR-018's ambient placement, fault isolation, and verdict precedence still stand.
 - **Affects:** adds an optional process-wide `failureDetector: (Any?) -> Throwable?` to `Kotrace.install(...)`
   ([`Kotrace.kt:56`](../src/main/kotlin/dev/kotrace/Kotrace.kt:56)) — a separate field, **not** on `TraceConfig`
   (§ Config home); adds a **defaulted per-call override** `failureDetector: (T) -> Throwable?` to `span(...)`

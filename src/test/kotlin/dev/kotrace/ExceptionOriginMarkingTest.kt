@@ -196,7 +196,9 @@ class ExceptionOriginMarkingTest {
 
     @Test fun `a returned-failure climb is marked identically to a thrown one`() = runTest {
         val report = CollectingReport(optIn)
-        Kotrace.install(listOf(report), failureDetector = { (it as? Result<*>)?.exceptionOrNull() })
+        Kotrace.install(listOf(report), failureClassifier = {
+            (it as? Result<*>)?.exceptionOrNull()?.let(ReturnedFailure::CausedBy)
+        })
         val boom = IllegalStateException("returned deep")
 
         span("root") { span("mid") { span("leaf") { Result.failure<Int>(boom) } } }
@@ -226,7 +228,9 @@ class ExceptionOriginMarkingTest {
 
     @Test fun `multiple independent failing branches keep multiple birthplaces under the default policy`() = runTest {
         val report = CollectingReport()
-        Kotrace.install(listOf(report), failureDetector = { (it as? Result<*>)?.exceptionOrNull() })
+        Kotrace.install(listOf(report), failureClassifier = {
+            (it as? Result<*>)?.exceptionOrNull()?.let(ReturnedFailure::CausedBy)
+        })
         val a = IllegalStateException("branch A")
         val b = IllegalStateException("branch B")
 

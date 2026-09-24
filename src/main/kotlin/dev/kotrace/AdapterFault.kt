@@ -3,12 +3,12 @@ package dev.kotrace
 /**
  * The phase a fault was contained in — passed to an [AdapterFaultHook] so a consumer can tell a live
  * breadcrumb failure from a report failure. [LIVE], [SPANLESS_LIVE] and [REPORT] are fan-out phases (ADR-014);
- * [RETURNED_OUTCOME] is the auto-root value mapper (ADR-016) and [FAILURE_DETECTOR] the per-span
- * `failureDetector` (ADR-018) — both are report/detection-time inputs, not adapters, so both are reported with
- * `adapter = null`, and when contained the detection is treated as "no failure" (and the mapper falls back to
- * [TraceStatus.OK]).
+ * [RETURNED_OUTCOME] is the auto-root value mapper (ADR-016) and [FAILURE_CLASSIFIER] the per-span
+ * `failureClassifier` (ADR-018/020) — both are report/classification-time inputs, not adapters, so both are
+ * reported with `adapter = null`. When contained, the classification is treated as "no failure" (and the
+ * mapper falls back to [TraceStatus.OK]).
  */
-enum class FaultPhase { LIVE, SPANLESS_LIVE, REPORT, RETURNED_OUTCOME, FAILURE_DETECTOR }
+enum class FaultPhase { LIVE, SPANLESS_LIVE, REPORT, RETURNED_OUTCOME, FAILURE_CLASSIFIER }
 
 /**
  * An **opt-in** diagnostic hook (ADR-014) invoked when a fan-out phase contains a fault — a throwing
@@ -118,19 +118,23 @@ internal fun <R : Any> guardReturnedOutcome(hook: () -> AdapterFaultHook?, block
     }
 
 /**
- * Runs the per-span `failureDetector` (ADR-018) on a normal return: a **non-fatal** throw — including a
- * detector-thrown [kotlinx.coroutines.CancellationException], which is a config fault here, distinct from a
- * detector that *returns* one — is contained (returns `null`, i.e. "no failure detected") and routed with
- * [FaultPhase.FAILURE_DETECTOR] and `adapter = null`; a JVM-fatal fault is rethrown. Telemetry classification
- * must never turn a succeeding return into a failure. The [hook] is a **supplier resolved only on a fault**, so
- * a successful detector never resolves config on the hot path. A `null` result is ambiguous by design —
- * "detector said not-a-failure" and "detector faulted and was contained" both mean *do not record*.
+ * Runs the per-span `failureClassifier` (ADR-018/020) on a normal return: a **non-fatal** throw — including a
+ * classifier-thrown [kotlinx.coroutines.CancellationException], which is a config fault here, distinct from a
+ * classifier that returns [ReturnedFailure.CausedBy] carrying one — is contained (returns `null`, i.e. "no
+ * failure classified") and routed with [FaultPhase.FAILURE_CLASSIFIER] and `adapter = null`; a JVM-fatal
+ * fault is rethrown. Telemetry classification must never turn a succeeding return into a failure. The [hook]
+ * is a **supplier resolved only on a fault**, so a successful classifier never resolves config on the hot
+ * path. A `null` result is ambiguous by design —
+ * "classifier said not-a-failure" and "classifier faulted and was contained" both mean *do not record*.
  */
-internal fun guardDetector(hook: () -> AdapterFaultHook?, block: () -> Throwable?): Throwable? =
+internal fun guardFailureClassifier(
+    hook: () -> AdapterFaultHook?,
+    block: () -> ReturnedFailure?,
+): ReturnedFailure? =
     try {
         block()
     } catch (t: Throwable) {
         if (t.isFatalFault()) throw t
-        notifyFault(FaultPhase.FAILURE_DETECTOR, null, hook(), t)
+        notifyFault(FaultPhase.FAILURE_CLASSIFIER, null, hook(), t)
         null
     }

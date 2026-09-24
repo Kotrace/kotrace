@@ -2,6 +2,8 @@
 
 - **Date:** 2026-09-19
 - **Status:** Accepted
+- **Amended:** 2026-09-23 — [ADR-020](adr-020-value-only-failure-classifier.md) renamed ADR-018's callback to
+  `failureClassifier`; origin marking applies to `ReturnedFailure.CausedBy`, while `ValueOnly` emits no event.
 - **Affects:** the report walk no longer *drops* non-birthplace `ExceptionEvent`s — it collects the whole
   climb and stamps each entry's **origin** ([`Report.kt:52-60`](../src/main/kotlin/dev/kotrace/Report.kt:52));
   `ExceptionRecord` gains `origin: ExceptionOrigin?`
@@ -23,13 +25,14 @@
   *definition* is untouched; only *where* the drop happens changes. ("Deduped" = one record **per lineage per
   failing branch** — a linear climb collapses to one, but N independent failing branches keep N birthplaces,
   ADR-015; see § "exactly one" caveat.)
-- **Pairs with:** [ADR-018](adr-018-ambient-failure-detector.md) — returned failures record through the same
+- **Pairs with:** [ADR-018](adr-018-ambient-failure-detector.md) / [ADR-020](adr-020-value-only-failure-classifier.md)
+  — throwable-backed returned failures record through the same
   `recordPropagatedException`, so origin marking covers thrown and returned failures uniformly.
 
 ## Context
 
 A failure is re-recorded on **every** span it climbs: the `span` catch (and, per ADR-018, the returned-failure
-detector) calls `recordPropagatedException` on each enclosing span
+classifier's `CausedBy` result) calls `recordPropagatedException` on each enclosing span
 ([`Trace.kt:88`](../src/main/kotlin/dev/kotrace/Trace.kt:88)), stamping every copy with the *same* ADR-015
 lineage key. The whole climb is therefore already present in the tree as `ExceptionEvent`s on
 `Span.events`.
@@ -338,7 +341,8 @@ contract for a crash sink.
 - **Policy interplay unchanged.** `acceptsEvent` dropping an `ExceptionEvent` still drops it regardless of
   origin; `acceptsPropagatedException` only *narrows* which exception records survive, never widens past
   `acceptsEvent`.
-- **Returned-failure parity (with ADR-018).** A returned-failure climb marked via `failureDetector` produces
+- **Returned-failure parity (with ADR-018/020).** A throwable-backed returned-failure climb marked via
+  `failureClassifier` + `ReturnedFailure.CausedBy` produces
   the same `BIRTHPLACE`/`PROPAGATED` stamping as an equivalent thrown-and-rethrown failure.
 - **Default policy is never invoked on a propagated entry (ordering regression guard).** A default-policy
   `ReportAdapter` whose `accepts` counts calls (or throws) is asserted to be invoked **only** for the surviving

@@ -483,15 +483,17 @@ kotrace's whole consumer surface is: the `span`/log/`addNamed` verbs, the `Trace
 interfaces, `TraceConfig`, and `reportTrace`. **The common host writes only `span { }`** — a top-level one
 auto-roots and reports at its outcome (ADR-013), so the report boundary needs no explicit `reportTrace`. A
 **failure-as-value** host — one whose domain failures are *returned* (not thrown) — installs a process-wide
-`failureDetector` (`Kotrace.install(failureDetector = { (it as? Result<*>)?.exceptionOrNull() })`, ADR-018): on
-**every** span it turns a returned failure value into the same span-level `ERROR` + birthplace a thrown one
-gets (via the propagation recorder, so a returned failure's climb dedups to one birthplace like a thrown one),
-and at the auto-root a root-returned failure supplies the default trace verdict by precedence — a returned
-`CancellationException` → `CANCELLED` (mirroring a thrown escaping one), any other detected throwable →
-`ERROR`, else `OK`. It is overridable per-call (`span(failureDetector = …) { }`), including a local opt-out
-`{ null }`. `span(returnedOutcome = …) { }` (ADR-016) remains for *overriding* that verdict at the auto-root
+`failureClassifier` (ADR-018/020). On **every** span it maps a returned value to `null` (success),
+`ReturnedFailure.CausedBy(throwable)` (span `ERROR` + canonical exception lineage), or
+`ReturnedFailure.ValueOnly` (span `ERROR`, no synthetic event/record). At the auto-root a classified failure
+supplies the default trace verdict by precedence — a `CausedBy(CancellationException)` → `CANCELLED`
+(mirroring a thrown escaping one), any other classification → `ERROR`, else `OK`. It is overridable per-call
+(`span(failureClassifier = …) { }`), including a local opt-out `{ null }`. `span(returnedOutcome = …) { }`
+(ADR-016) remains for *overriding* that verdict at the auto-root
 (remap a status, force `OK`, or ride trace-level orphan failures up as `attached`, ADR-012) — an explicit
-`returnedOutcome` wins over the detector default. Still a single `span { }`-shaped boundary. `reportTrace`
+`returnedOutcome` wins over the classifier default. A value-only failure is status-only: without another event,
+the adapter sees `onReport(ERROR, emptySequence())`; D01 covers future span-granular machine export, while
+backlog D03 retains the separate safe-symbolic-reason gap. Still a single `span { }`-shaped boundary. `reportTrace`
 (and a hand-seeded `SpanCollector`) stays for genuinely bespoke boundaries. A host implements adapters that bridge `TraceRecord` → its own sinks and never
 touches the `Span` tree; an optional `AdapterFaultHook` on the config observes any fault contained during
 fan-out (ADR-014). The reference consumer (Camailux) keeps *all* kotrace naming inside one module: a

@@ -37,12 +37,12 @@ object Kotrace {
 
     /**
      * The one immutable installed holder (ADR-010/018): the lazily-resolved [TraceConfig] **and** the
-     * process-wide [FailureDetector], published together through a single [AtomicReference] so they can never
+     * process-wide [FailureClassifier], published together through a single [AtomicReference] so they can never
      * be observed torn and a failed second install mutates neither. The `config` provider resolves exactly
-     * once, on the first [defaultConfig] read (safe publication); the `failureDetector` is a plain reference
-     * read directly (it does **not** force the config provider — ADR-018 keeps detection off the lazy path).
+     * once, on the first [defaultConfig] read (safe publication); the `failureClassifier` is a plain reference
+     * read directly (it does **not** force the config provider — ADR-018 keeps classification off the lazy path).
      */
-    private class Installed(val config: Lazy<TraceConfig>, val failureDetector: FailureDetector?)
+    private class Installed(val config: Lazy<TraceConfig>, val failureClassifier: FailureClassifier?)
 
     private val installed = AtomicReference<Installed?>(null)
 
@@ -51,30 +51,31 @@ object Kotrace {
 
     /**
      * Publishes the process-wide fan-out [adapters], with an optional [faultHook] (ADR-014) and an optional
-     * process-wide [failureDetector] (ADR-018, returned-failure classification). Call once at startup. Throws
-     * [IllegalStateException] on a second call — the holder is read-only after install. An empty list installs
-     * a no-op config; a null [failureDetector] (the default) leaves returned-value detection off (today's
-     * behavior). Snapshots the list now, not on first fan-out, so a later mutation can't change the config.
+     * process-wide [failureClassifier] (ADR-018/020, returned-failure classification). Call once at startup.
+     * Throws [IllegalStateException] on a second call — the holder is read-only after install. An empty list
+     * installs a no-op config; a null [failureClassifier] (the default) leaves returned-value classification
+     * off (today's behavior). Snapshots the list now, not on first fan-out, so a later mutation can't change
+     * the config.
      */
     fun install(
         adapters: List<TraceAdapter>,
         faultHook: AdapterFaultHook? = null,
-        failureDetector: FailureDetector? = null,
+        failureClassifier: FailureClassifier? = null,
     ) {
         val snapshot = adapters.toList()
-        install(faultHook, failureDetector) { snapshot }
+        install(faultHook, failureClassifier) { snapshot }
     }
 
     /**
      * Publishes the process-wide fan-out config from a [provider] resolved **lazily**, exactly once, on the
      * first fan-out that reads it — so a consumer can register before its DI graph is ready and defer building
-     * the adapters until first use — with an optional [faultHook] (ADR-014) and process-wide [failureDetector]
-     * (ADR-018). Same install-once contract: a second call throws. The [failureDetector] is stored eagerly
+     * the adapters until first use — with an optional [faultHook] (ADR-014) and process-wide [failureClassifier]
+     * (ADR-018/020). Same install-once contract: a second call throws. The [failureClassifier] is stored eagerly
      * alongside the lazy config in the one [Installed] holder.
      */
     fun install(
         faultHook: AdapterFaultHook? = null,
-        failureDetector: FailureDetector? = null,
+        failureClassifier: FailureClassifier? = null,
         provider: () -> List<TraceAdapter>,
     ) {
         val config = lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
@@ -92,7 +93,7 @@ object Kotrace {
             }
             TraceConfig(adapters.toList(), faultHook)
         }
-        if (!installed.compareAndSet(null, Installed(config, failureDetector))) {
+        if (!installed.compareAndSet(null, Installed(config, failureClassifier))) {
             error("Kotrace config already installed; it is install-once (ADR-010)")
         }
     }
@@ -101,11 +102,11 @@ object Kotrace {
     internal fun defaultConfig(): TraceConfig? = installed.get()?.config?.value
 
     /**
-     * The installed process-wide [FailureDetector] (ADR-018), or null if none. Read directly — it does **not**
-     * force the lazy config provider — so resolving a span's detector on the normal-return path never triggers
-     * adapter construction or the strict-uninstalled latch. Null ⇒ no returned-value detection.
+     * The installed process-wide [FailureClassifier] (ADR-018/020), or null if none. Read directly — it does
+     * **not** force the lazy config provider — so resolving a span's classifier on the normal-return path never
+     * triggers adapter construction or the strict-uninstalled latch. Null ⇒ no returned-value classification.
      */
-    internal fun failureDetector(): FailureDetector? = installed.get()?.failureDetector
+    internal fun failureClassifier(): FailureClassifier? = installed.get()?.failureClassifier
 
     /**
      * Arms the **strict-uninstalled** check (ADR-011): from now on, a fan-out that resolves to no config — no

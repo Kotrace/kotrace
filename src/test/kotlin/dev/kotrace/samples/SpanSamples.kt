@@ -1,5 +1,6 @@
 package dev.kotrace.samples
 
+import dev.kotrace.ReturnedFailure
 import dev.kotrace.TraceOutcome
 import dev.kotrace.TraceStatus
 import dev.kotrace.currentSpan
@@ -32,6 +33,26 @@ internal object SpanSamples {
         data class Ok<T>(val value: T) : Outcome<T>
         data class Failed(val cause: Throwable, val rollbackErrors: List<Throwable> = emptyList()) : Outcome<Nothing>
     }
+
+    /** A value-only domain result: [LoginResult.AlreadyExists] deliberately carries no throwable. */
+    sealed interface LoginResult {
+        data object LoggedIn : LoginResult
+        data object AlreadyExists : LoginResult
+    }
+
+    /**
+     * A value-only failure classifier (ADR-020): [LoginResult.AlreadyExists] marks the span and default
+     * auto-root verdict `ERROR`, but emits no exception/log record. The application value is returned unchanged.
+     */
+    suspend fun spanFailureClassifierUsage(login: suspend () -> LoginResult): LoginResult =
+        span(
+            name = "login",
+            failureClassifier = { result ->
+                if (result == LoginResult.AlreadyExists) ReturnedFailure.ValueOnly else null
+            },
+        ) {
+            login()
+        }
 
     /**
      * The failure-as-value idiom: `returnedOutcome` maps a **returned** [Outcome.Failed] to

@@ -20,13 +20,19 @@ import org.junit.Before
 import org.junit.Test
 
 /**
- * The ambient `failureDetector` (ADR-018): a returned failure value is treated like a thrown one — span-level
- * ERROR + birthplace via the propagation recorder — configured process-wide on [Kotrace] and overridable
- * per-call on [span]. Covers ambient detection + verdict, the returned-CancellationException=CANCELLED mirror
- * (option D), explicit-returnedOutcome precedence, climb dedup, the local opt-out, per-call override,
- * zero-config invisibility, and detector-fault isolation.
+ * The ambient `failureClassifier` (ADR-018/020) classifies returned failures process-wide on [Kotrace] or
+ * per-call on [span]. Every classification marks the span ERROR; [ReturnedFailure.CausedBy] additionally
+ * records a birthplace, while [ReturnedFailure.ValueOnly] emits no event. Covers ambient classification and
+ * verdict, the returned-CancellationException=CANCELLED mirror (option D), explicit-returnedOutcome
+ * precedence, climb dedup, recovery, local opt-out, per-call override, zero-config invisibility, and
+ * classifier-fault isolation.
  */
-class AmbientFailureDetectorTest {
+class AmbientFailureClassifierTest {
+
+    private sealed interface DomainResult<out T> {
+        data class Success<out T>(val value: T) : DomainResult<T>
+        data class Failure(val code: String) : DomainResult<Nothing>
+    }
 
     private class CollectingReport(override val policy: TracePolicy = object : TracePolicy {}) : ReportAdapter {
         val statuses = mutableListOf<TraceStatus>()
@@ -39,17 +45,95 @@ class AmbientFailureDetectorTest {
         val crashes get() = records.single().filterIsInstance<ExceptionRecord>()
     }
 
-    /** The canonical failure-as-value detector: a `Result.failure` carries the throwable that makes it a failure. */
-    private val resultDetector: FailureDetector = { (it as? Result<*>)?.exceptionOrNull() }
+    /** The canonical failure-as-value classifier: a `Result.failure` carries the throwable that makes it a failure. */
+    private val resultClassifier: FailureClassifier = { value ->
+        (value as? Result<*>)?.exceptionOrNull()?.let(ReturnedFailure::CausedBy)
+    }
+
+    /** A value-only domain failure has no throwable and therefore produces status, but no exception record. */
+    private val domainClassifier: FailureClassifier = { value ->
+        if (value is DomainResult.Failure) ReturnedFailure.ValueOnly else null
+    }
 
     @Before fun clean() = Kotrace.resetForTest()
     @After fun reset() = Kotrace.resetForTest()
 
-    // --- Ambient detection + verdict ---
+    // --- Ambient classification + verdict ---
 
-    @Test fun `an installed detector turns a returned failure into ERROR + one birthplace record`() = runTest {
+    @Test fun `a value-only failure marks the trace ERROR without inventing a record`() = runTest {
         val report = CollectingReport()
-        Kotrace.install(listOf(report), failureDetector = resultDetector)
+        Kotrace.install(listOf(report), failureClassifier = domainClassifier)
+
+        val out = span("LoginUseCase") { DomainResult.Failure("login.already_exists") }
+
+        assertEquals(DomainResult.Failure("login.already_exists"), out)
+        assertEquals(TraceStatus.ERROR, report.status)
+        assertTrue("ValueOnly carries status only; it emits no machine record", report.records.single().isEmpty())
+    }
+
+    @Test fun `a value-only failure marks every returning span ERROR without closing it early`() = runTest {
+        Kotrace.install(emptyList(), failureClassifier = domainClassifier)
+        var childWasOpenWhileRunning = false
+
+        val spans = collectTrace {
+            val out: DomainResult<Unit> = span("root") {
+                span("LoginUseCase") {
+                    childWasOpenWhileRunning = currentSpan()?.endNanos == null
+                    DomainResult.Failure("login.already_exists")
+                }
+            }
+            check(out is DomainResult.Failure)
+        }
+
+        assertEquals(
+            listOf(SpanStatus.ERROR, SpanStatus.ERROR),
+            listOf("root", "LoginUseCase").map { name -> spans.single { it.name == name }.status },
+        )
+        assertTrue("the classifier does not close a suspend-owned span from inside its block", childWasOpenWhileRunning)
+        assertTrue("normal span completion owns endNanos", spans.all { it.endNanos != null })
+        assertTrue("ValueOnly adds no event to either span", spans.all { it.eventBuffer.isEmpty() })
+    }
+
+    @Test fun `an explicit returnedOutcome overrides a value-only verdict but the span still fails`() = runTest {
+        val report = CollectingReport()
+        Kotrace.install(listOf(report), failureClassifier = domainClassifier)
+        var root: Span? = null
+
+        span(
+            "LoginUseCase",
+            returnedOutcome = { TraceOutcome(TraceStatus.OK) },
+        ) {
+            root = currentSpan()
+            DomainResult.Failure("login.already_exists")
+        }
+
+        assertEquals("explicit returnedOutcome still owns the trace verdict", TraceStatus.OK, report.status)
+        assertEquals("classification still describes the span itself", SpanStatus.ERROR, root?.status)
+        assertTrue("ValueOnly still emits no machine record", report.records.single().isEmpty())
+    }
+
+    @Test fun `recovering a value-only child leaves the trace OK`() = runTest {
+        val report = CollectingReport()
+        Kotrace.install(listOf(report), failureClassifier = domainClassifier)
+        var child: Span? = null
+
+        val out = span("root") {
+            val failure: DomainResult<Int> = span("LoginUseCase") {
+                child = currentSpan()
+                DomainResult.Failure("login.already_exists")
+            }
+            if (failure is DomainResult.Failure) DomainResult.Success(0) else failure
+        }
+
+        assertEquals(DomainResult.Success(0), out)
+        assertEquals("the root recovered to success", TraceStatus.OK, report.status)
+        assertEquals("the producing child remains failed", SpanStatus.ERROR, child?.status)
+        assertTrue("status-only classification emitted no records", report.records.single().isEmpty())
+    }
+
+    @Test fun `an installed classifier turns a returned failure into ERROR + one birthplace record`() = runTest {
+        val report = CollectingReport()
+        Kotrace.install(listOf(report), failureClassifier = resultClassifier)
         val boom = IllegalStateException("declined")
 
         val out = span("op") { Result.failure<Int>(boom) }
@@ -62,7 +146,7 @@ class AmbientFailureDetectorTest {
 
     @Test fun `a returned success stays OK with no exception record`() = runTest {
         val report = CollectingReport()
-        Kotrace.install(listOf(report), failureDetector = resultDetector)
+        Kotrace.install(listOf(report), failureClassifier = resultClassifier)
 
         val out = span("op") { Result.success(42) }
 
@@ -71,8 +155,8 @@ class AmbientFailureDetectorTest {
         assertTrue(report.crashes.isEmpty())
     }
 
-    @Test fun `the detector marks the producing span ERROR and records the throwable on its timeline`() = runTest {
-        Kotrace.install(emptyList(), failureDetector = resultDetector)
+    @Test fun `the classifier marks the producing span ERROR and records the throwable on its timeline`() = runTest {
+        Kotrace.install(emptyList(), failureClassifier = resultClassifier)
         val boom = IllegalStateException("declined")
 
         // Bind to a typed local so T = Result<Int>; a bare statement in a Unit-lambda would let Kotlin
@@ -91,7 +175,7 @@ class AmbientFailureDetectorTest {
 
     @Test fun `a returned CancellationException reports CANCELLED and is still recorded`() = runTest {
         val report = CollectingReport()
-        Kotrace.install(listOf(report), failureDetector = resultDetector)
+        Kotrace.install(listOf(report), failureClassifier = resultClassifier)
         val cancel = CancellationException("cooperative")
 
         span("op") { Result.failure<Int>(cancel) }
@@ -102,23 +186,23 @@ class AmbientFailureDetectorTest {
 
     // --- Verdict precedence: explicit returnedOutcome wins ---
 
-    @Test fun `an explicit returnedOutcome overrides the detector-derived verdict but the span still records`() = runTest {
+    @Test fun `an explicit returnedOutcome overrides the classifier-derived verdict but the span still records`() = runTest {
         val report = CollectingReport()
-        Kotrace.install(listOf(report), failureDetector = resultDetector)
+        Kotrace.install(listOf(report), failureClassifier = resultClassifier)
         val boom = IllegalStateException("declined")
 
-        // returnedOutcome forces OK even though the detector fires on the root's returned failure.
+        // returnedOutcome forces OK even though the classifier fires on the root's returned failure.
         span("op", returnedOutcome = { TraceOutcome(TraceStatus.OK) }) { Result.failure<Int>(boom) }
 
-        assertEquals("explicit returnedOutcome (step 2) beats the root-detector default (step 4)", TraceStatus.OK, report.status)
-        assertSame("the span still detected + recorded the failure", boom, report.crashes.single().throwable)
+        assertEquals("explicit returnedOutcome (step 2) beats the root-classifier default (step 4)", TraceStatus.OK, report.status)
+        assertSame("the span still classified + recorded the failure", boom, report.crashes.single().throwable)
     }
 
     // --- Climb dedups to the deepest observing span ---
 
     @Test fun `the same returned failure observed up the tree collapses to one birthplace`() = runTest {
         val report = CollectingReport()
-        Kotrace.install(listOf(report), failureDetector = resultDetector)
+        Kotrace.install(listOf(report), failureClassifier = resultClassifier)
         val boom = IllegalStateException("deep")
 
         span("root") {
@@ -135,24 +219,24 @@ class AmbientFailureDetectorTest {
 
     // --- Per-call override + local opt-out ---
 
-    @Test fun `a per-call detector works with no ambient detector installed`() = runTest {
+    @Test fun `a per-call classifier works with no ambient classifier installed`() = runTest {
         val report = CollectingReport()
-        Kotrace.install(listOf(report)) // no ambient detector
+        Kotrace.install(listOf(report)) // no ambient classifier
         val boom = IllegalStateException("declined")
 
-        span("op", failureDetector = resultDetector) { Result.failure<Int>(boom) }
+        span("op", failureClassifier = resultClassifier) { Result.failure<Int>(boom) }
 
         assertEquals(TraceStatus.ERROR, report.status)
         assertSame(boom, report.crashes.single().throwable)
     }
 
-    @Test fun `a per-call opt-out suppresses detection on that span`() = runTest {
+    @Test fun `a per-call opt-out suppresses classification on that span`() = runTest {
         val report = CollectingReport()
-        Kotrace.install(listOf(report), failureDetector = resultDetector)
+        Kotrace.install(listOf(report), failureClassifier = resultClassifier)
         val boom = IllegalStateException("expected, not an error here")
 
         // { null } opts this span out; with returnedOutcome left default the verdict falls back to OK.
-        span("find", failureDetector = { null }) { Result.failure<Int>(boom) }
+        span("find", failureClassifier = { null }) { Result.failure<Int>(boom) }
 
         assertEquals(TraceStatus.OK, report.status)
         assertTrue("opted-out span records nothing", report.crashes.isEmpty())
@@ -160,9 +244,9 @@ class AmbientFailureDetectorTest {
 
     // --- Zero-config: additive, no behavior change ---
 
-    @Test fun `with no detector a returned failure is invisible`() = runTest {
+    @Test fun `with no classifier a returned failure is invisible`() = runTest {
         val report = CollectingReport()
-        Kotrace.install(listOf(report)) // no failureDetector
+        Kotrace.install(listOf(report)) // no failureClassifier
 
         span("op") { Result.failure<Int>(IllegalStateException("declined")) }
 
@@ -172,52 +256,52 @@ class AmbientFailureDetectorTest {
 
     // --- Fault isolation ---
 
-    @Test fun `a throwing detector never fails a succeeding return and is routed to the hook`() = runTest {
+    @Test fun `a throwing classifier never fails a succeeding return and is routed to the hook`() = runTest {
         val report = CollectingReport()
         val faultPhase = AtomicReference<FaultPhase?>()
         val hook = AdapterFaultHook { phase, _, _ -> faultPhase.set(phase) }
-        Kotrace.install(listOf(report), faultHook = hook, failureDetector = { error("detector blew up") })
+        Kotrace.install(listOf(report), faultHook = hook, failureClassifier = { error("classifier blew up") })
 
         val out = span("op") { Result.success(7) }
 
         assertEquals("the operation still returns its value", 7, out.getOrNull())
         assertEquals("contained → the trace is not turned into a failure", TraceStatus.OK, report.status)
-        assertTrue("a contained detector fault records nothing", report.crashes.isEmpty())
-        assertEquals(FaultPhase.FAILURE_DETECTOR, faultPhase.get())
+        assertTrue("a contained classifier fault records nothing", report.crashes.isEmpty())
+        assertEquals(FaultPhase.FAILURE_CLASSIFIER, faultPhase.get())
     }
 
-    @Test fun `the detector is never invoked when the block throws`() = runTest {
+    @Test fun `the classifier is never invoked when the block throws`() = runTest {
         val calls = java.util.concurrent.atomic.AtomicInteger(0)
         val report = CollectingReport()
-        Kotrace.install(listOf(report), failureDetector = { calls.incrementAndGet(); null })
+        Kotrace.install(listOf(report), failureClassifier = { calls.incrementAndGet(); null })
         val boom = IllegalStateException("thrown, not returned")
 
         try {
-            span<Int>("op") { throw boom } // a throw takes the catch path, not the detector
+            span<Int>("op") { throw boom } // a throw takes the catch path, not the classifier
         } catch (t: Throwable) {
             // identity-agnostic: coroutine stacktrace recovery may copy the throwable across withContext.
             assertEquals("thrown, not returned", t.message)
         }
 
-        assertEquals("detection is a normal-return-only path; the catch owns a throw", 0, calls.get())
+        assertEquals("classification is a normal-return-only path; the catch owns a throw", 0, calls.get())
         assertEquals(TraceStatus.ERROR, report.status)
         assertEquals("the thrown throwable is the birthplace, via the catch", "thrown, not returned", report.crashes.single().throwable.message)
     }
 
-    @Test fun `a detector that THROWS a CancellationException is contained, not turned into cancellation`() = runTest {
+    @Test fun `a classifier that THROWS a CancellationException is contained, not turned into cancellation`() = runTest {
         val report = CollectingReport()
-        Kotrace.install(listOf(report), failureDetector = { throw CancellationException("from detector") })
+        Kotrace.install(listOf(report), failureClassifier = { throw CancellationException("from classifier") })
 
         span("op") { Result.success(1) }
 
-        assertEquals("a detector-thrown cancellation is a config fault, not a trace cancellation", TraceStatus.OK, report.status)
+        assertEquals("a classifier-thrown cancellation is a config fault, not a trace cancellation", TraceStatus.OK, report.status)
         assertTrue(report.crashes.isEmpty())
     }
 
     // --- Topology: span marking, dedup, and the birthplace-per-branch semantic ---
 
     @Test fun `every span on a returned-failure climb is marked ERROR, deduped to one recorded birthplace`() = runTest {
-        Kotrace.install(emptyList(), failureDetector = resultDetector)
+        Kotrace.install(emptyList(), failureClassifier = resultClassifier)
         val boom = IllegalStateException("deep")
 
         val spans = collectTrace {
@@ -239,7 +323,7 @@ class AmbientFailureDetectorTest {
 
     @Test fun `a recovered child leaves the trace OK while the child records its own failure`() = runTest {
         val report = CollectingReport()
-        Kotrace.install(listOf(report), failureDetector = resultDetector)
+        Kotrace.install(listOf(report), failureClassifier = resultClassifier)
         val boom = IllegalStateException("recovered upstream")
 
         val out = span("root") {
@@ -256,7 +340,7 @@ class AmbientFailureDetectorTest {
 
     @Test fun `a semantic re-wrap into a different throwable makes a second birthplace`() = runTest {
         val report = CollectingReport()
-        Kotrace.install(listOf(report), failureDetector = resultDetector)
+        Kotrace.install(listOf(report), failureClassifier = resultClassifier)
         val a = IllegalStateException("original")
         val b = IllegalStateException("re-wrapped")
 
@@ -271,10 +355,12 @@ class AmbientFailureDetectorTest {
         assertSame("b is the root's birthplace — a distinct lineage, not deduped", b, byOp["root"]?.throwable)
     }
 
-    @Test fun `a detector that synthesizes a fresh throwable per call does not dedup (contract break)`() = runTest {
+    @Test fun `a classifier that synthesizes a fresh throwable per call does not dedup (contract break)`() = runTest {
         val report = CollectingReport()
         // Violates the stable-throwable contract: a new RuntimeException each invocation → distinct lineages.
-        Kotrace.install(listOf(report), failureDetector = { if (it is Result<*> && it.isFailure) RuntimeException("fresh") else null })
+        Kotrace.install(listOf(report), failureClassifier = {
+            if (it is Result<*> && it.isFailure) ReturnedFailure.CausedBy(RuntimeException("fresh")) else null
+        })
 
         span("root") { span("mid") { span("leaf") { Result.failure<Int>(IllegalStateException("x")) } } }
 
@@ -284,7 +370,7 @@ class AmbientFailureDetectorTest {
     }
 
     @Test fun `a returned CancellationException marks the span ERROR and records, like a thrown one`() = runTest {
-        Kotrace.install(emptyList(), failureDetector = resultDetector)
+        Kotrace.install(emptyList(), failureClassifier = resultClassifier)
         val cancel = CancellationException("returned")
 
         val spans = collectTrace {
@@ -299,7 +385,7 @@ class AmbientFailureDetectorTest {
 
     @Test fun `parallel siblings returning one shared failure keep one birthplace each`() = runTest {
         val report = CollectingReport()
-        Kotrace.install(listOf(report), failureDetector = resultDetector)
+        Kotrace.install(listOf(report), failureClassifier = resultClassifier)
         val shared = IllegalStateException("shared")
 
         span("root") {
@@ -316,24 +402,24 @@ class AmbientFailureDetectorTest {
         assertEquals(setOf("s1", "s2"), crashes.map { it.operation }.toSet())
     }
 
-    // --- Fault-hook precedence (detector on Kotrace, faults routed by whole-config precedence) + strict ---
+    // --- Fault-hook precedence (classifier on Kotrace, faults routed by whole-config precedence) + strict ---
 
-    @Test fun `a detector fault routes to the per-flow hook, or is swallowed when that config has none`() = runTest {
+    @Test fun `a classifier fault routes to the per-flow hook, or is swallowed when that config has none`() = runTest {
         val processPhase = AtomicReference<FaultPhase?>()
         val flowPhase = AtomicReference<FaultPhase?>()
-        val detectorCalls = AtomicInteger(0)
+        val classifierCalls = AtomicInteger(0)
         Kotrace.install(
             emptyList(),
             faultHook = { p, _, _ -> processPhase.set(p) },
-            failureDetector = { detectorCalls.incrementAndGet(); error("boom") },
+            failureClassifier = { classifierCalls.incrementAndGet(); error("boom") },
         )
 
-        // A flow with its own faultHook: the detector fault routes there, not to the process hook.
+        // A flow with its own faultHook: the classifier fault routes there, not to the process hook.
         withContext(SpanCollector() + TraceConfig(emptyList(), faultHook = { p, _, _ -> flowPhase.set(p) })) {
             span("op") { 1 }
         }
-        assertEquals(1, detectorCalls.get())
-        assertEquals(FaultPhase.FAILURE_DETECTOR, flowPhase.get())
+        assertEquals(1, classifierCalls.get())
+        assertEquals(FaultPhase.FAILURE_CLASSIFIER, flowPhase.get())
         assertNull("whole-config precedence: the flow's config won, process hook not used", processPhase.get())
 
         // A flow whose config sets faultHook = null swallows it — it does NOT inherit the process hook.
@@ -341,16 +427,16 @@ class AmbientFailureDetectorTest {
         withContext(SpanCollector() + TraceConfig(emptyList(), faultHook = null)) {
             span("op") { 1 }
         }
-        assertEquals("the detector DID run in the null-hook flow; its fault was just swallowed", 2, detectorCalls.get())
+        assertEquals("the classifier DID run in the null-hook flow; its fault was just swallowed", 2, classifierCalls.get())
         assertNull("null per-flow hook swallows; no inherit from process", processPhase.get())
     }
 
-    @Test fun `with strict armed and nothing installed, detection resolution does not throw`() = runTest {
+    @Test fun `with strict armed and nothing installed, classification resolution does not throw`() = runTest {
         Kotrace.strictWhenUninstalled()
         val boom = IllegalStateException("declined")
 
         // Plain withContext (NOT collectTrace, whose runCatching would swallow a strict throw and pass
-        // vacuously): if detector resolution tripped strict, this block would throw and fail the test.
+        // vacuously): if classifier resolution tripped strict, this block would throw and fail the test.
         val collector = SpanCollector()
         var completed = false
         withContext(collector) {
@@ -358,18 +444,18 @@ class AmbientFailureDetectorTest {
             completed = r.isFailure
         }
 
-        assertTrue("detection resolved without tripping the strict latch", completed)
+        assertTrue("classification resolved without tripping the strict latch", completed)
         val op = collector.spans.single { it.name == "op" }
-        assertEquals("no detector installed → no detection → span stays OK", SpanStatus.OK, op.status)
+        assertEquals("no classifier installed → no classification → span stays OK", SpanStatus.OK, op.status)
     }
 
     @Test fun `a middle-span opt-out leaves a hole - ERROR root, OK opted-out middle, ERROR leaf`() = runTest {
-        Kotrace.install(emptyList(), failureDetector = resultDetector)
+        Kotrace.install(emptyList(), failureClassifier = resultClassifier)
         val boom = IllegalStateException("returned up unchanged")
 
         val spans = collectTrace {
             val r: Result<Int> = span("root") {           // inherits ambient → detects → ERROR
-                span("mid", failureDetector = { null }) {  // local opt-out → does NOT detect → OK
+                span("mid", failureClassifier = { null }) {  // local opt-out → does NOT detect → OK
                     span("leaf") { Result.failure(boom) }  // inherits ambient → detects → ERROR
                 }
             }
