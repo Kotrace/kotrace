@@ -1,6 +1,6 @@
 # Agent Instructions
 
-This repository is a Kotlin/JVM tracing library. Use this file as the repo-local setup for Codex and other coding agents.
+This repository is a Kotlin/JVM tracing library. Use this file as the repository-local setup for Codex and other coding agents.
 
 ## Language
 
@@ -9,13 +9,23 @@ This repository is a Kotlin/JVM tracing library. Use this file as the repo-local
 ## Project Map
 
 - Root project `dev.kotrace:kotrace`: pure Kotlin core tracer.
-- `src/main/kotlin/dev/kotrace/Trace.kt`: public `span {}` entry point.
-- `src/main/kotlin/dev/kotrace/Span.kt` and `SpanContext.kt`: span model and coroutine propagation.
-- `src/main/kotlin/dev/kotrace/Report.kt`, `TraceAdapter.kt`, `TraceConfig.kt`, and `TracePolicy.kt`: fan-out/reporting surface.
+- Core packages, one per concern (ADR-031); the directory is the package, under `src/main/kotlin/dev/kotrace/`:
+  - root `dev.kotrace`: `Trace.kt` (public `span {}` entry point), `Span.kt` with its `EventTimeline.kt` (the
+    bounded copy-on-write event timeline), the context elements
+    (`SpanContext.kt`, `SpanCollector.kt`, and `ScopeContext.kt` with `withScope`), `Kotrace.kt` and `TraceConfig.kt` (configuration
+    install and resolution), statuses and outcomes;
+  - `event/`: events, records, the event verbs, span-less emits, `toJson`;
+  - `adapter/`: `TraceAdapter.kt`, `TracePolicy.kt`, `FaultHook.kt` (the sink contract);
+  - `report/`: `Report.kt` (`reportTrace`), `TraceTreeIndex.kt`, `TraceFormat.kt` (`renderTree`);
+  - `bridge/`: what an integration builds on: the opt-in non-suspend bridge (`startSpan`/`end`, `TraceHandoff`) and
+    `runIsolated`, the one fault-isolation rule the core and every integration use (`@KotraceIntegrationApi`, ADR-035);
+  - `internal/`: `internal` helpers shared across packages (fault routing and the reentrancy guards, span creation,
+    `threadFlag`).
+  - Core tests mirror these packages. A feature-local `internal` helper stays in its feature's package.
 - `kotrace-okhttp`: OkHttp integration. Keep HTTP dependencies out of core.
 - `kotrace-room`: Android Room integration. Keep Android dependencies out of core and OkHttp.
 - `kotrace-bom`: Maven BOM.
-- `build-logic`: build-only Gradle plugins, never published: the release guard (`kotrace.release-guard`) and its TestKit tests, which the root `check` runs, and the Android ABI gate (`kotrace.android-abi`).
+- `build-logic`: build-only Gradle plugins, never published: the release guard (`kotrace.release-guard`) and its TestKit tests, which the root `check` runs, the Android ABI gate (`kotrace.android-abi`), and `kotrace.conventions`, the settings every published module shares (Java 11 bytecode and API, the consumer baseline, the ABI gate, the opt-ins, Dokka, the POM).
 - `demo`: runnable showcase only; do not treat it as a published artifact.
 - `decisions/` and `ARCHITECTURE.md`: source of truth for design rationale. Read the relevant ADR before changing behavior it covers.
 
@@ -25,15 +35,16 @@ This repository is a Kotlin/JVM tracing library. Use this file as the repo-local
 - Run focused tests with Gradle where possible, for example `./gradlew test` for core/unit tests.
 - Run `./gradlew build` before finishing broad or cross-module changes.
 - Run `./gradlew dokkaGenerate` when touching public KDoc or samples, because Dokka warnings are configured to fail (core, `kotrace-okhttp` and `kotrace-room`).
+- KDoc `@sample` targets live in `src/samples/kotlin` and compile with `main`, so the IDE resolves them (ADR-007). Keep every sample `internal`; the package is excluded from the jars and the API documentation.
 - README Kotlin snippets are compiled: edit the `// README snippet:` region in the module's `ReadmeSnippets.kt` together with the README block; `ReadmeSnippetsTest` fails on drift.
 - `check` runs `checkKotlinAbi` for every published module against the committed `api/*.api` dumps. A deliberate public API change needs `./gradlew updateKotlinAbi` plus the dump in the same commit; a binary break needs a version bump in `gradle.properties` (publishing refuses a version already tagged or published from another commit) and a line in the README's upgrade notes. The core and `kotrace-okhttp` use KGP's `abiValidation()`; `kotrace-room` uses `kotrace.android-abi`, because `abiValidation()` dumps nothing on AGP 9's built-in Kotlin.
-- `check` also runs `:kotrace-okhttp:testOkHttp5` (the same tests on an OkHttp 5 runtime, ADR-027) and the `build-logic` tests. Those start throwaway Gradle builds and need `git` on the PATH.
-- No secrets or environment variables are needed for normal build/test.
+- `check` also runs `:kotrace-okhttp:testOkHttp5` (the same tests on an OkHttp 5 runtime, ADR-027), `checkAndroidApi` on the JVM modules (no Java API newer than Android's `androidMinSdk`, read from the compile SDK's `api-versions.xml`, ADR-027), and the `build-logic` tests. Those start throwaway Gradle builds and need `git` on the PATH.
+- An Android SDK with the compile SDK platform is needed: `kotrace-room` builds against it, and `checkAndroidApi` reads its `api-versions.xml`. Both find it through `sdk.dir` in `local.properties` or `ANDROID_HOME`. No secrets are needed.
 
 ## Coding Constraints
 
 - Preserve the module split: core must stay pure Kotlin plus coroutines; OkHttp and Android/Room dependencies belong only in their modules.
-- The catalog versions of published dependencies (`kotlinxCoroutines`, `okhttp`) and `kotlinBaseline`/`kotlinStdlibBaseline` are consumer floors (ADR-027), not "latest". Do not bump them as routine maintenance; raising one is a compatibility decision.
+- The catalog versions of published dependencies (`kotlinxCoroutines`, `okhttp`), `room` (compile-only), `androidMinSdk` and `kotlinBaseline`/`kotlinStdlibBaseline` are consumer floors (ADR-027), not "latest". Do not bump them as routine maintenance; raising one is a compatibility decision.
 - Instrumentation observes and rethrows; it must not swallow user exceptions.
 - `renderTree()` is an unredacted human debug read. Keep `@UnredactedTraceRead` opt-in boundaries intact and never route unredacted output to sinks.
 - Trace wire fields use snake_case JSON and W3C `traceparent`; keep wire-format changes deliberate and documented.

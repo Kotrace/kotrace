@@ -1,4 +1,4 @@
-# ADR-026 — `reportTrace` and `renderTree` walk every root of a collector
+# ADR-026: `reportTrace` and `renderTree` walk every root of a collector
 
 - **Date:** 2026-09-25
 - **Status:** Accepted
@@ -37,13 +37,13 @@ control, can hold more than one tree:
 
 ## Options considered
 
-- **Fail fast, or signal the fault hook, when there is more than one root — rejected.** Both shapes above are
+- **Fail fast, or signal the fault hook, when there is more than one root: rejected.** Both shapes above are
   legitimate uses of a manual collector, and the data is there to report. A hook signal would still lose the
   failure.
-- **One `onReport` per root — rejected.** The caller supplies a single `status` for the whole collector, so
+- **One `onReport` per root: rejected.** The caller supplies a single `status` for the whole collector, so
   splitting would imply per-tree verdicts that do not exist. One report whose records carry their own trace
   identity is the faithful shape.
-- **Also register a span in every enclosing collector — rejected for now.** That would put a nested helper's
+- **Also register a span in every enclosing collector: rejected for now.** That would put a nested helper's
   subtree into the outer trace as well. It changes span ownership and double-reports, so it deserves its own
   decision if it is ever needed.
 

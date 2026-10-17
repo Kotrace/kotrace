@@ -1,8 +1,8 @@
-# ADR-024 — OkHttp `Level.BODY` is bounded and transport-neutral
+# ADR-024: OkHttp `Level.BODY` is bounded and transport-neutral
 
 - **Date:** 2026-09-25
 - **Status:** Accepted
-- **Affects:** `TracingInterceptor` at `Level.BODY` only — how much of a body it reads, when, and which bodies it
+- **Affects:** `TracingInterceptor` at `Level.BODY` only: how much of a body it reads, when, and which bodies it
   skips. `bodyLimit` is now validated (`>= 0`). No API or wire change.
 - **Builds on:** [ADR-023](adr-023-okhttp-trace-handoff.md) (instrumentation only observes).
 
@@ -34,7 +34,7 @@ transport and lost data:
   sink that keeps the first `bodyLimit + 1` bytes and then stops the write with a stackless control exception.
 - **Response (tee-on-read):** nothing is read before the response is returned. The body is wrapped in a source
   that copies the first `bodyLimit + 1` bytes **as the caller's reads pull them**, and logs the snippet once, when
-  the caller reaches EOF or closes the body. The log runs under the flow's captured config (ADR-023), from
+  the caller reaches EOF or closes the body. The log runs under the flow's captured configuration (ADR-023), from
   whatever thread the caller reads on. The event carries only the resulting `String`, and the other response
   lines capture `code` and `headers` values, not the `Response`. A `text/event-stream` response, or one to a
   duplex request, is logged as omitted and left unwrapped. Wrapping never fails the call: on a fault, the
@@ -42,7 +42,7 @@ transport and lost data:
 - **Snippet shape:**
   - up to `bodyLimit` bytes as UTF-8;
   - followed by `… (truncated, N bytes)` when the body was longer (`N` is omitted when the length is unknown);
-  - followed by `… (read partially)` when the caller provably stopped early, i.e. closed the body before EOF
+  - followed by `… (read partially)` when the caller provably stopped early, that is, closed the body before EOF
     with fewer bytes seen than its declared length. A JSON converter that stops at the closing brace without
     reading EOF is not marked.
 
@@ -51,15 +51,15 @@ transport and lost data:
 
 ## Options considered
 
-- **An eager, bounded `peekBody(bodyLimit + 1)` in `intercept` (the first version) — replaced.** A byte bound is
+- **An eager, bounded `peekBody(bodyLimit + 1)` in `intercept` (the first version): replaced.** A byte bound is
   not a time bound: the peek waits for `bodyLimit + 1` bytes or EOF. Any open-ended response not recognized by
   content type stalled the call. An NDJSON stream reached the caller after 7.3 s instead of immediately, and no
   content-type list can name every stream. Tee-on-read has no such failure mode. Its costs: the snippet lands on
   the already-ended HTTP span, from the caller's thread, and a body the caller never reads logs nothing. Both are
   acceptable for a debug breadcrumb.
-- **Skip every unknown-length (chunked) response — rejected.** OkHttp's transparent gzip strips
+- **Skip every unknown-length (chunked) response: rejected.** OkHttp's transparent gzip strips
   `Content-Length`, so most real responses have an unknown length, and `BODY` would log almost nothing.
-- **Gate the capture on "some adapter accepts sensitive" — rejected.** Acceptance is per-adapter and per-phase
+- **Gate the capture on "some adapter accepts sensitive": rejected.** Acceptance is per-adapter and per-phase
   (live now, report later). With the capture bounded, the cost of taking it unconditionally at `BODY` is small,
   and `BODY` is debug-only by contract.
 

@@ -1,13 +1,19 @@
-# ADR-007 — Adopt Dokka; KDoc examples are compiled `@sample`s, not prose snippets
+# ADR-007: Adopt Dokka; KDoc examples are compiled `@sample`s, not prose snippets
 
 - **Date:** 2026-08-22
-- **Status:** Accepted (implemented — Dokka v2 applied to core; the `ReportAdapter` self-gate is a `@sample`)
+- **Status:** Accepted (implemented: Dokka v2 applied to core; the `ReportAdapter` self-gate is a `@sample`)
+- **Amended:** 2026-10-09: the `@sample` sources moved from test source to `src/samples/kotlin`, compiled with
+  `main`. The IDE resolves `@sample` from `main`'s own scope and never reads Dokka's samples root, so from test
+  source every `@sample` showed "Cannot resolve symbol" and Quick Documentation rendered no example. The samples
+  stay out of the artifact: every one is `internal` (absent from the API dump), `dev/kotrace/samples/**` is
+  excluded from the jar and the sources jar, and Dokka suppresses the package. `ReadmeSnippets` (no `@sample`
+  target) stays in test source.
 - **Affects:** root `build.gradle.kts`, `gradle/libs.versions.toml`, `TraceAdapter.kt` / `Report.kt` KDoc,
   new `src/test/kotlin/dev/kotrace/samples/ReportAdapterSamples.kt`, backlog **D3**
 
 ## Context
 
-KDoc code examples were handwritten strings. Nothing compiled them, so they drifted from the real API — a
+KDoc code examples were handwritten strings. Nothing compiled them, so they drifted from the real API; a
 copy-paste example once read `if (status != TraceStatus.Error) return`, which does not compile (`ERROR` is
 the constant). The canonical `ReportAdapter` self-gate is exactly the snippet a consumer pastes, so drift
 there is high-impact.
@@ -23,7 +29,7 @@ than an inline literal:
 - A samples root registered on the `main` source set:
   `dokkaSourceSets.named("main") { samples.from("src/test/kotlin/.../ReportAdapterSamples.kt") }`.
 - The sample (`ReportAdapterSamples.onReportSelfGate`) lives in **test source**, so `check` compiles it
-  against the real API — a sample that stops matching the API fails to compile and breaks the build.
+  against the real API: a sample that stops matching the API fails to compile and breaks the build.
 - `TraceAdapter.onReport` / `Report.kt` reference it with `@sample dev.kotrace.samples.ReportAdapterSamples.onReportSelfGate`;
   the inline literal snippet is removed from the prose, so there is no un-compiled example left to drift.
 - `failOnWarning` is enabled on the HTML publication, so a dangling KDoc link or an unresolved `@sample`
@@ -36,19 +42,19 @@ than an inline literal:
   bug that motivated this (a snippet that does not compile) can no longer reach `main` unnoticed.
 - **Two enforcement layers.** The sample *code* compiling is enforced locally by `test`; the `@sample`
   *reference* resolving and links being valid is enforced by `dokkaGenerate` + `failOnWarning`, which CI must
-  run. `dokkaGenerate` is deliberately **not** wired into `check` — it adds ~10s to every build, and the
+  run. `dokkaGenerate` is deliberately **not** wired into `check`: it adds ~10s to every build, and the
   local `test` compile already covers the primary (code-compiles) guarantee.
-- **API docs exist.** `./gradlew dokkaGenerate` produces the HTML site as a side benefit.
+- **API documentation exist.** `./gradlew dokkaGenerate` produces the HTML site as a side benefit.
 - **Pattern for future examples:** a KDoc example goes in `ReportAdapterSamples` (or a sibling) and is
   referenced with `@sample`; inline literal code in KDoc is discouraged.
 - **Scope:** Dokka is applied to the core module only, where the flagged snippets live. `:kotrace-okhttp` /
-  `:kotrace-room` can adopt it later for a full multi-module docs site; not needed for D3.
+  `:kotrace-room` can adopt it later for a full multi-module documentation site; not needed for D3.
 
 ## Rejected alternatives
 
 - **Remove the literal snippet, point to `:demo` in prose (no Dokka).** Zero-infra and closes the drift
   surface, but gives no rendered, clickable, or reference-checked example, and core KDoc cannot link across
-  modules to `:demo` anyway. Rejected once Dokka was chosen — `@sample` delivers the rendered example *and*
+  modules to `:demo` anyway. Rejected once Dokka was chosen: `@sample` delivers the rendered example *and*
   the compile check.
 - **Wire `dokkaGenerate` into `check`.** Fully local enforcement, but a ~10s tax on every build for a
   guarantee the `test` compile already gives for the code itself. Left to CI.

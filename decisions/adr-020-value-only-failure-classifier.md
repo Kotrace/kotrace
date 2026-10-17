@@ -1,15 +1,26 @@
-# ADR-020 — Generalize returned-failure detection into a classifier; value-only failures produce status without synthetic records
+# ADR-020: Generalize returned-failure detection into a classifier; value-only failures produce status without synthetic records
 
 - **Date:** 2026-09-23
 - **Status:** Accepted
+- **Amended:** 2026-10-09: `ReturnedFailure { ValueOnly, CausedBy(Throwable) }` is reshaped as
+  `ReturnVerdict { Success, Failure(throwable: Throwable?) }`, and the classifier returns it non-null
+  (`ReturnVerdictClassifier<T> = (T) -> ReturnVerdict`, generic so one name serves both the process-wide
+  `ReturnVerdictClassifier<Any?>` and the per-span `ReturnVerdictClassifier<T>`). The name follows what it returns:
+  `FailureClassifier`, the `failureClassifier` parameters, `FaultPhase.FAILURE_CLASSIFIER` and the "failure
+  classifier" term are renamed `ReturnVerdictClassifier`, `returnVerdictClassifier`, `RETURN_VERDICT_CLASSIFIER`
+  and "return verdict classifier", and this ADR's body uses the new names for them. An explicit `Success` replaces `null`, so a classifier states
+  every outcome and a per-span opt-out reads `{ ReturnVerdict.Success }`. `Failure(null)` is the former
+  `ValueOnly` and `Failure(throwable)` the former `CausedBy`; behavior is unchanged. The throwable has no default,
+  so a status-only failure is still written out (`Failure(null)`) rather than implied. The body below keeps the
+  original names.
 - **Affects:** replaces ADR-018's `FailureDetector = (Any?) -> Throwable?` with
-  `FailureClassifier = (Any?) -> ReturnedFailure?`; renames the process-wide and per-call parameters from
-  `failureDetector` to `failureClassifier`; adds the closed public result type
+  `ReturnVerdictClassifier = (Any?) -> ReturnedFailure?`; renames the process-wide and per-call parameters from
+  `failureDetector` to `returnVerdictClassifier`; adds the closed public result type
   `ReturnedFailure { ValueOnly, CausedBy(Throwable) }`; renames `FaultPhase.FAILURE_DETECTOR` to
-  `FAILURE_CLASSIFIER`. `ValueOnly` marks a normally returning span `ERROR` and supplies the auto-root's default
+  `RETURN_VERDICT_CLASSIFIER`. `ValueOnly` marks a normally returning span `ERROR` and supplies the auto-root's default
   `TraceStatus.ERROR`, but emits no `SpanEvent` or `TraceRecord`. `CausedBy` preserves ADR-018's throwable
   recording, lineage dedup, cancellation, and verdict behavior.
-- **Amends:** [ADR-018](adr-018-ambient-failure-detector.md) — its ambient/per-call placement, fault isolation,
+- **Amends:** [ADR-018](adr-018-ambient-failure-detector.md): its ambient/per-call placement, fault isolation,
   root-verdict precedence, recovery, and stable-throwable contract stand; only the callback's result shape and
   terminology widen. Also amends [ADR-019](adr-019-exception-origin-marking.md): origin marking still applies
   to `CausedBy`, while `ValueOnly` has no exception record to classify.
@@ -26,7 +37,7 @@ The concrete consumer workaround exposes the missing state: after a suspend-owne
 failure, it calls `currentSpan()?.end(ERROR)` inside that span's block. That reaches the desired status but uses
 the non-suspend bridge's completion verb, publishing `endNanos` before the suspend block has actually finished.
 The later `finally` overwrites the timestamp, but a concurrent reader can observe a closed span while it is
-still running. The failure classifier — the owner that already inspects every normal return — is the narrow
+still running. The return verdict classifier, the owner that already inspects every normal return, is the narrow
 layer that should mark status.
 
 The missing throwable does **not** justify synthesizing one: a fake exception pollutes crash grouping and has
@@ -36,7 +47,7 @@ crash reporter. Status classification and domain-reason emission are separate co
 
 ## Decision
 
-**Replace the throwable-only detector with one ambient returned-failure classifier whose non-null result always
+**Replace the throwable-only detector with one ambient returned-return verdict classifier whose non-null result always
 marks the span `ERROR`; only the throwable-backed variant emits an exception event.**
 
 ```kotlin
@@ -45,7 +56,7 @@ sealed interface ReturnedFailure {
     data class CausedBy(val throwable: Throwable) : ReturnedFailure
 }
 
-typealias FailureClassifier = (Any?) -> ReturnedFailure?
+typealias ReturnVerdictClassifier = (Any?) -> ReturnedFailure?
 ```
 
 The classifier remains process-wide on `Kotrace`, with a typed per-call override on `span`:
@@ -53,7 +64,7 @@ The classifier remains process-wide on `Kotrace`, with a typed per-call override
 ```kotlin
 Kotrace.install(
     adapters = adapters,
-    failureClassifier = { value ->
+    returnVerdictClassifier = { value ->
         (value as? Result.Failure<*>)?.let { failure ->
             (failure.error as? Throwable)
                 ?.let(ReturnedFailure::CausedBy)
@@ -100,8 +111,8 @@ Two limitations remain explicit rather than being smuggled into this change:
 
 ### Fault isolation and non-suspend bridge
 
-A non-fatal classifier throw — including a thrown `CancellationException` — remains contained as “no
-classification” and is routed to `AdapterFaultHook` with `FaultPhase.FAILURE_CLASSIFIER`, `adapter = null`.
+A non-fatal classifier throw (including a thrown `CancellationException`) remains contained as “no
+classification” and is routed to `FaultHook` with `FaultPhase.RETURN_VERDICT_CLASSIFIER`, `adapter = null`.
 A fatal JVM error is rethrown. `startSpan`/`Span.end` remain unchanged: they wrap no returned value and therefore
 have nothing to classify.
 
@@ -119,7 +130,7 @@ Migration:
 failureDetector = { value -> (value as? Result<*>)?.exceptionOrNull() }
 
 // After
-failureClassifier = { value ->
+returnVerdictClassifier = { value ->
     (value as? Result<*>)?.exceptionOrNull()?.let(ReturnedFailure::CausedBy)
 }
 ```

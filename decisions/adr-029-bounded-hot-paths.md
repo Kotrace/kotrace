@@ -1,4 +1,4 @@
-# ADR-029 — Bounded hot paths: table-lookup ids, a lazy shared report walk, a capped span timeline
+# ADR-029: Bounded hot paths: table-lookup ids, a lazy shared report walk, a capped span timeline
 
 - **Date:** 2026-09-25
 - **Status:** Accepted
@@ -38,7 +38,7 @@ The review measured three costs that grow with the workload rather than with wha
   timelines, and the result is **shared** by every later adapter. An adapter that returns without iterating costs
   only the freeze. Because every non-empty collector has a root (ADR-026), "no spans" is the only early exit.
   (A first version froze only the span list. Timelines were then read at first iteration, so an event appended
-  after the report began — by an adapter's own `onReport` — entered the report. Found in review; fixed the same
+  after the report began (by an adapter's own `onReport`) entered the report. Found in review; fixed the same
   day.) The `attached` orphans are read at the same moment, under the fault guard, so a later mutation cannot
   enter the report and an unreadable list costs only the orphans. Each frozen timeline is drained once and kept:
   a `lazy` does not memoize a throw, so a walk that failed inside the first consuming adapter re-runs for the
@@ -61,15 +61,16 @@ The review measured three costs that grow with the workload rather than with wha
 
 ## Options considered
 
-- **Keep the first `MAX_EVENTS` events and drop new ones — rejected.** It keeps the least useful breadcrumbs
+- **Keep the first `MAX_EVENTS` events and drop new ones: rejected.** It keeps the least useful breadcrumbs
   for a long-lived span that eventually fails.
-- **A ring buffer instead of the copy-on-write list — rejected for now.** It is the right structure for dense
+- **A ring buffer instead of the copy-on-write list: rejected for now.** It is the right structure for dense
   spans, but the earlier lock-backed buffer experiment regressed empty traces, reads and reports (see README §
   Performance). The cap bounds the copy-on-write cost to O(`MAX_EVENTS`) per append without changing the common
   path.
-- **Make the cap configurable on `TraceConfig` — deferred.** An append does not always see the flow's config
+- **Make the cap configurable on `TraceConfig`: deferred.** An append does not always see the flow's configuration
   (bridges, span-less paths), and a constant is enough to remove the unbounded growth. It can become
-  configurable if a consumer needs more than 1,000 events per span.
+  configurable if a consumer needs more than 1,000 events per span. (Done in
+  [ADR-033](adr-033-configurable-span-event-cap.md): a span reads the cap once, when it opens.)
 
 ## Consequences
 
@@ -99,3 +100,27 @@ short scan, since a first version scanned the whole buffer per append and cost 9
   timeline for a retried walk adds about 2 KB to a consumed 128-span report (45.6 → 47.7 KB in a same-session
   2-fork run; the time difference was within noise). The skip path is unchanged (0.98 → 0.94 µs, 6.2 KB), since
   that cache is only allocated on the first read.
+
+## Amendment (2026-10-17): a copy-on-write timeline of our own, an exact cap, O(1) frozen snapshots
+
+The 2026-10-17 benchmark run (`benchmarks/results/20261017-full`) measured what the cap costs: 2,000 logs onto one
+span took 506 µs at the default cap of 1,000, more than keeping all 2,000 (340 µs). `CopyOnWriteArrayList` has no
+operation that removes one element and appends another, so every append past the cap copied the timeline twice,
+once for `removeAt` and once for `add`.
+
+- **`EventTimeline` replaces `CopyOnWriteArrayList`** as `Span.eventBuffer`. It is still copy-on-write: a read
+  takes the current array without a lock, so an iterator and a snapshot are stable. An append past the cap
+  discards its victim and appends in **one** copy. Victim selection is unchanged (oldest named event, else
+  oldest log, else oldest exception, the newest event always kept) and moved into the timeline with its
+  named-event count.
+- **The cap is exact.** Every append takes the timeline's lock, as a `CopyOnWriteArrayList` append already did,
+  so the "approximate under concurrent appends" overshoot above is gone, and so is the trim loop. The
+  `kotrace.events_dropped` attribute is written under its own lock, so it never steps back to a smaller count.
+- **Freezing a report takes an O(1) snapshot per span** that shares the timeline's array, instead of an iterator
+  drained into a list on first read. A trace of at most 8 spans finds a span's snapshot by scanning, with no map.
+- **Not the rejected lock-backed buffer.** That experiment locked reads too; this one locks only appends, which
+  `CopyOnWriteArrayList` did as well, so empty traces, reads and reports do not regress.
+- **Measured** with the same profile: 2,000 logs cost 312 µs and 5.94 MiB at cap 1,000 (−38% and −39%); 16
+  workers on one shared span past the cap 587 µs (−20%); a 512-span report 58.0 µs (−13%); an empty span no
+  longer allocates its own empty array. The buffer's contract test now covers the timeline's own contract
+  (snapshot reads, a read-only list, lossless concurrent appends) instead of `MutableList`'s.

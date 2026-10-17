@@ -1,4 +1,4 @@
-# ADR-028 — 0.5.0 API hygiene: gate test-only and unredacted reads, validate the wire id, snapshot inputs
+# ADR-028: 0.5.0 API hygiene: gate test-only and unredacted reads, validate the wire id, snapshot inputs
 
 - **Date:** 2026-09-25
 - **Status:** Accepted
@@ -30,8 +30,8 @@ than break again in 0.6.0:
    starts a new trace.
 3. **An unredacted read had no gate.** `collector.spans → span.events → LogEvent.message` (including
    `sensitive` messages) and `span.exception` (the raw throwable) return exactly what `renderTree` renders.
-   `renderTree` required `@UnredactedTraceRead`; these reads did not. ADR-008's threat model — someone pipes
-   it into `Log.d` — applies unchanged.
+   `renderTree` required `@UnredactedTraceRead`; these reads did not. ADR-008's threat model (someone pipes
+   it into `Log.d`) applies unchanged.
 4. **Caller maps were held by reference.** Event attributes and `TraceLink.attributes` kept the caller's map.
    Mutating it between the live fan-out and the report made policies decide differently. Mutating it while a
    report walked could throw `ConcurrentModificationException` inside `onReport`, which fault isolation turns
@@ -42,7 +42,7 @@ than break again in 0.6.0:
 ## Decision
 
 - **`@KotraceTestApi`** (`RequiresOptIn`, `ERROR`) gates `resetForTest`. Consumers opt in for the test source
-  set only. The repo does the same in Gradle, which is exactly the documented usage.
+  set only. The repository does the same in Gradle, which is exactly the documented usage.
 - **`toTraceparent` validates** that `traceId` is 32 and `spanId` is 16 lowercase hex chars, neither all zero,
   and throws `IllegalArgumentException` otherwise. Validation lives there and not in the `Span` constructor:
   only the wire needs the W3C grammar, and tests and bridges legitimately build symbolic spans. kotrace mints W3C
@@ -68,14 +68,14 @@ than break again in 0.6.0:
 
 ## Options considered
 
-- **Make `resetForTest` `internal` or move it to a `kotrace-testing` artifact — rejected for now.** `internal`
+- **Make `resetForTest` `internal` or move it to a `kotrace-testing` artifact: rejected for now.** `internal`
   cuts off the okhttp and room modules' tests and consumers' own tests. A separate artifact is heavier than one
   opt-in marker for one function.
-- **Validate ids in the `Span` constructor — rejected.** It breaks legitimate symbolic spans in tests and bridges
+- **Validate ids in the `Span` constructor: rejected.** It breaks legitimate symbolic spans in tests and bridges
   for a property only the wire needs.
-- **Gate `SpanCollector.spans` instead of `Span.events` — rejected.** Span names, ids, attributes and status are
+- **Gate `SpanCollector.spans` instead of `Span.events`: rejected.** Span names, ids, attributes and status are
   symbols by contract. Only the timeline (messages, throwables) is unredacted.
-- **Snapshot in the verbs only — rejected.** `LogEvent`/`NamedEvent` constructors are public, so a snapshot
+- **Snapshot in the verbs only: rejected.** `LogEvent`/`NamedEvent` constructors are public, so a snapshot
   in the class holds whatever the entry point.
 
 ## Consequences

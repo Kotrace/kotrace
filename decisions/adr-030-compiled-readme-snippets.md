@@ -1,8 +1,8 @@
-# ADR-030 — README snippets are compiled; every published module's KDoc is checked
+# ADR-030: README snippets are compiled; every published module's KDoc is checked
 
 - **Date:** 2026-09-25
 - **Status:** Accepted
-- **Affects:** docs and tooling only:
+- **Affects:** documentation and tooling only:
   - README snippet tags;
   - `ReadmeSnippets.kt` in the core, `kotrace-okhttp` and `kotrace-room` test sources;
   - `ReadmeSnippetsTest`;
@@ -51,12 +51,12 @@ block under `withContext`.
 
 ## Options considered
 
-- **Extract README code into files and include them in the README — rejected.** GitHub renders no includes, so
+- **Extract README code into files and include them in the README: rejected.** GitHub renders no includes, so
   the README would need a generation step that everyone must remember to run.
-- **Compile the README blocks directly with a Kotlin scripting harness — rejected.** The snippets depend on
+- **Compile the README blocks directly with a Kotlin scripting harness: rejected.** The snippets depend on
   consumer-side names (an adapter, `BuildConfig`, a Room database) that need stubs anyway. A plain source file
   plus a text comparison is simpler and runs in the normal `check`.
-- **A `Flow.traced(name)` operator — deferred.** The guidance and sample cover the failure. An operator is new
+- **A `Flow.traced(name)` operator: deferred.** The guidance and sample cover the failure. An operator is new
   API surface to design separately.
 
 ## Consequences

@@ -1,7 +1,11 @@
-# ADR-001 — Span filter attributes (fixed) vs. emitted info (dynamic)
+# ADR-001: Span filter attributes (fixed) versus emitted info (dynamic)
 
 - **Date:** 2026-08-18
-- **Status:** Accepted (implemented — filter/info split + capture-gate `acceptsSpan` union)
+- **Status:** Accepted (implemented: filter/info split + capture-gate `acceptsSpan` union)
+- **Amended:** 2026-10-10: renamed by [ADR-032](adr-032-span-traits-and-attributes.md). The filter map
+  `Span.attributes` is now `Span.traits`, and the emitted info `Span.info` / `putInfo` is now
+  `Span.attributes` / `putAttribute` (`TraceRecord.spanAttributes` on a record). The roles are unchanged; the
+  body below keeps the original names.
 - **Affects:** `dev.kotrace.Span`, `dev.kotrace.TracePolicy.acceptsSpan`, `TraceRecord` egress,
   `kotrace-okhttp` (`TracingInterceptor` `http.status`)
 
@@ -9,13 +13,13 @@
 
 A `Span` carries `attributes: MutableMap<String, String>`. Two kinds of value land in that one map:
 
-- **Fixed, birth-set** — passed at span creation (`trace(name, attributes)` /
+- **Fixed, birth-set**: passed at span creation (`trace(name, attributes)` /
   `startChildSpanHere(name, attributes)`). Example: `layer=http`, `layer=repo`. Set once, never changes.
-- **Dynamic, late-written** — stamped after the span opens, once a result is known.
+- **Dynamic, late-written**: stamped after the span opens, once a result is known.
   Example: `kotrace-okhttp`'s `TracingInterceptor` writes `span.attributes["http.status"] = code` when
   the response returns, *between* the request-side events and the response-side events.
 
-`acceptsSpan(span)` — the per-span filter in `TracePolicy` — reads this map. It runs on **both**
+`acceptsSpan(span)`, the per-span filter in `TracePolicy`, reads this map. It runs on **both**
 timings (`Emit.kt` at live emit time, `Report.kt` at report fan-out), reading `span.attributes` **as they
 stand at call time**.
 
@@ -25,7 +29,7 @@ This creates a correctness trap. A dynamic value is only final when the span end
 - At **live** the filter runs per event, mid-span → the value is present for events emitted *after* it is
   written and absent for those *before*. A policy that drops `http.status == "500"` on a `LiveAdapter`
   leaks the failing call's request breadcrumbs and drops only its response ones. The value the filter
-  reads depends on emission order — a race, not a decision.
+  reads depends on emission order: a race, not a decision.
 
 As an open-source library, kotrace cannot assume how many dynamic attributes a consumer defines or
 that consumers will avoid filtering on them. The contract has to make the trap unrepresentable, not
@@ -43,7 +47,7 @@ one map:
 2. **Late-known values are emitted info, never a filter key.** A dynamic value (`http.status`) is
    written through a separate span channel that flows into the emitted `TraceRecord` as payload but
    **does not reach `acceptsSpan`**. Consumers read it off the record; nobody filters on it. Its value on
-   a live record is best-effort during emission and final on the report record — acceptable, because it is
+   a live record is best-effort during emission and final on the report record, which is acceptable because it is
    information, not a decision input.
 
 The rule, stated once: **filter = fixed birth attributes; anything known late is a record payload, never
@@ -55,14 +59,14 @@ a filter input.** `kotrace-okhttp` moves `http.status` off the filter map onto t
 - The live-filter race is **unrepresentable**: a dynamic value is not in the map `acceptsSpan` reads, so
   no policy can gate on it at the wrong time.
 - **Capture-gate optimization landed** *(superseded by [ADR-002](adr-002-remove-capture-gate.md),
-  2026-08-21 — the capture gate was removed; fan-out is now the single filtering authority)*.
+  2026-08-21: the capture gate was removed; fan-out is now the single filtering authority)*.
   `TraceConfig.eventAccepted` was an event-only union because span attributes were mutable (a late attribute
   could retroactively change a span filter, so span gating had to wait for the report). With filter attributes
   now immutable at birth, the capture gate unioned `acceptsSpan(span) ∧ acceptsEvent(event)` **per adapter**
   and skipped *storing* log events for a span no adapter's span-filter wanted. The immutability finding
-  stands; the gate built on it did not — ADR-002 shows the storage skip guarded an out-of-scope regime and
+  stands; the gate built on it did not; ADR-002 shows the storage skip guarded an out-of-scope regime and
   the message-build win is recoverable at fan-out.
-- `http.status` stays a structured, per-span, queryable datum — just on the emitted-info channel, not the
+- `http.status` stays a structured, per-span, queryable datum, just on the emitted-info channel, not the
   filter map. A report still reads it as a field; it is not reparsed out of a log line. Its shape
   (structured, one-per-span) is unchanged; only its *slot* (info, not filter) and *timing* (report,
   honest) change.
@@ -73,13 +77,13 @@ a filter input.** `kotrace-okhttp` moves `http.status` off the filter map onto t
 ## Rejected alternatives
 
 - **Leave one `MutableMap`, document "don't filter live on late attrs."** A convention a library cannot
-  enforce; an unknown consumer hits the race and blames kotrace. Rejected — the contract must make it
+  enforce; an unknown consumer hits the race and blames kotrace. Rejected: the contract must make it
   unrepresentable.
 - **Two maps, both reaching `acceptsSpan` (fixed + dynamic, filterable at report only).** Still lets a
-  consumer filter on a dynamic attribute — safe at report, racy at live — so it reintroduces "which phase
+  consumer filter on a dynamic attribute (safe at report, racy at live), so it reintroduces "which phase
   may filter what." Rejected: the cleaner invariant is that late values are *never* a filter input, at
   any phase.
 - **Split the policy hook (`acceptsSpanLive` / `acceptsSpanReport`).** Two hooks the consumer must keep
-  consistent, re-deriving a timing distinction the framework already knows from span lifecycle. Rejected —
+  consistent, re-deriving a timing distinction the framework already knows from span lifecycle. Rejected:
   keep one `acceptsSpan`; the live/report difference falls out of which values exist when, not a second
   predicate.

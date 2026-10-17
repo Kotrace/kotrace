@@ -1,8 +1,8 @@
-# ADR-017 — Merge the two `span` overloads into one (`returnedOutcome` defaulted); one `autoRootSpan` boundary
+# ADR-017: Merge the two `span` overloads into one (`returnedOutcome` defaulted); one `autoRootSpan` boundary
 
 - **Date:** 2026-09-18
 - **Status:** Accepted
-- **Amended:** 2026-09-21 — ADR-018's `SpanCompletion<T>` refactor replaced the internal root-opening
+- **Amended:** 2026-09-21: ADR-018's `SpanCompletion<T>` refactor replaced the internal root-opening
   recursion with a shared `executeSpan` helper; the merged public API and mapper behavior decided here are
   unchanged.
 - **Affects:** `dev.kotrace.span` (`Trace.kt`) collapses from **two overloads** to **one** function whose
@@ -17,8 +17,8 @@
 - **Supersedes:** [ADR-016](adr-016-auto-root-returned-outcome.md) **§ Source compatibility** and its
   "**second, separate overload**" shape. ADR-016's *behavior* (failure-as-value auto-root, mapper contract,
   fault isolation, precedence) is retained **unchanged**; only its two-overload *packaging* is replaced.
-- **Amends:** [ADR-013](adr-013-auto-root-span.md) — the sole `autoRootSpan` boundary now carries the
-  `returnedOutcome` mapper; the OK-only boundary is gone (the zero-config path supplies `alwaysOkOutcome`).
+- **Amends:** [ADR-013](adr-013-auto-root-span.md): the sole `autoRootSpan` boundary now carries the
+  `returnedOutcome` mapper; the OK-only boundary is gone (the zero-configuration path supplies `alwaysOkOutcome`).
 - **Builds on:** [ADR-016](adr-016-auto-root-returned-outcome.md), [ADR-013](adr-013-auto-root-span.md),
   [ADR-003](adr-003-span-verb-rename-and-startspan-optin.md) (`span` the sole verb),
   [ADR-014](adr-014-adapter-fault-isolation.md) (mapper-fault routing, untouched).
@@ -26,10 +26,10 @@
 ## Context
 
 ADR-016 delivered failure-as-value auto-root as a **second overload** carrying a *required* `returnedOutcome`,
-deliberately keeping the original zero-config overload verbatim. Its § Source compatibility stated the reason
+deliberately keeping the original zero-configuration overload verbatim. Its § Source compatibility stated the reason
 plainly: adding `returnedOutcome` *before* `block` on the single existing `span` would break the fully
-**positional in-parentheses** call `span(name, attributes, links, block)` — kotrace's own recursion did exactly
-that — so a *separate* overload was chosen to keep every existing call site untouched.
+**positional in-parentheses** call `span(name, attributes, links, block)` (kotrace's own recursion did exactly
+that), so a *separate* overload was chosen to keep every existing call site untouched.
 
 That left the surface carrying **two `span` overloads** and **two private auto-root helpers**
 (`autoRootSpan` OK-only + `autoRootSpanReturning` value-aware) that differ only in where the normal-return
@@ -41,7 +41,7 @@ duplication is pure packaging, and it costs a second overload, a second helper, 
 must be kept in lockstep.
 
 The reason to remove it *now*, cheaply: a **non-capturing** `alwaysOkOutcome` compiles to a JVM singleton, so
-routing the zero-config path through the defaulted parameter allocates **no** mapper and adds nothing to the
+routing the zero-configuration path through the defaulted parameter allocates **no** mapper and adds nothing to the
 per-span instrumentation path (the parameter is inert on every non-auto-root span; the auto-root already runs
 a mapper regardless). The performance objection ADR-016's split implicitly guarded is empty here.
 
@@ -68,24 +68,24 @@ suspend fun <T> span(
 ```
 
 - The auto-root branch forwards the **parameter**, not a hard-coded `alwaysOkOutcome`
-  ([`Trace.kt:60`](../src/main/kotlin/dev/kotrace/Trace.kt:60)) — a `span(returnedOutcome = m) { }` must reach the
+  ([`Trace.kt:60`](../src/main/kotlin/dev/kotrace/Trace.kt:60)): a `span(returnedOutcome = m) { }` must reach the
   mapper `m`, not the default.
 - `autoRootSpanReturning` is deleted; the surviving `autoRootSpan`
   ([`Trace.kt:145`](../src/main/kotlin/dev/kotrace/Trace.kt:145)) is the ADR-016 value-aware body verbatim.
-- At adoption, the internal recursion that opened the root via the instrumentation path passed the block by **name** —
-  `span(name, attributes, links, block = block)` ([`Trace.kt:158`](../src/main/kotlin/dev/kotrace/Trace.kt:158)) —
+- At adoption, the internal recursion that opened the root via the instrumentation path passed the block by **name**,
+  `span(name, attributes, links, block = block)` ([`Trace.kt:158`](../src/main/kotlin/dev/kotrace/Trace.kt:158)),
   because the fourth positional slot is now `returnedOutcome`; the recursion never auto-roots (a collector is in
   context), so leaving `returnedOutcome` at its default is correct. The later ADR-018 amendment replaced this
   recursion with `executeSpan`, which has no `returnedOutcome` parameter.
 - `(Any?) -> TraceOutcome` stands in for the `(T) -> TraceOutcome` parameter and default at every `T` by
-  function-parameter **contravariance** — no cast, verified by compile.
+  function-parameter **contravariance**, with no cast, verified by compile.
 
 **Behavioral equivalence (why this is safe).** For any call:
 
-- *normal return* → `returnedOutcome(value)` (default `alwaysOkOutcome` ⇒ `OK`) — identical to the old OK-only
+- *normal return* → `returnedOutcome(value)` (default `alwaysOkOutcome` ⇒ `OK`), identical to the old OK-only
   boundary's fixed `OK` and to the old value-aware boundary's mapped status;
 - *escaping `CancellationException`* → `CANCELLED`; *any other escaping throwable* → `ERROR`; the throwable
-  rethrown unchanged — core-owned, mapper never consulted;
+  rethrown unchanged; core-owned, mapper never consulted;
 - report fires **after** the root's `markEnd`, **before** the collector context exits, with the unchanged
   `reportAutoRoot` precedence.
 
@@ -95,7 +95,7 @@ except the one compat-guard test rewritten in § Test matrix.
 ## Source compatibility
 
 **Breaking, on a released version. `span(name, attributes, links, block)` with `block` as the fourth
-positional argument (in parentheses, not a trailing lambda) no longer compiles** — the fourth slot now binds
+positional argument (in parentheses, not a trailing lambda) no longer compiles**: the fourth slot now binds
 `returnedOutcome`. This is precisely the shape ADR-016 § Source compatibility preserved by keeping two
 overloads; ADR-017 knowingly reverses that call. Unlike ADR-016's window (0.4.0 unreleased at the time), 0.4.0
 is now **released and tagged** (`v0.4.0`), so this is a genuine external break: both **source** (the
@@ -114,25 +114,25 @@ Why the break is acceptable:
 - **The duplication it bought is the thing being removed.** Keeping the second overload solely to preserve a
   call shape nobody uses is the trade ADR-017 declines.
 
-Consumers on 0.4.0 upgrade by: bumping to 0.5.0, and — only if they wrote `span(a, b, c, someBlock)`
-positionally — switching to a trailing lambda `span(a, b, c) { … }`. No `returnedOutcome` call site changes.
+Consumers on 0.4.0 upgrade by: bumping to 0.5.0, and (only if they wrote `span(a, b, c, someBlock)`
+positionally) switching to a trailing lambda `span(a, b, c) { … }`. No `returnedOutcome` call site changes.
 
 ## Options considered
 
 - **Merge into one defaulted-parameter `span` + one `autoRootSpan` (chosen).** Smallest surface: one verb, one
-  boundary, one docstring; zero-config path allocation-free via the `alwaysOkOutcome` singleton; ADR-016
+  boundary, one docstring; zero-configuration path allocation-free via the `alwaysOkOutcome` singleton; ADR-016
   behavior intact. Cost: the positional-block source/binary break (§ Source compatibility).
-- **Keep ADR-016's two overloads + two helpers (status quo) — rejected.** Zero compat cost, but permanent
+- **Keep ADR-016's two overloads + two helpers (status quo): rejected.** Zero compat cost, but permanent
   packaging duplication (two overloads, two auto-root helpers, two docstrings kept in lockstep) for a call
   shape no product uses. This ADR exists to retire that.
-- **Merge the two `span` overloads but keep two auto-root helpers — rejected.** Removes the public duplication
+- **Merge the two `span` overloads but keep two auto-root helpers: rejected.** Removes the public duplication
   yet leaves `autoRootSpan`/`autoRootSpanReturning` as private twins differing only by a constant mapper. The
   singleton default makes one helper strictly sufficient; two is dead weight.
-- **Merge but inline `{ TraceOutcome(TraceStatus.OK) }` as the default instead of a named singleton —
+- **Merge but inline `{ TraceOutcome(TraceStatus.OK) }` as the default instead of a named singleton:
   rejected.** Works (a non-capturing lambda is still a singleton), but a named `alwaysOkOutcome` documents the
   intent ("this is the always-OK contract"), guarantees one shared instance, and gives the KDoc a symbol to
   reference.
-- **Overload-neutral rename (`autoRootSpanReturning` kept as the survivor's name) — rejected.** Once the
+- **Overload-neutral rename (`autoRootSpanReturning` kept as the survivor's name): rejected.** Once the
   boundary is singular, the "Returning" suffix distinguishes nothing; `autoRootSpan` is the plain concept name.
 
 ## Consequences
@@ -141,11 +141,11 @@ positionally — switching to a trailing lambda `span(a, b, c) { … }`. No `ret
   distinct overload; discoverability shifts from "a second signature" to "a parameter with a default". `span`
   remains the sole verb (ADR-003/013 hold).
 - **The always-OK contract becomes a convention, not a structural guarantee.** In ADR-013's OK-only boundary,
-  "normal return ⇒ `OK`" was unbreakable by construction; it is now "the zero-config call omits `returnedOutcome`,
-  so it defaults to `alwaysOkOutcome`". A caller passing a non-OK mapper opts out — which is the whole point of
+  "normal return ⇒ `OK`" was unbreakable by construction; it is now "the zero-configuration call omits `returnedOutcome`,
+  so it defaults to `alwaysOkOutcome`". A caller passing a non-OK mapper opts out, which is the whole point of
   the parameter. Guard remains the test asserting the default reports `OK`.
 - **A released, breaking change.** 0.5.0 required; the positional-block call shape is gone (§ Source
-  compatibility). The reference consumer needs only a version bump — its call site already uses a named
+  compatibility). The reference consumer needs only a version bump; its call site already uses a named
   `returnedOutcome`.
 - **Docs move with the code.** `Trace.kt` KDoc is a single merged contract for `span` (both `@sample`s
   retained) and for `autoRootSpan`; ADR-016 § Source compatibility is marked superseded by this ADR; ADR-013's
@@ -155,7 +155,7 @@ positionally — switching to a trailing lambda `span(a, b, c) { … }`. No `ret
 
 All ADR-013 and ADR-016 auto-root cases carry over **unchanged** against the merged function (both former
 overloads' behavior is preserved): the full suite passes with a single edit. The one changed test is the
-compat guard —
+compat guard:
 
 - **`existing call shapes still bind the zero-config overload`** (ADR-016) asserted the now-broken
   positional-block shape `span(name, attrs, links, { })` binds. It is rewritten as **`surviving call shapes
