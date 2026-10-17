@@ -18,11 +18,14 @@ import dev.kotrace.resolvedThreadConfig
  * from a body, emit it as a separate non-sensitive [NamedEvent] or [LogEvent], never by un-marking the body.
  */
 class LogEvent(
-    override val attributes: Map<String, String>,
+    attributes: Map<String, String>,
     messageProvider: () -> String,
     override val atNanos: Long,
     val sensitive: Boolean = false,
 ) : AttributedEvent {
+    /** Snapshotted at construction, so a caller mutating its map later can't make live and report disagree. */
+    override val attributes: Map<String, String> = attributes.toMap()
+
     val message: String by lazy(LazyThreadSafetyMode.PUBLICATION, messageProvider)
 }
 

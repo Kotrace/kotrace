@@ -161,8 +161,12 @@ object Kotrace {
     /** Whether the strict-uninstalled latch is armed (ADR-011) — read by [resolvedThreadConfig] on a null resolution. */
     internal fun isStrictWhenUninstalled(): Boolean = strict.get()
 
-    /** Test-only: clears the install-once latch and the strict latch so a suite can start each case fresh. */
+    /**
+     * Test-only: clears the install-once latch and the strict latch so a suite can start each case fresh.
+     * Gated by [KotraceTestApi] (`ERROR` level), so production code cannot compile a call to it.
+     */
     @TestOnly
+    @KotraceTestApi
     fun resetForTest() {
         installed.set(null)
         strict.set(false)

@@ -90,12 +90,24 @@ class TracingInterceptor(
     @OptIn(NonSuspendTracingBridge::class)
     private fun traced(chain: Interceptor.Chain, trace: HttpTrace): Response {
         val span = trace.handoff.startSpan(trace.spanName, trace.attributes)
-        val request = chain.request().newBuilder()
-            .header(TRACEPARENT_HEADER, span.toTraceparent())
-            .build()
+        // The span id is minted W3C-valid, but the trace id is inherited from the parent, which a hand-built or
+        // continued span may carry in another shape; toTraceparent then refuses it (ADR-028). That is telemetry,
+        // not the call: send the request without the header rather than fail it (ADR-023).
+        val traceparent = try {
+            span.toTraceparent()
+        } catch (t: Throwable) {
+            if (t.isJvmFatal()) throw t
+            null
+        }
+        // Either way the request carries this span's header or none: a traceparent the caller set would otherwise
+        // survive only when ours is omitted, tying the request to an unrelated trace.
+        val request = chain.request().newBuilder().apply {
+            if (traceparent == null) removeHeader(TRACEPARENT_HEADER) else header(TRACEPARENT_HEADER, traceparent)
+        }.build()
 
         val path = request.url.encodedPath
         observe {
+            if (traceparent == null && level >= Level.BASIC) span.log { "traceparent omitted: the trace id is not a W3C trace-id" }
             if (level >= Level.HEADERS) span.log(sensitive = true) { "⇢ ${request.method} $path headers${request.headers.render()}" }
             if (level >= Level.BODY) request.bodySnippet()?.let { snippet -> span.log(sensitive = true) { "⇢ body $snippet" } }
         }

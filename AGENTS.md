@@ -21,17 +21,19 @@ This repository is a Kotlin/JVM tracing library. Use this file as the repo-local
 
 ## Build And Test
 
-- Requires JDK 11+.
+- Building needs JDK 17+ to launch Gradle 9.3 (the daemon runs on JetBrains JDK 21, auto-provisioned); published artifacts target Java 11.
 - Run focused tests with Gradle where possible, for example `./gradlew test` for core/unit tests.
 - Run `./gradlew build` before finishing broad or cross-module changes.
-- Run `./gradlew dokkaGenerate` when touching public KDoc or samples, because Dokka warnings are configured to fail.
+- Run `./gradlew dokkaGenerate` when touching public KDoc or samples, because Dokka warnings are configured to fail (core, `kotrace-okhttp` and `kotrace-room`).
+- README Kotlin snippets are compiled: edit the `// README snippet:` region in the module's `ReadmeSnippets.kt` together with the README block; `ReadmeSnippetsTest` fails on drift.
 - `check` runs `checkKotlinAbi` for every published module against the committed `api/*.api` dumps. A deliberate public API change needs `./gradlew updateKotlinAbi` plus the dump in the same commit; a binary break needs a version bump in `gradle.properties` (publishing refuses a version already tagged or published from another commit). The core and `kotrace-okhttp` use KGP's `abiValidation()`; `kotrace-room` uses `kotrace.android-abi`, because `abiValidation()` dumps nothing on AGP 9's built-in Kotlin.
-- `check` also runs the `build-logic` tests, which start throwaway Gradle builds and need `git` on the PATH.
+- `check` also runs `:kotrace-okhttp:testOkHttp5` (the same tests on an OkHttp 5 runtime, ADR-027) and the `build-logic` tests. Those start throwaway Gradle builds and need `git` on the PATH.
 - No secrets or environment variables are needed for normal build/test.
 
 ## Coding Constraints
 
 - Preserve the module split: core must stay pure Kotlin plus coroutines; OkHttp and Android/Room dependencies belong only in their modules.
+- The catalog versions of published dependencies (`kotlinxCoroutines`, `okhttp`) and `kotlinBaseline`/`kotlinStdlibBaseline` are consumer floors (ADR-027), not "latest". Do not bump them as routine maintenance; raising one is a compatibility decision.
 - Instrumentation observes and rethrows; it must not swallow user exceptions.
 - `renderTree()` is an unredacted human debug read. Keep `@UnredactedTraceRead` opt-in boundaries intact and never route unredacted output to sinks.
 - Trace wire fields use snake_case JSON and W3C `traceparent`; keep wire-format changes deliberate and documented.

@@ -18,9 +18,10 @@ enum class FaultPhase { LIVE, SPANLESS_LIVE, REPORT, RETURNED_OUTCOME, FAILURE_C
  *
  * Carried on [TraceConfig]. Contract:
  * - `adapter` is the sink whose region threw, or `null` for a fault with no single adapter owner: a shared,
- *   per-event record-construction fault (the event is then not delivered to any accepting adapter), or a
- *   throwing auto-root value mapper ([FaultPhase.RETURNED_OUTCOME], ADR-016 — the trace then reports
- *   [TraceStatus.OK] with no attachments).
+ *   per-event record-construction fault (the event is then not delivered to any accepting adapter), a report's
+ *   `attached` list that throws while being read ([FaultPhase.REPORT] — the report then carries no orphan
+ *   failures), or a throwing auto-root value mapper ([FaultPhase.RETURNED_OUTCOME], ADR-016 — the trace then
+ *   reports [TraceStatus.OK] with no attachments).
  * - A **non-fatal** throw from [onAdapterFault] itself is swallowed; a JVM-fatal one
  *   ([VirtualMachineError]/[ThreadDeath]/[LinkageError]) is rethrown.
  * - **Per-thread reentrancy**: while a hook is running on a thread, a further fault on that thread is dropped

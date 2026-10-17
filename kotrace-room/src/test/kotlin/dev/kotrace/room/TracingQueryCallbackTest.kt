@@ -1,3 +1,6 @@
+// Tests inspect the raw span timeline (ADR-028); nothing here reaches a sink.
+@file:OptIn(dev.kotrace.UnredactedTraceRead::class)
+
 package dev.kotrace.room
 
 import dev.kotrace.event.AttributedEvent
@@ -73,5 +76,45 @@ class TracingQueryCallbackTest {
         }
         assertFalse("DEBUG event is stored — no capture gate (ADR-002)", collector.spans.single().events.isEmpty())
         assertTrue("but the policy drops it at fan-out", dropDebug.records.isEmpty())
+    }
+
+    @Test
+    fun `an app's own query callback still receives every query through delegate`() = runTest {
+        val seen = mutableListOf<Pair<String, List<Any?>>>()
+        val appCallback = androidx.room.RoomDatabase.QueryCallback { sql, args -> seen += sql to args }
+        val collector = SpanCollector()
+
+        withContext(collector + TraceConfig(listOf(captureAll))) {
+            span("account.get") {
+                TracingQueryCallback(debug, delegate = appCallback).onQuery("SELECT 1 WHERE x = ?", listOf(42))
+            }
+        }
+
+        assertEquals("the delegate sees the query and its args", listOf("SELECT 1 WHERE x = ?" to listOf<Any?>(42)), seen)
+        assertEquals("and the span still logs it", 1, collector.spans.single().events.filterIsInstance<LogEvent>().size)
+    }
+
+    @Test
+    fun `a delegate executor runs each query later, with its bind args snapshotted`() {
+        val tasks = mutableListOf<Runnable>()
+        val seen = mutableListOf<Pair<String, List<Any?>>>()
+        val forwarded = androidx.room.RoomDatabase.QueryCallback { sql, args -> seen += sql to args }
+            .dispatchedTo { tasks += it }
+        val args = mutableListOf<Any?>(42)
+
+        forwarded.onQuery("SELECT 1 WHERE x = ?", args)
+        args[0] = 43 // the caller's list may change once onQuery returns
+        assertTrue("runs on the executor, not inline", seen.isEmpty())
+        tasks.forEach(Runnable::run)
+
+        assertEquals(listOf("SELECT 1 WHERE x = ?" to listOf<Any?>(42)), seen)
+    }
+
+    @Test
+    fun `a delegate executor that refuses the task drops that call instead of throwing into Room`() {
+        val forwarded = androidx.room.RoomDatabase.QueryCallback { _, _ -> error("never run") }
+            .dispatchedTo { throw java.util.concurrent.RejectedExecutionException("shut down") }
+
+        forwarded.onQuery("SELECT 1", emptyList()) // Room's dispatch would drop it too; a throw would crash the app
     }
 }

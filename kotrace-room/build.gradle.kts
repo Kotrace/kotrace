@@ -1,6 +1,7 @@
 plugins {
     // AGP 9 provides built-in Kotlin — no separate kotlin plugin (applying it is a hard error).
     alias(libs.plugins.android.library)
+    alias(libs.plugins.dokka)
     `maven-publish`
     // The ABI gate the JVM modules get from `abiValidation()`, which dumps nothing on AGP's built-in Kotlin.
     id("kotrace.android-abi")
@@ -27,6 +28,24 @@ android {
 
     publishing {
         singleVariant("release") { withSourcesJar() }
+    }
+}
+
+// API docs for this module (`./gradlew dokkaGenerate` runs it with the core's); warnings fail, as in the core.
+dokka {
+    dokkaPublications.named("html") { failOnWarning.set(true) }
+}
+
+kotlin {
+    // Same consumer baseline as the core (ADR-027; see root build.gradle.kts).
+    coreLibrariesVersion = libs.versions.kotlinStdlibBaseline.get()
+    compilerOptions {
+        val baseline = org.jetbrains.kotlin.gradle.dsl.KotlinVersion.fromVersion(libs.versions.kotlinBaseline.get())
+        languageVersion = baseline
+        apiVersion = baseline
+        // Pinned, not derived: below language 2.2 the default would drop interface default methods (abstract +
+        // DefaultImpls only), silently changing the ABI and forcing Java implementors to override everything.
+        jvmDefault = org.jetbrains.kotlin.gradle.dsl.JvmDefaultMode.ENABLE
     }
 }
 

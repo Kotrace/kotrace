@@ -1,9 +1,13 @@
+// Tests inspect the raw span timeline (ADR-028); nothing here reaches a sink.
+@file:OptIn(dev.kotrace.UnredactedTraceRead::class)
+
 package dev.kotrace.okhttp
 
 import dev.kotrace.NonSuspendTracingBridge
 import dev.kotrace.ReportAdapter
 import dev.kotrace.Span
 import dev.kotrace.SpanCollector
+import dev.kotrace.SpanContext
 import dev.kotrace.SpanStatus
 import dev.kotrace.TraceConfig
 import dev.kotrace.TraceHandoff
@@ -84,6 +88,50 @@ class TracingInterceptorTest {
         val span = collector.httpSpan()
         assertEquals(SpanStatus.ERROR, span.status)
         assertEquals("500", span.info["http.status"])
+    }
+
+    @Test
+    fun `a parent with a non-W3C trace id sends the request without a header, and never fails the call`() = runTest {
+        // A bridge or test built the parent by hand (Span's constructor is public); the http span inherits its id.
+        val collector = SpanCollector()
+        val parent = Span("NOT-A-W3C-ID", "s", null, "bridge.parent", startNanos = 0L)
+        val handoff = withContext(collector + SpanContext(parent)) { TraceHandoff.captureOrNull()!! }
+        val request = Request.Builder().url("https://graph.example.com/accounts")
+            .tag(HttpTrace::class.java, HttpTrace(handoff, "http GET", emptyMap())).build()
+
+        val sent = run(request, code = 200)
+
+        assertNull("no malformed header on the wire", sent.header("traceparent"))
+        val span = collector.httpSpan()
+        assertEquals("the call itself succeeded and the span closed", SpanStatus.OK, span.status)
+        assertTrue(span.endNanos != null)
+    }
+
+    @Test
+    fun `an omitted traceparent also drops one the caller set`() = runTest {
+        val collector = SpanCollector()
+        val parent = Span("NOT-A-W3C-ID", "s", null, "bridge.parent", startNanos = 0L)
+        val handoff = withContext(collector + SpanContext(parent)) { TraceHandoff.captureOrNull()!! }
+        val request = Request.Builder().url("https://graph.example.com/accounts")
+            .header("traceparent", "00-11111111111111111111111111111111-2222222222222222-01")
+            .tag(HttpTrace::class.java, HttpTrace(handoff, "http GET", emptyMap())).build()
+
+        val sent = run(request, code = 200)
+
+        assertNull("never forwards a header for some other trace", sent.header("traceparent"))
+    }
+
+    @Test
+    fun `the omitted-traceparent breadcrumb respects Level NONE`() = runTest {
+        val collector = SpanCollector()
+        val parent = Span("NOT-A-W3C-ID", "s", null, "bridge.parent", startNanos = 0L)
+        val handoff = withContext(collector + SpanContext(parent)) { TraceHandoff.captureOrNull()!! }
+        val request = Request.Builder().url("https://graph.example.com/accounts")
+            .tag(HttpTrace::class.java, HttpTrace(handoff, "http GET", emptyMap())).build()
+
+        run(request, code = 200, TracingInterceptor(TracingInterceptor.Level.NONE))
+
+        assertTrue("NONE logs nothing", collector.httpSpan().events.filterIsInstance<LogEvent>().isEmpty())
     }
 
     @Test

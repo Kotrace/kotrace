@@ -1,7 +1,9 @@
 package dev.kotrace
 
 /**
- * Marks an **unredacted, human-only** trace read — currently [List.renderTree].
+ * Marks an **unredacted, human-only** trace read — [List.renderTree], and the raw timeline it is built from:
+ * [Span.events] and [dev.kotrace.event.exception] (ADR-028). Reading a span's events hands out exactly what
+ * `renderTree` renders — `sensitive` messages and raw throwables — so the same contract applies to both.
  *
  * Unlike the machine path ([reportTrace] / `toJson`, PII-safe by construction and policy-gated), the marked
  * API renders *everything*: `sensitive` [dev.kotrace.event.LogEvent] messages, [dev.kotrace.event.NamedEvent]
@@ -15,11 +17,11 @@ package dev.kotrace
  * "human-only" contract a conscious choice rather than a silent one.
  */
 @RequiresOptIn(
-    message = "renderTree is an unredacted human debug read — it renders sensitive log messages and raw " +
-        "exception text. Never route its output to a sink, logger, or crash report. For machine egress use " +
-        "reportTrace / toJson instead.",
+    message = "An unredacted human debug read — it exposes sensitive log messages and raw exception text. " +
+        "Never route what it returns to a sink, logger, or crash report. For machine egress use reportTrace / " +
+        "toJson instead.",
     level = RequiresOptIn.Level.ERROR,
 )
 @Retention(AnnotationRetention.BINARY)
-@Target(AnnotationTarget.FUNCTION)
+@Target(AnnotationTarget.FUNCTION, AnnotationTarget.PROPERTY)
 annotation class UnredactedTraceRead

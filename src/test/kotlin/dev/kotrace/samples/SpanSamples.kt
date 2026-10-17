@@ -7,6 +7,8 @@ import dev.kotrace.currentSpan
 import dev.kotrace.event.addException
 import dev.kotrace.event.log
 import dev.kotrace.span
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flow
 
 /**
  * Dokka `@sample` targets for the core `span {}` verb — compiled against the real API by `check` (ADR-007),
@@ -26,6 +28,16 @@ internal object SpanSamples {
                 currentSpan()?.log(mapOf("level" to "INFO")) { "charging card" }
             }
         }
+    }
+
+    /**
+     * Tracing work inside a `flow { }`: the span wraps the **work**, and `emit` stays outside it. Emitting
+     * inside `span { }` would emit from the span's context, which `flow` rejects ("Flow invariant is
+     * violated").
+     */
+    fun spanInFlowUsage(fetchPrice: suspend () -> Int): Flow<Int> = flow {
+        val price = span("price.fetch") { fetchPrice() }
+        emit(price)
     }
 
     /** A domain result carried as a **value** (ADR-016): a failure is returned, not thrown. */

@@ -50,7 +50,8 @@ interface ReportAdapter : TraceAdapter {
      * this adapter's [policy]. [status] is the trace's verdict, passed **before** [records] is forced, so an
      * adapter self-gates on it and pays no walk for an outcome it skips — the predicate is the adapter's to
      * choose. The point is the laziness: gating on [status] costs nothing because the sequence is never
-     * forced.
+     * forced — the trace tree is indexed and walked only when some adapter first iterates its records, then
+     * shared (ADR-029).
      *
      * **Consume [records] synchronously, within this call** (ADR-014). Fault isolation guards the whole
      * `onReport` invocation, so a policy/message fault raised while you iterate is contained here; retaining

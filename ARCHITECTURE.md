@@ -96,12 +96,13 @@ identity-stamped, adapter-ready). The tracer normalizes at capture and denormali
 A `Span` is one unit of work; a tree of them linked by `parentId` is the call path. It is a **plain
 `class`, not a `data class`**:
 
-- It has **identity** (`spanId`, a 64-bit random hex) and **mutates over its life** (`status`, `endNanos`,
-  `error` flip after it opens — `status`/`endNanos` via a safely-published atomic pair, ADR-006). Value
+- It has **identity** (`spanId`, a 64-bit random hex) and **mutates over its life**: `status` and `endNanos`
+  change after it opens (a safely-published atomic pair, ADR-006), and it gains events and `info`. Value
   semantics are wrong for it — a generated `hashCode` over that mutable state
-  would shift while the span sits in a collection; `copy()` would mint a second span sharing one `spanId`;
-  `equals` over a `Throwable` is meaningless. Two spans are the same span iff they are the same instance.
-- The **exception lives here as a field** (`error: Throwable?`), *not* as an event — see §8.
+  would shift while the span sits in a collection; `copy()` would mint a second span sharing one `spanId`.
+  Two spans are the same span iff they are the same instance.
+- There is **no exception field**: a throwable is an `ExceptionEvent` on the span's timeline, read via the
+  `Span.exception` extension — see §8.
 
 `spanId`/`traceId` uniqueness is **probabilistic, not enforced** (random, no registry): within one trace
 (a handful of spans) a 64-bit collision is ~0, matching the W3C guarantee.
@@ -122,11 +123,13 @@ late values are info (payload), fixed birth values are attributes (filter). See 
 
 ```
 sealed interface SpanEvent { atNanos }
-  ├─ LogEvent(level, message, sensitive)   // a log line — Span.log
-  └─ NamedEvent(name, attributes)          // an OTel event.name occurrence — Span.addNamed
+  ├─ LogEvent(attributes, message, sensitive)   // a log line — Span.log
+  ├─ NamedEvent(name, attributes)               // an OTel event.name occurrence — Span.addNamed
+  └─ ExceptionEvent(throwable, lineageKey)      // a recorded throwable — Span.addException, a span's catch (§8)
 ```
 
-An **event is the umbrella**; a log line is one *kind* of it, a named/analytics occurrence another. The
+An **event is the umbrella**; a log line is one *kind* of it, a named/analytics occurrence another, a recorded
+throwable the third. The
 name is `SpanEvent`, not `SpanLog`, precisely to leave room for the non-log kind. Events are the
 **normalized** form: the span's identity lives once on the `Span`, so buffering N events costs no repeated
 id. Most traces succeed and their events are discarded — buffering the lean form, not id-stamped records,
@@ -248,7 +251,7 @@ their own config per `withContext` and never touch the global).
 ### The failing path, and why `status` propagates
 
 `span { }` is instrumentation: it observes and **rethrows**, never swallows. On the way up, *each* enclosing
-`trace`'s catch marks its span `ERROR` and rethrows. So the **whole ancestor chain** the exception passed
+`span`'s catch marks its span `ERROR` and rethrows. So the **whole ancestor chain** the exception passed
 through uncaught is marked — and it stops exactly where a `try/catch` handled it. This is runtime
 control-flow information: a deep-search over the finished tree **cannot** distinguish "error handled and
 recovered" (trace OK) from "error escaped" (trace failed), because both leave the same error at the
@@ -271,18 +274,20 @@ The throwable is born at `dataSource` and marks each span its rethrow passes thr
 stops it. Same error at the birthplace in both trees; only propagated `status` (login OK vs ERROR) tells the
 two apart. A read-time search over the finished tree cannot.
 
-`error` (the `Throwable`) is also set on each ancestor by the same catch, but only the **birthplace**'s is
-emitted; the redundant ancestor copies are deduped at read (§ birthplace). It is a field, not an event, for
-the reasons in §8.
+The same catch also records the climbing throwable on each ancestor, as an `ExceptionEvent` on that span's
+timeline (§8). Every copy of one failure carries the same **lineage key** (ADR-015), even when coroutine
+stack-trace recovery hands each boundary a copy, so the report can tell the copies from the origin (§ birthplace).
 
 ### Birthplace
 
-The **birthplace** is the deepest throwable-bearing `ERROR` span on a branch — `exception != null && no
-descendant carries a throwable` (`isBirthplaceAmong`, ADR-005). Only there is the throwable emitted (an
-`ExceptionRecord`), so it appears once, not once per ancestor. Gating on the throwable — not merely "no
-child errored" — is what stops a throwable-less `ERROR` leaf (a bridge span ended `end(ERROR, null)`, e.g. an
-OkHttp 500 that returned) from shadowing an ancestor's real crash out of the report. `report` is the sole
-birthplace authority; there is no separate public helper. The birthplace record is gated **only** by
+The **birthplace** of a failure is the deepest span carrying its lineage: an `ExceptionEvent` belongs at a span
+iff no descendant carries the same lineage key (`TraceTreeIndex.birthplaceExceptionsOf`, ADR-015). The report
+emits every copy, stamped `BIRTHPLACE` or `PROPAGATED` (ADR-019), and a default adapter drops the propagated ones
+(`TracePolicy.acceptsPropagatedException`), so a crash sink sees each failure once, not once per ancestor.
+Keying on the throwable's lineage — not merely "no child errored" — is what stops a throwable-less `ERROR` leaf (a
+bridge span ended `end(ERROR, null)`, e.g. an OkHttp 500 that returned) from shadowing an ancestor's real crash
+out of the report, and keeps two unrelated failures on one branch apart. `report` is the sole birthplace
+authority; there is no separate public helper. A surviving record is gated **only** by
 `TracePolicy.acceptsEvent` (default: kept), so a breadcrumb filter never swallows the crash cause unless a
 policy explicitly covers exceptions.
 
@@ -393,7 +398,7 @@ only at fan-out, so a filtered log costs nothing to build.
 | `currentThreadSpan()` | non-suspend code on the coroutine's thread (OkHttp/Room bridge) | the ThreadLocal mirror |
 | a span **held directly** | a bridge that carries the span across a thread boundary | — (already in hand) |
 
-So a suspend caller writes `currentSpan()?.log(level) { }`; a non-suspend bridge writes
+So a suspend caller writes `currentSpan()?.log(attributes) { }`; a non-suspend bridge writes
 `currentThreadSpan()?.log { }` or `heldSpan.log { }`. `addException` is the same shape — see §8.
 
 kotrace stays generic: `addNamed` names no "analytics" — the meaning (consent, destination) lives in the
@@ -449,14 +454,15 @@ The exception is a span **timeline event**, recorded by `span`'s catch and recon
    crash verdict.
 2. **Paired with `status`.** `status` *is* a field (it propagates, §3); the catch sets it alongside appending
    the `ExceptionEvent`, so the two describe the same span outcome together.
-3. **One per span at report, deduped by topology.** The same throwable is re-recorded up the whole failing
-   path; at fan-out only the birthplace (deepest throwable-bearing ERROR) `ExceptionRecord` is kept (`isBirthplaceAmong`, ADR-005).
-   Live does **not** dedup — it shows the full climb (deepest first), the propagation trail as it happens.
+3. **One per failure at report, deduped by lineage.** The same throwable is re-recorded up the whole failing
+   path; at the report every copy is stamped, `BIRTHPLACE` at the deepest span carrying its lineage key and
+   `PROPAGATED` above it (ADR-015/019), and a default adapter keeps only the birthplace. Live does **not**
+   dedup — it shows the full climb (deepest first), the propagation trail as it happens.
 
 Consequence: a **handled** exception (caught at the repository, returned as a value) both surfaces **live**
 as it climbs — a WARN-level awareness line in a debug watch — and rides the trace-end report as an
 `ExceptionRecord`, deduped to its birthplace and gated on trace status. Live is awareness; report is the
-verdict. A non-throwable structured error stays a `Span.log(ERROR)` breadcrumb (§ carrier exception).
+verdict. A non-throwable structured error stays a `Span.log` breadcrumb (§ carrier exception).
 
 ---
 

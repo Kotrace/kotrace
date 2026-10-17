@@ -18,10 +18,12 @@ contract, so an OTel upgrade later is additive.
   (OkHttp/Room) the second.
 - `SpanCollector` — trace-wide buffer (concurrent-safe) holding every span in one trace, so the whole tree
   can be rendered or fanned out at the end. Not a sink — the adapters are (see `reportTrace`).
-- `Span.log(level) { … }` / `Span.addNamed(name)` / `Span.addException(cause)` — the event verbs, all
+- `Span.log(attributes) { … }` / `Span.addNamed(name)` / `Span.addException(cause)` — the event verbs, all
   extensions on `Span`; call them on a span you got from a getter (`currentSpan()?.log { }`) or hold
-  directly. Each adapter's `TracePolicy` filters logs at fan-out (a default keeps `INFO`+`WARN`+`ERROR`);
-  events are stored unconditionally and the message lambda is not built for a log no adapter accepts.
+  directly. kotrace ranks no severity: a level is just an attribute you choose (`mapOf("level" to "INFO")`).
+  Each adapter's `TracePolicy` filters at fan-out (the default accepts every non-sensitive event; a policy
+  that wants only `INFO`+ says so in `acceptsEvent`). Events are stored unconditionally, and the message lambda
+  is not built for a log no adapter accepts.
 - `TraceRecord` / `ReportAdapter` / `SpanCollector.reportTrace(status)` — fan a trace out at its end as one
   searchable record per log line + the birthplace throwable, each tagged `trace_id` / `span_id` /
   `parent_span_id`, to every `ReportAdapter` in the resolved `TraceConfig`. Backends group by any of the ids.
@@ -41,6 +43,7 @@ contract, so an OTel upgrade later is additive.
     the provider overload (`install { … }`) plus stdlib `buildList` *is* the conditional-registration idiom —
     the equivalent of Retrofit's `addInterceptor`, from the standard library, so kotrace adds no builder of
     its own:
+    <!-- snippet: install-buildlist -->
     ```kotlin
     Kotrace.install {
         buildList {
@@ -80,6 +83,7 @@ contract, so an OTel upgrade later is additive.
 
 ## Coordinates
 
+<!-- snippet: gradle -->
 ```kotlin
 // settings.gradle.kts — anonymous, no credentials
 maven { url = uri("https://maven.kotrace.dev") }
@@ -96,6 +100,7 @@ implementation("dev.kotrace:kotrace-room:0.5.0")
 
 Or align every module through the BOM — declare its version once, drop the version off each dependency:
 
+<!-- snippet: gradle -->
 ```kotlin
 implementation(platform("dev.kotrace:kotrace-bom:0.5.0"))
 implementation("dev.kotrace:kotrace")
@@ -107,6 +112,17 @@ Core imports are `dev.kotrace.*`; the OkHttp module is `dev.kotrace.okhttp.*` an
 you use OkHttp and `kotrace-room` (Android) only if you use Room, so a Ktor or pure-JVM consumer never
 drags an HTTP client or Android.
 
+**Minimum versions** (ADR-027). The artifacts are compiled against, and declare, the oldest versions they
+support. A newer version in your build wins through normal dependency resolution; kotrace never upgrades yours.
+
+| | Minimum |
+|---|---|
+| Kotlin (your compiler) | 2.0 (the artifacts carry Kotlin 2.1 metadata and declare `kotlin-stdlib` 2.1.0) |
+| `kotlinx-coroutines-core` | 1.10.2 |
+| OkHttp (`kotrace-okhttp`) | 4.12.0 (the tests also run on 5.x) |
+| Room (`kotrace-room`) | `compileOnly`: bring your own |
+| JVM bytecode | Java 11 |
+
 ## How to run (build + test)
 
 ```bash
@@ -114,7 +130,9 @@ drags an HTTP client or Android.
 ./gradlew build       # compile + test + jar
 ```
 
-Requires a JDK 11+. No secrets or env vars needed to build or test.
+Building needs JDK 17+ to launch Gradle 9.3; the Gradle daemon itself runs on JetBrains JDK 21, provisioned
+automatically from `gradle/gradle-daemon-jvm.properties`, and `:benchmarks` uses a JDK 21 toolchain. The
+published artifacts target Java 11 bytecode. No secrets or env vars needed to build or test.
 
 ## Performance
 
@@ -130,12 +148,21 @@ production end-to-end latency.
 | Report a 512-span balanced tree | 47.06 ± 1.96 µs/report | 160.9 KiB/report |
 | 16 workers × 100 logs on one shared span | 544.70 ± 19.09 µs/flow | 5.61 MB/flow |
 
+Since ADR-029 (reduced runs, same machine): an empty auto-root measures **1.05 µs and 2.0 KB** (table-lookup
+ids; the old formatting was ~88% of the allocation), and a 128-span report whose adapters self-gate on status
+costs ~0.9 µs instead of ~7.7 µs, because the tree walk runs only when an adapter reads its records. A report
+that is read costs ~20% more than before, the price of freezing it at report start. The figures above predate
+that change.
+
 The report path now indexes the span tree once. At 512 spans this is 11.2–12.9× faster than repeatedly
 scanning the complete span list, while preserving depth-first/start-time order and exception-lineage dedup.
 The shared-span case remains the main known hotspot: `Span.events` uses `CopyOnWriteArrayList`, which is a
 good trade for the common 0–10-event trace but becomes expensive with hundreds of events or many concurrent
-writers. A lock-backed replacement improved those dense workloads but regressed empty traces, reads and
-reports, so it was rejected.
+writers. A span keeps `Span.MAX_EVENTS` (1,000) events, discarding the oldest first — named (analytics)
+events before logs, an exception only once nothing else is left — and counting them in `Span.droppedEvents`,
+so a span logging in a loop stays bounded (ADR-029). The cap is approximate under concurrent appends: each
+racing writer can add one event past it, until the next append trims the span back. A lock-backed replacement
+improved those dense workloads but regressed empty traces, reads and reports, so it was rejected.
 
 Live adapters are synchronous and therefore apply backpressure directly to the traced operation. In the
 synthetic 1 ms blocking-sink workload, one event measured 1.28 ms at p50 and 5.42 ms at p99; ten events
@@ -156,7 +183,8 @@ Read `Span.kt` and `SpanContext.kt` next for the data + propagation model. Tests
 For OkHttp, `kotrace-okhttp/` holds `TracingCallFactory` (tags the outgoing request with the flow's trace
 context, from the coroutine thread) + `TracingInterceptor` (reads the tag on OkHttp's thread and writes
 `traceparent`). The split is deliberate — the interceptor cannot see the coroutine context. Wrap the
-client's `Call.Factory` with the factory and add the interceptor; both are inert with no active span.
+client's `Call.Factory` with the factory and add the interceptor. A call passes through both untouched when nothing
+would consume its span: no active span or collector, and no live adapter.
 
 For Room, `kotrace-room/` (Android) holds `TracingQueryCallback` + the `RoomDatabase.Builder.tracing()`
 installer — SQL onto the active span, resolved via `currentThreadSpan()` (Room runs under the caller's coroutine,
@@ -164,6 +192,7 @@ so the `ThreadContextElement` mirror reaches its executor thread).
 
 Example — seed a `SpanCollector` on the context, run the flow, then read the tree:
 
+<!-- snippet: render-tree -->
 ```kotlin
 val collector = SpanCollector()
 withContext(collector) {                     // rides the CoroutineContext down every child span
@@ -186,8 +215,11 @@ OkHttp's own thread where the coroutine context is invisible — so `TracingCall
 flow's trace context (active span, collector, per-flow `TraceConfig`) on the coroutine thread at `newCall` and
 tags it on the request; the interceptor opens **one http span per execution** from that tag and emits under the
 flow's own config (ADR-023). A retry via `call.clone()` therefore gets its own span, and a telemetry fault never
-changes the call's response or exception. Both are inert without an active span, so wrap every client:
+changes the call's response or exception. A call is traced only when something would consume the span: an
+active span or collector, or a live adapter in the flow's (or the process-wide) config. Otherwise it passes
+through untagged and unmodified, so wrap every client:
 
+<!-- snippet: okhttp-setup -->
 ```kotlin
 import dev.kotrace.okhttp.TracingCallFactory
 import dev.kotrace.okhttp.TracingInterceptor
@@ -202,7 +234,7 @@ val calls: Call.Factory = TracingCallFactory(http)
 
 // 3. Call inside a span. traceparent goes on the wire; the span emits http.status as info
 //    (on every record off the span, not a filter key — ADR-001), and a non-2xx flips it to ERROR.
-suspend fun price(): String = span("http.GET /pricing") {
+suspend fun price(): String = span("pricing.fetch") {
     calls.newCall(Request.Builder().url(pricingUrl).build())
         .execute().use { it.body?.string().orEmpty() }
 }
@@ -212,13 +244,15 @@ suspend fun price(): String = span("http.GET /pricing") {
 (not `.client(...)`) so every generated call is tagged from the coroutine thread.
 
 Order between the factory and interceptor does not matter (tag is placed before dispatch, read during
-the chain). A call made with no active span passes through untagged and unmodified.
+the chain). With no span, no collector and no live adapter to consume it, a call passes through untagged and
+unmodified; with only a live adapter installed, a call outside any span opens a root http span.
 
 **Span name.** The HTTP span is named `http <METHOD>` — never the URL path, which can carry user data and
 would otherwise ride `operation` onto every record, crash reports and `toJson` included (ADR-021). The path
 stays on the interceptor's `sensitive` breadcrumbs. To tell endpoints apart, map requests to a sanitized
 route template yourself:
 
+<!-- snippet: okhttp-span-name -->
 ```kotlin
 val calls = TracingCallFactory(http, spanName = { req -> "http ${req.method} ${routeTemplateOf(req)}" })  // e.g. /users/{id}
 ```
@@ -242,6 +276,7 @@ Room runs a suspend query under the caller's coroutine (`withContext`), and `Spa
 `ThreadContextElement`, so the span is mirrored onto Room's executor thread while the query runs. The
 callback is installed with a **direct executor** so it fires inline there.
 
+<!-- snippet: room-setup -->
 ```kotlin
 import dev.kotrace.room.tracing
 
@@ -250,9 +285,16 @@ Room.databaseBuilder(context, AppDatabase::class.java, "app.db")
     .build()
 ```
 
-Only the parameterized SQL text (symbols, `?` placeholders) is logged — never the bound values, which can
-carry user data. kotrace has no severity taxonomy, so the level is just a `"level"` attribute you pass; SQL
+The SQL text is logged, never the bound values, which can carry user data. The line is `sensitive`: parameterized
+SQL (symbols, `?` placeholders) holds no user data, but a `@RawQuery` or `SimpleSQLiteQuery` built by string
+concatenation inlines its values into the text, so a report adapter receives the line only if its policy accepts
+sensitive events. kotrace has no severity taxonomy, so the level is just a `"level"` attribute you pass; SQL
 is high-volume, so tag it at a level your capture policy drops by default (e.g. `DEBUG`).
+
+Room keeps a single query callback, so `.tracing()` replaces one you set with `setQueryCallback`. Pass yours as
+`.tracing(attrs, delegate = myCallback, delegateExecutor = myExecutor)` to keep it. `.tracing()` does not work
+with `setDriver(SQLiteDriver)`: Room rejects every query callback when a driver is configured, and `build()`
+throws.
 
 ## Span-less emits & scopes
 
@@ -261,6 +303,7 @@ has no span to attach to and no `TraceConfig` in context. Install the process-wi
 from anywhere; `withScope` adds a correlation umbrella above `trace_id` so orphan emits and whole groups of
 operations correlate under one session/journey key (ADR-010).
 
+<!-- snippet: spanless-scope -->
 ```kotlin
 import dev.kotrace.Kotrace
 import dev.kotrace.withScope
@@ -285,6 +328,19 @@ suspend fun handleSession() = withScope("session-42") {
 
 A flow that needs *different* sinks overlays a per-flow `TraceConfig` on its context
 (`withContext(collector + TraceConfig(...))`), which overrides the global for that flow.
+
+`install` is once per process. A test suite that installs per test resets between cases with
+`Kotrace.resetForTest()`, which is gated by `@KotraceTestApi` so production code cannot call it. Opt in for
+the test source set only:
+
+<!-- snippet: gradle -->
+```kotlin
+kotlin { sourceSets.test { languageSettings.optIn("dev.kotrace.KotraceTestApi") } }
+```
+
+Reading a span's raw timeline (`Span.events`, `Span.exception`) is gated like `renderTree` by
+`@UnredactedTraceRead` (ADR-028): it hands out `sensitive` messages and raw throwables, so it is for a person or a
+test, never a sink.
 
 ## Android surfaces → what to use
 
@@ -311,7 +367,7 @@ coroutine (same idea as OkHttp's request-tag bridge).
 | 3rd-party SDK async callback, `LocationListener`, sensor/camera | no (SDK thread, deferred) | pass the `Span` explicitly, or open a root span / `emit*` | mirror is dead on the SDK thread (`ThreadLocal` not inheritable) |
 | Raw `Thread` / `Executors` / RxJava `Scheduler` | no | pass the `Span` by hand, then `SpanContext(span) + collector + config` to re-enter a coroutine | the mirror is never carried to non-coroutine threads |
 | `Handler.post` / `runOnUiThread` | no (deferred) | capture the `Span` **before** posting, use it explicitly | mirror is restored by the time the `Runnable` runs |
-| `GlobalScope.launch` / scope without a collector | technically | avoid — use a scope carrying `collector` + `TraceConfig`, or seed it | `span { }` opens but nothing collects it |
+| `GlobalScope.launch` / an unrelated scope | yes, as a **new root** | `span("…") { }` auto-roots and reports its own trace (ADR-013) | nothing is inherited from the launching flow, so it is a separate trace; prefer a structured scope when it belongs to the caller's work |
 | Java you don't own, JNI/native | no | instrument at the nearest Kotlin/coroutine boundary you control | out of reach |
 
 Rule of thumb: **in a coroutine → `span { }`; a non-suspend hook running inline on the coroutine thread →
@@ -339,6 +395,11 @@ Source: `demo/src/main/kotlin/dev/kotrace/demo/Main.kt`.
   part of the contract.
 - Spans carry **static symbols only** — never user data (a span can reach a crash report or the wire).
 - Every public function ships with a test. Plain JUnit4.
+- README code is compiled: every ```` ```kotlin ```` block is preceded by `<!-- snippet: name -->`, and a Kotlin
+  snippet has a twin, a `// README snippet: name` region in a module's `ReadmeSnippets.kt` that `check`
+  compiles. `ReadmeSnippetsTest` fails when the two differ; build-script blocks are tagged `gradle` (ADR-030).
+- `./gradlew dokkaGenerate` builds the API docs of the core, `kotrace-okhttp` and `kotrace-room`, with
+  warnings as errors.
 
 ## Publishing
 

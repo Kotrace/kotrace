@@ -21,9 +21,20 @@ kotlin {
     // means a version bump (see README § Publishing).
     @OptIn(org.jetbrains.kotlin.gradle.dsl.abi.ExperimentalAbiValidation::class)
     abiValidation()
+    // Consumer baseline (ADR-027): compile against the oldest Kotlin language/API the published artifact
+    // supports, and declare that stdlib, rather than whatever this build's compiler bundles.
+    coreLibrariesVersion = libs.versions.kotlinStdlibBaseline.get()
     compilerOptions {
         jvmTarget = org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_11
+        val baseline = org.jetbrains.kotlin.gradle.dsl.KotlinVersion.fromVersion(libs.versions.kotlinBaseline.get())
+        languageVersion = baseline
+        apiVersion = baseline
+        // Pinned, not derived: below language 2.2 the default would drop interface default methods (abstract +
+        // DefaultImpls only), silently changing the ABI and forcing Java implementors to override everything.
+        jvmDefault = org.jetbrains.kotlin.gradle.dsl.JvmDefaultMode.ENABLE
     }
+    // Tests may reset the install-once latch; production sources cannot (KotraceTestApi is ERROR-level).
+    sourceSets.named("test") { languageSettings.optIn("dev.kotrace.KotraceTestApi") }
 }
 
 // API docs (Dokka v2). `@sample` references resolve against this samples root. The sample code lives in
@@ -69,7 +80,47 @@ publishing {
     }
 }
 
+val pomDescriptions = mapOf(
+    "kotrace" to "Coroutine-native tracing for Kotlin: span trees, tail-based failure reports, W3C traceparent.",
+    "kotrace-okhttp" to "kotrace instrumentation for OkHttp: one span per call execution and traceparent injection.",
+    "kotrace-room" to "kotrace instrumentation for Android Room: SQL statements as breadcrumbs on the active span.",
+    "kotrace-bom" to "Bill of materials aligning the versions of every kotrace module.",
+)
+
 // Release guard (build-logic's `kotrace.release-guard`, README § Publishing): every remote publish, of every
 // module and the BOM, first checks a clean tree, the `v<version>` tag and the Maven repo, and each POM records
 // the commit it was built from. Its TestKit tests run from `check`.
 tasks.check { dependsOn(gradle.includedBuild("kotrace-build-logic").task(":check")) }
+
+allprojects {
+    // One POM identity for every published module: a consumer (or a license scanner) resolving a kotrace
+    // artifact gets its name, license and source location, not an anonymous jar.
+    plugins.withId("maven-publish") {
+        extensions.configure<PublishingExtension> {
+            publications.withType<MavenPublication>().configureEach {
+                pom {
+                    name.set(project.name)
+                    description.set(pomDescriptions.getValue(project.name))
+                    url.set("https://github.com/Kotrace/kotrace")
+                    licenses {
+                        license {
+                            name.set("MIT License")
+                            url.set("https://opensource.org/license/mit")
+                        }
+                    }
+                    developers {
+                        developer {
+                            id.set("kotrace")
+                            name.set("Kotrace")
+                        }
+                    }
+                    scm {
+                        url.set("https://github.com/Kotrace/kotrace")
+                        connection.set("scm:git:https://github.com/Kotrace/kotrace.git")
+                        developerConnection.set("scm:git:ssh://git@github.com/Kotrace/kotrace.git")
+                    }
+                }
+            }
+        }
+    }
+}

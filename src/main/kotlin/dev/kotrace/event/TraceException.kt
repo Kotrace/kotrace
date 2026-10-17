@@ -2,6 +2,7 @@ package dev.kotrace.event
 
 import dev.kotrace.Span
 import dev.kotrace.TraceLink
+import dev.kotrace.UnredactedTraceRead
 import dev.kotrace.isFatalFault
 import dev.kotrace.resolvedThreadConfig
 import java.util.Collections
@@ -194,6 +195,13 @@ internal fun Span.recordPropagatedException(cause: Throwable) {
     emit(ExceptionEvent(cause, System.nanoTime(), lineageKeyOf(cause)), resolvedThreadConfig())
 }
 
-/** The birthplace throwable recorded on this span, if any — the first [ExceptionEvent] on its timeline. */
+/**
+ * The **first** throwable still on this span's timeline, if any — the first [ExceptionEvent] on it. A span past
+ * [Span.MAX_EVENTS] that holds nothing but exceptions has discarded its oldest ones (ADR-029). On the
+ * span where a failure was born that is its birthplace throwable; on an ancestor it climbed through, it is the
+ * propagated copy (ADR-019). The report marks which is which ([ExceptionRecord.origin]); this accessor does not.
+ * Unredacted ([UnredactedTraceRead]): the raw throwable, message included.
+ */
+@UnredactedTraceRead
 val Span.exception: Throwable?
-    get() = events.firstNotNullOfOrNull { (it as? ExceptionEvent)?.throwable }
+    get() = eventBuffer.firstNotNullOfOrNull { (it as? ExceptionEvent)?.throwable }

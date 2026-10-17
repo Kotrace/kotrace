@@ -1,9 +1,20 @@
 [versions]
+# The compiler. What the *published* artifacts require of a consumer is pinned separately, below.
 kotlin = "2.4.10"
+# Consumer baseline (ADR-027): the Kotlin language/API level the published modules compile against, and the
+# stdlib version their POMs declare. A consumer on Kotlin 2.0+ can read this metadata; a newer stdlib wins by
+# normal dependency resolution. Raise it only deliberately — it is a floor imposed on every consumer.
+kotlinBaseline = "2.1"
+kotlinStdlibBaseline = "2.1.0"
 dokka = "2.2.0"
-kotlinxCoroutines = "1.11.0"
+# Published `api` dependencies are declared at the lowest version kotrace supports (ADR-027), and the build
+# compiles and tests against exactly that floor, so it cannot silently start using newer API. Consumers on a
+# newer version keep theirs: Gradle resolves to the highest requested.
+kotlinxCoroutines = "1.10.2"
 junit = "4.13.2"
-okhttp = "5.5.0"
+okhttp = "4.12.0"
+# Test only: the newest OkHttp major, which `:kotrace-okhttp:testOkHttp5` runs the same compiled tests against.
+okhttp5Test = "5.5.0"
 mockk = "1.14.11"
 # AGP 9.1.1 on Gradle 9.3.1 — matched to the Camailux app so the `-Pkotrace.local` composite (which pulls
 # this repo into that build) does not hit "multiple AGP versions in one build". AGP 9 has built-in Kotlin:

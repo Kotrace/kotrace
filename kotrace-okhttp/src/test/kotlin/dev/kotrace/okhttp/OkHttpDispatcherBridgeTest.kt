@@ -166,7 +166,7 @@ class OkHttpDispatcherBridgeTest {
         val calls = TracingCallFactory(client(level = TracingInterceptor.Level.BODY))
 
         withContext(Dispatchers.IO + TraceConfig(listOf(report))) {
-            span("AccountRepository.fetch") { calls.newCall(get()).enqueueAndWait().getOrThrow().use { it.body.string() } }
+            span("AccountRepository.fetch") { calls.newCall(get()).enqueueAndWait().getOrThrow().use { it.body!!.string() } }
         }
 
         assertTrue(
@@ -216,5 +216,19 @@ class OkHttpDispatcherBridgeTest {
         }
 
         assertTrue("the response was handed back without reading the stream (took ${tookMs}ms)", tookMs < 2_000)
+    }
+
+    @Test
+    fun `an enqueued call under a non-W3C parent succeeds instead of failing on the dispatcher`() = runBlocking {
+        server.enqueue(MockResponse().setBody("ok"))
+        val calls = TracingCallFactory(client())
+        val parent = dev.kotrace.Span("4BF92F3577B34DA6A3CE929D0E0E4736", "s", null, "continued", startNanos = 0L)
+
+        val result = withContext(Dispatchers.IO + SpanCollector() + dev.kotrace.SpanContext(parent)) {
+            calls.newCall(get()).enqueueAndWait()
+        }
+
+        assertEquals("the call behaves exactly as untraced", 200, result.getOrThrow().also { it.close() }.code)
+        assertEquals("and no malformed header reached the server", null, server.takeRequest().getHeader("traceparent"))
     }
 }

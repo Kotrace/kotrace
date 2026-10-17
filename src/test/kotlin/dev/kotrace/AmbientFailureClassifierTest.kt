@@ -1,3 +1,6 @@
+// Tests inspect the raw span timeline (ADR-028); nothing here reaches a sink.
+@file:OptIn(dev.kotrace.UnredactedTraceRead::class)
+
 package dev.kotrace
 
 import dev.kotrace.event.ExceptionRecord

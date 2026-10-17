@@ -42,6 +42,9 @@ import java.util.IdentityHashMap
  * failure must not be silenced just because it is not the leaf-most throwable on a branch. They are
  * deliberately **not** written onto [Span.events]: doing so would let one flip the root into a birthplace and
  * shadow the tree's real crash origin. With no throwable to attach [attached] is empty and this is inert.
+ * [attached] is read once, when the report begins, like the span timelines: a later mutation does not reach the
+ * report, and a list that throws while being read costs only the orphans (the [AdapterFaultHook] hears of it
+ * with [FaultPhase.REPORT] and `adapter = null`), never the report itself.
  *
  * **Every root is reported** (ADR-026). A collector normally holds one tree, but a manual one can hold several:
  * two top-level `span {}` calls under the same collector (two traces), or a collector seeded *inside* a traced
@@ -54,10 +57,43 @@ fun SpanCollector.reportTrace(status: TraceStatus, attached: List<Throwable> = e
     val adapters = config?.reportAdapters.orEmpty()
     if (adapters.isEmpty()) return
     val hook = config?.faultHook
+    // Snapshot the span list now, so the report content is fixed at report time. Every non-empty collector has
+    // at least one root (rootsOf), so empty is the only "nothing to report".
     val all = spans
+    if (all.isEmpty()) return
+    // Freeze every span's timeline now too (ADR-019/029): an event appended after this point — by an adapter's
+    // own onReport, a late bridge — must not enter this report, whenever the first adapter iterates.
+    val frozen = FrozenTimelines(all)
+    // And the orphan failures: the caller's list is read once, here, so a later mutation cannot reach the report. A
+    // list that fails to read costs only the orphans (the fault hook hears of it), never the report or the operation.
+    val orphans = guardShared(FaultPhase.REPORT, hook) { attached.toList() } ?: emptyList()
+    val reportedAt = System.nanoTime()
+
+    // Indexed and walked only when an adapter first consumes its records, then shared by every adapter: an
+    // adapter that self-gates on status pays no walk (ADR-029). Built inside that adapter's guard.
+    val entries by lazy { walkEntries(all, orphans, reportedAt, frozen::of) }
+
+    // Guard the entire synchronous onReport per adapter (ADR-014): the adapter consumes its lazy view
+    // in-call, so its policy/message faults are contained here too. A throwing sink never skips its
+    // siblings or propagates into the boundary. (Retaining the sequence to consume after onReport returns
+    // is unsupported — see ReportAdapter.onReport.)
+    adapters.forEach { adapter ->
+        guardAdapter(FaultPhase.REPORT, adapter, hook) { adapter.onReport(status, adapter.viewOf { entries }) }
+    }
+}
+
+/**
+ * The whole trace as origin-stamped report entries, in tree order: every root's walk, then [attached] (stamped
+ * [reportedAt]). Each span's events come from [frozenEvents], the timeline as it stood when the report began.
+ */
+private fun walkEntries(
+    all: List<Span>,
+    attached: List<Throwable>,
+    reportedAt: Long,
+    frozenEvents: (Span) -> List<SpanEvent>,
+): List<WalkEntry> {
     val roots = rootsOf(all)
-    if (roots.isEmpty()) return
-    val tree = TraceTreeIndex(all, roots)
+    val tree = TraceTreeIndex(all, roots, frozenEvents)
 
     val entries = ArrayList<WalkEntry>()
     fun walk(span: Span) {
@@ -81,22 +117,36 @@ fun SpanCollector.reportTrace(status: TraceStatus, attached: List<Throwable> = e
     roots.forEach(::walk)
 
     if (attached.isNotEmpty()) {
-        val now = System.nanoTime()
         val root = roots.first()
         // Orphans are origins with no deeper copy — stamped BIRTHPLACE so the propagated gate never drops them.
-        attached.forEach { entries += WalkEntry(root, ExceptionEvent(it, now), ExceptionOrigin.BIRTHPLACE) }
+        attached.forEach { entries += WalkEntry(root, ExceptionEvent(it, reportedAt), ExceptionOrigin.BIRTHPLACE) }
     }
-
-    // Guard the entire synchronous onReport per adapter (ADR-014): the adapter consumes its lazy view
-    // in-call, so its policy/message faults are contained here too. A throwing sink never skips its
-    // siblings or propagates into the boundary. (Retaining the sequence to consume after onReport returns
-    // is unsupported — see ReportAdapter.onReport.)
-    adapters.forEach { adapter ->
-        guardAdapter(FaultPhase.REPORT, adapter, hook) { adapter.onReport(status, adapter.viewOf(entries)) }
-    }
+    return entries
 }
 
 private class WalkEntry(val span: Span, val event: SpanEvent, val origin: ExceptionOrigin?)
+
+/**
+ * Every span's timeline as it stood when a report began (ADR-019/029). Construction takes one copy-on-write
+ * iterator per span — an O(1) snapshot, not a copy — and [of] drains it into a list on first read and keeps that
+ * list. A walk retried after a fault (a `lazy` does not memoize a throw, so the next adapter re-runs it) therefore
+ * reads the same timelines, never an exhausted iterator. Read only inside the report's synchronized lazy walk, so it
+ * needs no lock of its own.
+ */
+internal class FrozenTimelines(spans: List<Span>) {
+    private val snapshots = IdentityHashMap<Span, Iterator<SpanEvent>>(spans.size).apply {
+        spans.forEach { put(it, it.eventBuffer.iterator()) }
+    }
+
+    /** Allocated on the first read, so a report no adapter consumes pays only for the snapshots. */
+    private var drained: IdentityHashMap<Span, List<SpanEvent>>? = null
+
+    /** [span]'s frozen timeline; the same list on every call. */
+    fun of(span: Span): List<SpanEvent> {
+        val cache = drained ?: IdentityHashMap<Span, List<SpanEvent>>(snapshots.size).also { drained = it }
+        return cache.getOrPut(span) { snapshots.getValue(span).asSequence().toList() }
+    }
+}
 
 /**
  * The roots of the forest in [all], earliest first (ADR-026): every span with no parent, **and** every span whose
@@ -133,11 +183,12 @@ internal fun SpanEvent.reportable(): Boolean = when (this) {
  * unless the policy's [TracePolicy.acceptsEvent] deliberately drops it (default: kept). Only when an entry
  * survives is its [dev.kotrace.event.TraceRecord] built — a [LogEvent]'s lazy message resolves here, once.
  */
-private fun ReportAdapter.viewOf(entries: List<WalkEntry>): Sequence<TraceRecord> {
+private fun ReportAdapter.viewOf(entries: () -> List<WalkEntry>): Sequence<TraceRecord> {
     // Read the propagated gate ONCE, and only when the sequence is consumed (ADR-019): reading it eagerly at
     // viewOf-build time would let a throwing getter abort before an adapter's status self-gate ran.
     val keepPropagated by lazy { policy.acceptsPropagatedException }
-    return entries.asSequence()
+    // The entries themselves are resolved on first iteration too, so an unconsumed view costs no walk.
+    return Sequence { entries().iterator() }
         // Propagated gate FIRST — before policy.accepts — so a default adapter's policy is never invoked on a
         // dropped copy (its side effects, and a throwing policy, stay off the dropped entries): the pre-ADR-019
         // "policy never sees a non-birthplace" invariant is preserved exactly.
@@ -160,7 +211,11 @@ private fun ReportAdapter.viewOf(entries: List<WalkEntry>): Sequence<TraceRecord
  * and smaller sibling sets merge into the largest. This avoids copying every accumulated key at each parent;
  * a trace without exceptions allocates no lineage sets.
  */
-internal class TraceTreeIndex(all: List<Span>, roots: List<Span>) {
+internal class TraceTreeIndex(
+    all: List<Span>,
+    roots: List<Span>,
+    private val snapshotOf: (Span) -> List<SpanEvent> = { it.eventBuffer.toList() },
+) {
     private val childrenByParentId: Map<String, List<Span>> = indexChildren(all)
 
     private var birthplacesBySpan: IdentityHashMap<Span, List<ExceptionEvent>>? = null
@@ -184,14 +239,14 @@ internal class TraceTreeIndex(all: List<Span>, roots: List<Span>) {
     /** The exception events that belong at [span], excluding copies of a lineage found below it. */
     fun birthplaceExceptionsOf(span: Span): List<ExceptionEvent> = birthplacesBySpan?.get(span).orEmpty()
 
-    /** The single event snapshot indexed for [span] — the walk reads this, not [Span.events], for consistency. */
+    /** The single event snapshot indexed for [span] — the walk reads this, not the live buffer, for consistency. */
     fun eventsOf(span: Span): List<SpanEvent> = eventsBySpan[span].orEmpty()
 
     private fun indexBirthplaces(span: Span): MutableSet<Any>? {
         // Snapshot this span's events ONCE, before anything reads them, so the walk sees exactly what the
         // birthplace index saw (ADR-019). Taken for every span, including exception-free ones (the walk needs
         // it for logs too), so it precedes the mine.isEmpty() early return below.
-        val events = span.events.toList()
+        val events = snapshotOf(span)
         eventsBySpan[span] = events
 
         var subtreeKeys: MutableSet<Any>? = null

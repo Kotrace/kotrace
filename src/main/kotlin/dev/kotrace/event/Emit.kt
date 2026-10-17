@@ -10,18 +10,20 @@ import dev.kotrace.guardShared
 import dev.kotrace.liveFanOut
 
 /**
- * Appends [event] to the span, then offers it to each [dev.kotrace.LiveAdapter] as it happens — the per-event path
+ * Appends [event] to the span (bounded, [Span.MAX_EVENTS]), then offers it to each [dev.kotrace.LiveAdapter] as it
+ * happens — the per-event path
  * parallel to the failure fan-out ([dev.kotrace.reportTrace]). A live adapter sees it only if its policy
  * [accepts] the span/event (the same predicate the report path uses). The append is **unconditional** —
  * there is no capture gate (ADR-002); fan-out is the single filtering authority. The record is built only
  * once at least one live adapter [accepts] the event, so a rejected log never resolves its lazy message and
  * a report-only trace pays nothing per event beyond the append.
  *
- * `internal`, shared by the log, named, and exception verbs — all three append here unconditionally, so a
- * crash is never dropped and a filtered breadcrumb is still stored (just not fanned out).
+ * `internal`, shared by the log, named, and exception verbs — all three append here unconditionally, so no
+ * policy filters a crash out at capture and a filtered breadcrumb is still stored (just not fanned out). Only the
+ * [Span.MAX_EVENTS] cap evicts, an exception last (ADR-029).
  */
 internal fun Span.emit(event: SpanEvent, config: TraceConfig?, extraInfo: Map<String, String> = emptyMap()) {
-    eventBuffer += event
+    appendEvent(event)
     val liveAdapters = config?.liveAdapters ?: return
     if (liveAdapters.isEmpty()) return
     val hook = config.faultHook

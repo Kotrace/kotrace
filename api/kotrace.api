@@ -23,6 +23,9 @@ public final class dev/kotrace/Kotrace {
 	public final fun strictWhenUninstalled ()V
 }
 
+public abstract interface annotation class dev/kotrace/KotraceTestApi : java/lang/annotation/Annotation {
+}
+
 public abstract interface class dev/kotrace/LiveAdapter : dev/kotrace/TraceAdapter {
 	public abstract fun onLive (Ldev/kotrace/event/TraceRecord;)V
 }
@@ -83,9 +86,13 @@ public final class dev/kotrace/ScopeKt {
 }
 
 public final class dev/kotrace/Span {
+	public static final field Companion Ldev/kotrace/Span$Companion;
+	public static final field EVENTS_DROPPED_INFO Ljava/lang/String;
+	public static final field MAX_EVENTS I
 	public fun <init> (Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;JLjava/util/Map;Ljava/util/List;Ljava/lang/String;)V
 	public synthetic fun <init> (Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;JLjava/util/Map;Ljava/util/List;Ljava/lang/String;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
 	public final fun getAttributes ()Ljava/util/Map;
+	public final fun getDroppedEvents ()I
 	public final fun getEndNanos ()Ljava/lang/Long;
 	public final fun getEvents ()Ljava/util/List;
 	public final fun getInfo ()Ljava/util/Map;
@@ -98,6 +105,9 @@ public final class dev/kotrace/Span {
 	public final fun getStatus ()Ldev/kotrace/SpanStatus;
 	public final fun getTraceId ()Ljava/lang/String;
 	public final fun putInfo (Ljava/lang/String;Ljava/lang/String;)V
+}
+
+public final class dev/kotrace/Span$Companion {
 }
 
 public final class dev/kotrace/SpanCollector : kotlin/coroutines/AbstractCoroutineContextElement, kotlinx/coroutines/ThreadContextElement {

@@ -73,9 +73,15 @@ import java.security.SecureRandom
  * must not synthesize one per call. [ReturnedFailure.ValueOnly] marks ERROR without inventing an exception,
  * log, or machine record.
  *
+ * **Inside `flow { }`, never `emit` from within a span.** [span] runs its block under `withContext` (the span's
+ * own context element, and a collector when it auto-roots), and a flow may only emit from its collector's
+ * context, so `emit` inside the block fails with "Flow invariant is violated". Compute the value inside the
+ * span, and emit it outside, as the `spanInFlowUsage` sample shows.
+ *
  * @sample dev.kotrace.samples.SpanSamples.spanUsage
  * @sample dev.kotrace.samples.SpanSamples.spanReturnedOutcomeUsage
  * @sample dev.kotrace.samples.SpanSamples.spanFailureClassifierUsage
+ * @sample dev.kotrace.samples.SpanSamples.spanInFlowUsage
  */
 suspend fun <T> span(
     name: String,
@@ -484,5 +490,15 @@ private val random = SecureRandom()
 internal fun hex(bytes: Int): String {
     val b = ByteArray(bytes)
     do { random.nextBytes(b) } while (b.all { it == 0.toByte() })
-    return b.joinToString("") { "%02x".format(it.toInt() and 0xFF) }
+    // Table lookup into one CharArray: `"%02x".format` per byte (24 per span) was ~88% of an empty span's
+    // allocation.
+    val out = CharArray(bytes * 2)
+    for (i in b.indices) {
+        val v = b[i].toInt() and 0xFF
+        out[2 * i] = HEX_DIGITS[v ushr 4]
+        out[2 * i + 1] = HEX_DIGITS[v and 0x0F]
+    }
+    return String(out)
 }
+
+private val HEX_DIGITS = "0123456789abcdef".toCharArray()

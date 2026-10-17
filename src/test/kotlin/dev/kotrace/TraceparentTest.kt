@@ -1,6 +1,7 @@
 package dev.kotrace
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -33,6 +34,22 @@ class TraceparentTest {
     @Test
     fun `unsampled sets the flags to 00`() {
         assertTrue(span("a".repeat(32), "1".repeat(16)).toTraceparent(sampled = false).endsWith("-00"))
+    }
+
+    @Test
+    fun `a malformed id never reaches the wire`() {
+        val valid32 = "a".repeat(32)
+        val valid16 = "1".repeat(16)
+        listOf(
+            span("t", valid16), // too short
+            span("A".repeat(32), valid16), // uppercase
+            span("g".repeat(32), valid16), // not hex
+            span("0".repeat(32), valid16), // all-zero trace-id is invalid
+            span(valid32, "0".repeat(16)), // all-zero parent-id is invalid
+            span(valid32, "1".repeat(17)), // too long
+        ).forEach { bad ->
+            assertThrows("${bad.traceId}/${bad.spanId}", IllegalArgumentException::class.java) { bad.toTraceparent() }
+        }
     }
 
     private companion object {

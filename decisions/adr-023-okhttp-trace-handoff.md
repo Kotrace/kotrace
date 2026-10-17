@@ -68,5 +68,5 @@ span's life was tied to `Call` creation rather than execution. Verified conseque
   interceptor is no longer supported — the tag is internal.
 - A call created inside a trace but executed only after that trace reported (a `Call` kept and run later) still
   opens its span under the captured context. Its records reach live adapters, but the report was already sent
-  without it: a report is the trace as it stood at its end, not a subscription.
+  without it: a report is the trace as it stood at its end (ADR-029), not a subscription.
 - Bounded `Level.BODY` capture is a separate decision (ADR-024).

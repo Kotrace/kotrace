@@ -1,12 +1,12 @@
 public final class dev/kotrace/room/TracingQueryCallback : androidx/room/RoomDatabase$QueryCallback {
 	public fun <init> ()V
-	public fun <init> (Ljava/util/Map;)V
-	public synthetic fun <init> (Ljava/util/Map;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public fun <init> (Ljava/util/Map;Landroidx/room/RoomDatabase$QueryCallback;)V
+	public synthetic fun <init> (Ljava/util/Map;Landroidx/room/RoomDatabase$QueryCallback;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
 	public fun onQuery (Ljava/lang/String;Ljava/util/List;)V
 }
 
 public final class dev/kotrace/room/TracingQueryCallbackKt {
-	public static final fun tracing (Landroidx/room/RoomDatabase$Builder;Ljava/util/Map;)Landroidx/room/RoomDatabase$Builder;
-	public static synthetic fun tracing$default (Landroidx/room/RoomDatabase$Builder;Ljava/util/Map;ILjava/lang/Object;)Landroidx/room/RoomDatabase$Builder;
+	public static final fun tracing (Landroidx/room/RoomDatabase$Builder;Ljava/util/Map;Landroidx/room/RoomDatabase$QueryCallback;Ljava/util/concurrent/Executor;)Landroidx/room/RoomDatabase$Builder;
+	public static synthetic fun tracing$default (Landroidx/room/RoomDatabase$Builder;Ljava/util/Map;Landroidx/room/RoomDatabase$QueryCallback;Ljava/util/concurrent/Executor;ILjava/lang/Object;)Landroidx/room/RoomDatabase$Builder;
 }
 

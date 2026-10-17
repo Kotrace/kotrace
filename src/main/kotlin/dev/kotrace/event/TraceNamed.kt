@@ -12,9 +12,12 @@ import dev.kotrace.resolvedThreadConfig
  */
 class NamedEvent(
     val name: String,
-    override val attributes: Map<String, String>,
+    attributes: Map<String, String>,
     override val atNanos: Long,
-) : AttributedEvent
+) : AttributedEvent {
+    /** Snapshotted at construction, so a caller mutating its map later can't make live and report disagree. */
+    override val attributes: Map<String, String> = attributes.toMap()
+}
 
 /** A flattened [NamedEvent]: identity + a named, structured occurrence. */
 data class NamedRecord(

@@ -1,3 +1,6 @@
+// Benchmarks read span timelines to defeat dead-code elimination; nothing leaves the process.
+@file:OptIn(dev.kotrace.UnredactedTraceRead::class)
+
 package dev.kotrace.benchmarks
 
 import dev.kotrace.LiveAdapter
