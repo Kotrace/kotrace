@@ -26,6 +26,22 @@ suspend fun currentConfig(): TraceConfig? = currentCoroutineContext()[TraceConfi
 fun currentThreadConfig(): TraceConfig? = currentConfigThreadLocal.get()
 
 /**
+ * Runs [block] with [config] as this thread's mirrored per-flow override, restoring the previous value after —
+ * the explicit counterpart of [TraceConfig]'s `ThreadContextElement` mirror, for a bridge running on a thread no
+ * coroutine resumed on ([TraceHandoff.withCapturedConfig]). A null [config] means "no override" (the
+ * process-wide [Kotrace] config applies), exactly as on any thread without a flow.
+ */
+internal fun <T> withThreadConfig(config: TraceConfig?, block: () -> T): T {
+    val previous = currentConfigThreadLocal.get()
+    currentConfigThreadLocal.set(config)
+    try {
+        return block()
+    } finally {
+        currentConfigThreadLocal.set(previous)
+    }
+}
+
+/**
  * The [TraceConfig] a fan-out path uses: the per-flow context override ([currentThreadConfig]) if one is
  * present, else the process-wide [Kotrace] config (ADR-010). This is what makes every path — span and
  * span-less, live and report, suspend and non-suspend — fan to the same adapters, differing only in the

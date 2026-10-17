@@ -6,9 +6,14 @@ import dev.kotrace.event.TraceRecord
 import dev.kotrace.currentSpan
 import dev.kotrace.event.log
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withContext
 import java.util.concurrent.atomic.AtomicReference
 import org.junit.After
@@ -117,12 +122,55 @@ class AutoRootSpanTest {
         assertTrue("birthplace exception is in the report", hasCrash)
     }
 
-    @Test fun `cancellation reports CANCELLED`() = runTest {
+    // --- Cancellation semantics (ADR-022): CANCELLED iff the root's own coroutine is cancelled ---
+
+    @Test fun `cancelling the caller reports CANCELLED and records no exception`() = runTest {
         val report = CollectingReport()
         Kotrace.install(listOf(report))
-        val thrown = runCatching { span("op") { throw CancellationException("cancelled") } }.exceptionOrNull()
-        assertTrue(thrown is CancellationException)
+        val job = launch { span("op") { span("child") { awaitCancellation() } } }
+        testScheduler.runCurrent()
+        job.cancelAndJoin()
         assertEquals(TraceStatus.CANCELLED, report.statuses.single())
+        assertTrue(
+            "a cancellation is not a crash: no JobCancellationException birthplace reaches a sink",
+            report.records.single().none { it is ExceptionRecord },
+        )
+    }
+
+    @Test fun `a sibling cancelled by a failing sibling records no exception`() = runTest {
+        val report = CollectingReport()
+        Kotrace.install(listOf(report))
+        val boom = IllegalStateException("boom")
+        runCatching {
+            span("root") {
+                coroutineScope {
+                    launch { span("slow") { awaitCancellation() } }
+                    launch { span("boom") { delay(10); throw boom } }
+                }
+            }
+        }
+        assertEquals(TraceStatus.ERROR, report.statuses.single())
+        val crashes = report.records.single().filterIsInstance<ExceptionRecord>()
+        assertEquals("only the real failure is reported, never the cancelled sibling", listOf("boom"), crashes.map { it.operation })
+        assertTrue(crashes.single().throwable.chain().any { it === boom })
+    }
+
+    @Test fun `a withTimeout expiring inside the span is a failure - ERROR, with the timeout recorded`() = runTest {
+        val report = CollectingReport()
+        Kotrace.install(listOf(report))
+        val thrown = runCatching { span("op") { withTimeout(20) { delay(1_000) } } }.exceptionOrNull()
+        assertTrue("the timeout still propagates unchanged", thrown is TimeoutCancellationException)
+        assertEquals("a timeout is a failure of the operation, not a cancellation of it", TraceStatus.ERROR, report.statuses.single())
+        val crash = report.records.single().filterIsInstance<ExceptionRecord>().single()
+        assertTrue("the timeout is recorded as the birthplace", crash.throwable is TimeoutCancellationException)
+    }
+
+    @Test fun `a CancellationException thrown while the coroutine stays active is a failure`() = runTest {
+        val report = CollectingReport()
+        Kotrace.install(listOf(report))
+        val thrown = runCatching { span("op") { throw CancellationException("not a cancellation of op") } }.exceptionOrNull()
+        assertTrue("rethrown unchanged", thrown is CancellationException)
+        assertEquals(TraceStatus.ERROR, report.statuses.single())
     }
 
     @Test fun `a recovered child failure leaves the root OK`() = runTest {

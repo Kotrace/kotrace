@@ -32,4 +32,21 @@ class SpanStateTest {
         assertNotNull("endNanos stamped on completion", span.endNanos)
         assertEquals("throwable is the events source of truth, not the state pair", boom, span.exception)
     }
+
+    @Test
+    @OptIn(NonSuspendTracingBridge::class)
+    fun `end is exactly once - a second end can neither flip ERROR to OK nor re-record`() {
+        val span = Span("t", "s", null, "op", startNanos = 0L)
+        val boom = IllegalStateException("boom")
+
+        span.end(SpanStatus.ERROR, boom)
+        val firstEnd = span.endNanos
+        span.end(SpanStatus.OK) // a retry reusing the span, a racing callback: ignored (ADR-023)
+        span.end(SpanStatus.ERROR, IllegalStateException("second"))
+
+        assertEquals("the first terminal transition wins", SpanStatus.ERROR, span.status)
+        assertEquals("endNanos is not re-stamped", firstEnd, span.endNanos)
+        assertEquals("only the winning end records its throwable", 1, span.events.size)
+        assertEquals(boom, span.exception)
+    }
 }

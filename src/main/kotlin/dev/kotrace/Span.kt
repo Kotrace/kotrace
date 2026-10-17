@@ -109,9 +109,17 @@ class Span(
         state.updateAndGet { State(it.status, nanos) }
     }
 
-    /** Publishes both fields in one atomic write — the bridge completion path ([dev.kotrace.end]). */
-    internal fun markCompleted(newStatus: SpanStatus, nanos: Long) {
-        state.set(State(newStatus, nanos))
+    /**
+     * Publishes both fields in one atomic write **iff the span is still open** — the bridge completion path
+     * ([dev.kotrace.end]). The first terminal transition wins; a later one (a second `end`, a cloned call reusing
+     * the span, a racing callback) returns `false` and changes nothing, so an ERROR can never be flipped to OK.
+     */
+    internal fun tryComplete(newStatus: SpanStatus, nanos: Long): Boolean {
+        while (true) {
+            val current = state.get()
+            if (current.endNanos != null) return false
+            if (state.compareAndSet(current, State(newStatus, nanos))) return true
+        }
     }
 
     /**

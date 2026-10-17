@@ -10,18 +10,26 @@ import java.util.concurrent.TimeUnit
  * to a `String` for a person, ungated: it walks every span and every event (`NamedEvent`s and `sensitive`
  * log messages included), so its output must never reach a sink or crash report. `report` is the machine
  * counterpart — flat, id-stamped [dev.kotrace.event.TraceRecord]s, policy-gated, fanned out to adapters.
- * Times are milliseconds relative to the root span's start.
+ * Times are milliseconds relative to each root span's start; a list holding several trees (ADR-026) renders
+ * each root in turn.
  */
 @UnredactedTraceRead
 fun List<Span>.renderTree(): String {
     if (isEmpty()) return "(no spans)"
-    val root = firstOrNull { it.parentId == null } ?: first()
-    val tree = TraceTreeIndex(this, root)
-    val base = root.startNanos
-    val failed = any { it.status == SpanStatus.ERROR }
-
+    // Every root, each as its own tree (ADR-026) — the same forest the report walks.
+    val roots = rootsOf(this)
+    val tree = TraceTreeIndex(this, roots)
     val sb = StringBuilder()
-    sb.append(if (failed) "✗ trace ${root.traceId} FAILED" else "✓ trace ${root.traceId}")
+    roots.forEach { root -> sb.renderRoot(root, tree) }
+    return sb.toString()
+}
+
+private fun StringBuilder.renderRoot(root: Span, tree: TraceTreeIndex) {
+    val sb = this
+    val base = root.startNanos
+
+    fun failed(span: Span): Boolean = span.status == SpanStatus.ERROR || tree.childrenOf(span).any(::failed)
+    sb.append(if (failed(root)) "✗ trace ${root.traceId} FAILED" else "✓ trace ${root.traceId}")
     sb.append("  (total ${durMs(root)}ms)\n")
 
     fun render(span: Span, depth: Int) {
@@ -47,7 +55,6 @@ fun List<Span>.renderTree(): String {
         tree.childrenOf(span).forEach { render(it, depth + 1) }
     }
     render(root, 0)
-    return sb.toString()
 }
 
 private fun durMs(span: Span): Long =

@@ -50,6 +50,21 @@ object Kotrace {
     private val strict = AtomicBoolean(false)
 
     /**
+     * Per-thread "this thread is running the [install] provider" flag (ADR-025). `lazy`'s monitor is reentrant,
+     * so without it an emit from inside the provider (or from an adapter's constructor it runs) re-entered the
+     * uninitialized `lazy` and ran the provider again — unbounded recursion ending in a fatal
+     * [StackOverflowError].
+     */
+    private val resolvingProvider = ThreadLocal.withInitial { false }
+
+    /**
+     * What a fan-out sees while its own thread is resolving the provider: installed, but reaching no adapter.
+     * Non-null, so the nested emit is a no-op rather than a strict-uninstalled failure (ADR-011) — which the
+     * provider guard would otherwise turn into a permanently empty config.
+     */
+    private val resolvingConfig = TraceConfig(emptyList())
+
+    /**
      * Publishes the process-wide fan-out [adapters], with an optional [faultHook] (ADR-014) and an optional
      * process-wide [failureClassifier] (ADR-018/020, returned-failure classification). Call once at startup.
      * Throws [IllegalStateException] on a second call — the holder is read-only after install. An empty list
@@ -72,6 +87,11 @@ object Kotrace {
      * the adapters until first use — with an optional [faultHook] (ADR-014) and process-wide [failureClassifier]
      * (ADR-018/020). Same install-once contract: a second call throws. The [failureClassifier] is stored eagerly
      * alongside the lazy config in the one [Installed] holder.
+     *
+     * An emit made **while the provider runs** on that thread — by the provider itself or by an adapter
+     * constructor it calls — reaches no adapter (it sees an installed, empty config), rather than re-entering the
+     * provider (ADR-025). Another thread emitting meanwhile waits for resolution, so a provider must not block on
+     * a thread that emits through kotrace.
      */
     fun install(
         faultHook: AdapterFaultHook? = null,
@@ -79,6 +99,7 @@ object Kotrace {
         provider: () -> List<TraceAdapter>,
     ) {
         val config = lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
+            resolvingProvider.set(true)
             val adapters = try {
                 provider()
             } catch (t: Throwable) {
@@ -90,6 +111,8 @@ object Kotrace {
                 // [faultHook] (ADR-014 keeps config resolution out of the adapter-fault channel).
                 if (t.isFatalFault()) throw t
                 emptyList()
+            } finally {
+                resolvingProvider.set(false)
             }
             TraceConfig(adapters.toList(), faultHook)
         }
@@ -98,8 +121,16 @@ object Kotrace {
         }
     }
 
-    /** The installed process-wide [TraceConfig], or null if none — the fallback when no context override exists. */
-    internal fun defaultConfig(): TraceConfig? = installed.get()?.config?.value
+    /**
+     * The installed process-wide [TraceConfig], or null if none — the fallback when no context override exists.
+     * While this thread is running the provider, an empty config: an emit made during resolution (by the
+     * provider or an adapter it constructs) reaches no adapter, instead of re-entering the provider (ADR-025).
+     */
+    internal fun defaultConfig(): TraceConfig? {
+        val config = installed.get()?.config ?: return null
+        if (resolvingProvider.get()) return resolvingConfig
+        return config.value
+    }
 
     /**
      * The installed process-wide [FailureClassifier] (ADR-018/020), or null if none. Read directly — it does

@@ -31,6 +31,12 @@ interface LiveAdapter : TraceAdapter {
      * (network, disk), enqueue [record] to a bounded worker and return promptly here — do not block in
      * `onLive`. A bounded queue is deliberate: it is where you choose your backpressure (drop, block, or
      * coalesce) rather than letting an unbounded buffer grow under a hot trace.
+     *
+     * **Logging through kotrace from here is safe but not fanned out** (ADR-025): an emit made inside `onLive`
+     * on the same thread — a forwarding logger, `span.log` — is stored on its span (and reaches the report path)
+     * but is not offered to live adapters again, so an adapter can never recurse into itself. A span-less
+     * emit made here is dropped. The guard is per-thread: an adapter that hands records to another thread which
+     * logs back through kotrace is not guarded, so do not forward kotrace's own records into kotrace.
      */
     fun onLive(record: TraceRecord)
 }

@@ -174,6 +174,17 @@ public final class dev/kotrace/TraceFormatKt {
 	public static final fun renderTree (Ljava/util/List;)Ljava/lang/String;
 }
 
+public final class dev/kotrace/TraceHandoff {
+	public static final field Companion Ldev/kotrace/TraceHandoff$Companion;
+	public final fun startSpan (Ljava/lang/String;Ljava/util/Map;Ljava/util/List;)Ldev/kotrace/Span;
+	public static synthetic fun startSpan$default (Ldev/kotrace/TraceHandoff;Ljava/lang/String;Ljava/util/Map;Ljava/util/List;ILjava/lang/Object;)Ldev/kotrace/Span;
+	public final fun withCapturedConfig (Lkotlin/jvm/functions/Function0;)Ljava/lang/Object;
+}
+
+public final class dev/kotrace/TraceHandoff$Companion {
+	public final fun captureOrNull ()Ldev/kotrace/TraceHandoff;
+}
+
 public final class dev/kotrace/TraceKt {
 	public static final fun end (Ldev/kotrace/Span;Ldev/kotrace/SpanStatus;Ljava/lang/Throwable;)V
 	public static synthetic fun end$default (Ldev/kotrace/Span;Ldev/kotrace/SpanStatus;Ljava/lang/Throwable;ILjava/lang/Object;)V

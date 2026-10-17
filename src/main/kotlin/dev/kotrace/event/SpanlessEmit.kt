@@ -7,6 +7,7 @@ import dev.kotrace.currentThreadScopeId
 import dev.kotrace.guardAdapter
 import dev.kotrace.guardPolicy
 import dev.kotrace.guardShared
+import dev.kotrace.liveFanOut
 import dev.kotrace.resolvedThreadConfig
 
 /**
@@ -31,15 +32,19 @@ private fun emitSpanless(event: SpanEvent, info: Map<String, String> = emptyMap(
     val live = config?.liveAdapters ?: return
     if (live.isEmpty()) return
     val hook = config.faultHook
-    val accepting = live.filter { adapter ->
-        guardPolicy(FaultPhase.SPANLESS_LIVE, adapter, hook) { adapter.policy.accepts(event) }
-    }
-    if (accepting.isEmpty()) return
-    val record = guardShared(FaultPhase.SPANLESS_LIVE, hook) {
-        spanlessRecordOf(event, currentThreadScopeId(), info)
-    } ?: return
-    accepting.forEach { adapter ->
-        guardAdapter(FaultPhase.SPANLESS_LIVE, adapter, hook) { adapter.onLive(record) }
+    // A span-less emit from inside a live fan-out on this thread has nowhere to be stored: it is dropped rather
+    // than fanned out again (ADR-025).
+    liveFanOut {
+        val accepting = live.filter { adapter ->
+            guardPolicy(FaultPhase.SPANLESS_LIVE, adapter, hook) { adapter.policy.accepts(event) }
+        }
+        if (accepting.isEmpty()) return
+        val record = guardShared(FaultPhase.SPANLESS_LIVE, hook) {
+            spanlessRecordOf(event, currentThreadScopeId(), info)
+        } ?: return
+        accepting.forEach { adapter ->
+            guardAdapter(FaultPhase.SPANLESS_LIVE, adapter, hook) { adapter.onLive(record) }
+        }
     }
 }
 

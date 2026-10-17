@@ -54,6 +54,20 @@ class StrictUninstalledTest {
         assertThrows(IllegalStateException::class.java) { span.log { "off-coroutine" } }
     }
 
+    @Test fun `armed, no install — end(ERROR, e) keeps the application throwable, telemetry failure suppressed`() {
+        Kotrace.strictWhenUninstalled()
+        val span = startSpan("op")
+        val boom = java.io.IOException("boom")
+
+        span.end(SpanStatus.ERROR, boom) // must not throw: the caller's own `throw boom` follows (ADR-023)
+
+        assertEquals("the span still completes", SpanStatus.ERROR, span.status)
+        assertTrue(
+            "the strict failure rides the application throwable instead of replacing it",
+            boom.suppressed.single() is IllegalStateException,
+        )
+    }
+
     // --- armed: install (or a context override) satisfies the check ---
 
     @Test fun `armed, then install — emits fan out normally, no throw`() {

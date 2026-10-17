@@ -1,10 +1,12 @@
 package dev.kotrace
 
 /**
- * Marks the non-suspend tracing bridge — [startSpan] and [Span.end] — as an opt-in API (ADR-003).
+ * Marks the non-suspend tracing bridge — [startSpan], [Span.end] and [TraceHandoff] — as an opt-in API
+ * (ADR-003, ADR-023).
  *
- * These exist only for code with no `coroutineContext` handle running on a coroutine's thread (the OkHttp
- * `Call.Factory`). Unlike [span], [startSpan] does **not** install its span into the coroutine context, so a
+ * These exist only for non-suspend code with no `coroutineContext` handle: code running on a coroutine's thread
+ * (the OkHttp `Call.Factory`), or a [TraceHandoff] carried to a thread no coroutine runs on (the OkHttp
+ * interceptor). Unlike [span], [startSpan] does **not** install its span into the coroutine context, so a
  * nested suspend [span]/[currentSpan] reads the *old* ambient span as parent and the manual span's children
  * mis-parent silently. In suspend code use [span] `{ }` instead.
  *
@@ -18,5 +20,5 @@ package dev.kotrace
     level = RequiresOptIn.Level.ERROR,
 )
 @Retention(AnnotationRetention.BINARY)
-@Target(AnnotationTarget.FUNCTION)
+@Target(AnnotationTarget.FUNCTION, AnnotationTarget.CLASS)
 annotation class NonSuspendTracingBridge

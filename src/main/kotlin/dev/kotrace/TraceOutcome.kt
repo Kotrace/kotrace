@@ -6,8 +6,8 @@ package dev.kotrace
  *
  * [status] may be **any** [TraceStatus] — `OK`, `ERROR`, or even `CANCELLED` for a value the consumer treats
  * as a cancellation outcome: the mapper owns the returned-value verdict fully, and core does not second-guess
- * it. (Core hard-codes a status only for the two *escaping* paths — an escaping `CancellationException` is
- * `CANCELLED`, any other escaping throwable is `ERROR` — which the mapper never sees.)
+ * it. (Core hard-codes a status only for the two *escaping* paths — a genuine cancellation of the root's
+ * coroutine is `CANCELLED`, any other escaping throwable is `ERROR` (ADR-022) — which the mapper never sees.)
  *
  * [attached] carries **only trace-level orphan failures** — throwables that belong to the trace as a whole
  * but are the birthplace of no span, the canonical case being a saga's suppressed rollback throwables

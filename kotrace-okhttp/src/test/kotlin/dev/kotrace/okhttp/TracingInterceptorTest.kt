@@ -1,47 +1,56 @@
 package dev.kotrace.okhttp
 
-import dev.kotrace.event.LogEvent
+import dev.kotrace.NonSuspendTracingBridge
 import dev.kotrace.ReportAdapter
 import dev.kotrace.Span
-import dev.kotrace.event.SpanEvent
+import dev.kotrace.SpanCollector
 import dev.kotrace.SpanStatus
 import dev.kotrace.TraceConfig
+import dev.kotrace.TraceHandoff
 import dev.kotrace.TracePolicy
-import dev.kotrace.event.TraceRecord
 import dev.kotrace.TraceStatus
+import dev.kotrace.event.LogEvent
+import dev.kotrace.event.SpanEvent
+import dev.kotrace.event.TraceRecord
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.slot
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withContext
 import okhttp3.Interceptor
+import okhttp3.MediaType
 import okhttp3.Protocol
 import okhttp3.Request
+import okhttp3.RequestBody
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
 import okhttp3.ResponseBody.Companion.toResponseBody
+import okio.BufferedSink
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * Proves the interceptor puts a spec-correct `traceparent` on the wire from a span carried on the
- * request tag (Trap 1: the tag is the bridge, since the coroutine context is invisible on OkHttp's
- * thread), and reflects the response back onto the span.
+ * Proves the interceptor opens the HTTP span from the factory's tag, puts a spec-correct `traceparent` for
+ * *that* span on the wire, and reflects the response back onto it — driven here against a MockK'd chain. (The
+ * real dispatcher-thread behavior is in [OkHttpDispatcherBridgeTest].)
  */
+@OptIn(NonSuspendTracingBridge::class)
 class TracingInterceptorTest {
 
-    private fun span(traceId: String = "a".repeat(32), spanId: String = "b".repeat(16)) =
-        Span(traceId = traceId, spanId = spanId, parentId = null, name = "HTTP GET /accounts", startNanos = 0L)
-
-    private fun request(span: Span?) = Request.Builder()
-        .url("https://graph.example.com/accounts")
-        .apply { if (span != null) tag(Span::class.java, span) }
-        .build()
+    /** A request tagged the way [TracingCallFactory] tags it, capturing [collector] as the flow's context. */
+    private suspend fun tagged(collector: SpanCollector, builder: Request.Builder = Request.Builder()): Request {
+        val handoff = withContext(collector) { TraceHandoff.captureOrNull()!! }
+        return builder
+            .url("https://graph.example.com/accounts")
+            .tag(HttpTrace::class.java, HttpTrace(handoff, "http GET", emptyMap()))
+            .build()
+    }
 
     /** Drives the interceptor against a MockK'd chain, capturing the request it actually sends. */
-    private fun run(request: Request, code: Int): Request {
+    private fun run(request: Request, code: Int, interceptor: TracingInterceptor = TracingInterceptor()): Request {
         val sent = slot<Request>()
         val chain = mockk<Interceptor.Chain> {
             every { request() } returns request
@@ -50,34 +59,38 @@ class TracingInterceptorTest {
                     .request(sent.captured).protocol(Protocol.HTTP_1_1).code(code).message("msg").build()
             }
         }
-        TracingInterceptor().intercept(chain)
+        interceptor.intercept(chain)
         return sent.captured
     }
 
-    @Test
-    fun `injects traceparent from the span tag`() {
-        val span = span()
-        val sent = run(request(span), code = 200)
+    private fun SpanCollector.httpSpan(): Span = spans.single { it.name == "http GET" }
 
-        assertEquals("00-${"a".repeat(32)}-${"b".repeat(16)}-01", sent.header("traceparent"))
+    @Test
+    fun `opens the http span on execution and injects its traceparent`() = runTest {
+        val collector = SpanCollector()
+        val sent = run(tagged(collector), code = 200)
+
+        val span = collector.httpSpan()
+        assertEquals("00-${span.traceId}-${span.spanId}-01", sent.header("traceparent"))
         assertEquals("200", span.info["http.status"])
         assertEquals(SpanStatus.OK, span.status)
     }
 
     @Test
-    fun `a 500 marks the span ERROR and records the status`() {
-        val span = span()
-        run(request(span), code = 500)
+    fun `a 500 marks the span ERROR and records the status`() = runTest {
+        val collector = SpanCollector()
+        run(tagged(collector), code = 500)
 
+        val span = collector.httpSpan()
         assertEquals(SpanStatus.ERROR, span.status)
         assertEquals("500", span.info["http.status"])
     }
 
     @Test
-    fun `a request with no span tag passes through without a header`() {
-        val sent = run(request(span = null), code = 200)
+    fun `a request with no tag passes through without a header`() {
+        val sent = run(Request.Builder().url("https://graph.example.com/accounts").build(), code = 200)
 
-        assertNull("no span, no traceparent", sent.header("traceparent"))
+        assertNull("no trace, no traceparent", sent.header("traceparent"))
     }
 
     /** A no-op report adapter, present only so a `TraceConfig` is in scope; storage is unconditional (no capture gate, ADR-002). */
@@ -90,12 +103,10 @@ class TracingInterceptorTest {
 
     @Test
     fun `captures request and response bodies as sensitive events when enabled`() = runTest {
-        val span = span()
-        val request = Request.Builder()
-            .url("https://graph.example.com/accounts")
-            .post("req-secret".toRequestBody(null))
-            .tag(Span::class.java, span)
-            .build()
+        val collector = SpanCollector()
+        val request = withContext(TraceConfig(listOf(captureDebug))) {
+            tagged(collector, Request.Builder().post("req-secret".toRequestBody(null)))
+        }
         val chain = mockk<Interceptor.Chain> {
             every { request() } returns request
             every { proceed(any()) } answers {
@@ -105,14 +116,135 @@ class TracingInterceptorTest {
             }
         }
 
-        withContext(TraceConfig(listOf(captureDebug))) {
-            TracingInterceptor(TracingInterceptor.Level.BODY).intercept(chain)
-        }
+        val body = TracingInterceptor(TracingInterceptor.Level.BODY).intercept(chain).use { it.body!!.string() }
 
-        val logs = span.events.filterIsInstance<LogEvent>()
+        assertEquals("the caller reads the body untouched", "resp-secret", body)
+        val logs = collector.httpSpan().events.filterIsInstance<LogEvent>()
         val sensitiveEvents = logs.filter { it.sensitive }
         assertTrue("request body captured", sensitiveEvents.any { it.message.contains("req-secret") })
         assertTrue("response body captured", sensitiveEvents.any { it.message.contains("resp-secret") })
         assertTrue("every body event is sensitive (never reported)", logs.filter { it.message.contains("secret") }.all { it.sensitive })
+    }
+
+    /**
+     * A request body that counts what it writes and refuses a second write when [oneShot] / [duplex] says so. It
+     * writes [length] bytes but declares [declaredLength] (`-1` = unknown, as a streamed body would).
+     */
+    private class CountingBody(
+        private val length: Long,
+        private val oneShot: Boolean = false,
+        private val duplex: Boolean = false,
+        private val declaredLength: Long = length,
+    ) : RequestBody() {
+        var written = 0L
+        override fun contentType(): MediaType? = null
+        override fun contentLength() = declaredLength
+        override fun isOneShot() = oneShot
+        override fun isDuplex() = duplex
+        override fun writeTo(sink: BufferedSink) {
+            check(!oneShot && !duplex) { "the snippet must never write a one-shot or duplex body" }
+            val chunk = ByteArray(8 * 1024) { 'a'.code.toByte() }
+            var left = length
+            while (left > 0) {
+                val n = minOf(left, chunk.size.toLong()).toInt()
+                sink.write(chunk, 0, n)
+                written += n
+                left -= n
+            }
+        }
+    }
+
+    private suspend fun bodyLogs(body: RequestBody, bodyLimit: Long = 1024): List<LogEvent> {
+        val collector = SpanCollector()
+        run(tagged(collector, Request.Builder().post(body)), code = 200, TracingInterceptor(TracingInterceptor.Level.BODY, bodyLimit))
+        return collector.httpSpan().events.filterIsInstance<LogEvent>().filter { it.message.startsWith("⇢ body") }
+    }
+
+    @Test
+    fun `BODY level never writes a request body whose declared length exceeds bodyLimit`() = runTest {
+        // Declared-length gate, not just the cap: okio stages a single large write (a ByteArray body) whole
+        // before any sink below it could stop it.
+        val upload = CountingBody(length = 16L * 1024 * 1024)
+
+        val snippet = bodyLogs(upload, bodyLimit = 1024).single().message
+
+        assertEquals("not written at all", 0L, upload.written)
+        assertEquals("⇢ body (body omitted, 16777216 bytes)", snippet)
+    }
+
+    @Test
+    fun `BODY level stops an unknown-length request body at bodyLimit`() = runTest {
+        val stream = CountingBody(length = 16L * 1024 * 1024, declaredLength = -1)
+
+        val snippet = bodyLogs(stream, bodyLimit = 1024).single().message
+
+        assertTrue("stopped at the cap, not the whole 16 MiB: wrote ${stream.written}", stream.written <= 64 * 1024)
+        assertEquals("exactly bodyLimit bytes of content, marked truncated", "⇢ body " + "a".repeat(1024) + "… (truncated)", snippet)
+    }
+
+    @Test
+    fun `BODY level omits a one-shot or duplex request body instead of consuming it`() = runTest {
+        assertEquals("⇢ body (one-shot body omitted)", bodyLogs(CountingBody(10, oneShot = true)).single().message)
+        assertEquals("⇢ body (duplex body omitted)", bodyLogs(CountingBody(10, duplex = true)).single().message)
+    }
+
+    @Test
+    fun `a body that fits is logged whole, with no truncation mark`() = runTest {
+        assertEquals("⇢ body " + "a".repeat(1024), bodyLogs(CountingBody(1024), bodyLimit = 1024).single().message)
+    }
+
+    @Test
+    fun `bodyLimit must not be negative`() {
+        assertThrows(IllegalArgumentException::class.java) { TracingInterceptor(TracingInterceptor.Level.BODY, bodyLimit = -1) }
+    }
+
+    /** Runs a BODY-level interceptor over a MockK'd chain answering [responseBody]; returns the caller's response. */
+    private suspend fun bodyResponse(collector: SpanCollector, responseBody: String, bodyLimit: Long = 1024): Response {
+        val request = tagged(collector)
+        val chain = mockk<Interceptor.Chain> {
+            every { request() } returns request
+            every { proceed(any()) } answers {
+                Response.Builder().request(request).protocol(Protocol.HTTP_1_1).code(200).message("ok")
+                    .body(responseBody.toResponseBody(null)).build()
+            }
+        }
+        return TracingInterceptor(TracingInterceptor.Level.BODY, bodyLimit).intercept(chain)
+    }
+
+    private fun SpanCollector.responseBodyLogs() =
+        httpSpan().events.filterIsInstance<LogEvent>().filter { it.message.startsWith("⇠ body") }.map { it.message }
+
+    @Test
+    fun `the response snippet is copied as the caller reads, leaving the body intact`() = runTest {
+        val collector = SpanCollector()
+        val full = "b".repeat(20 * 1024)
+
+        val read = bodyResponse(collector, full).use { it.body!!.string() }
+
+        assertEquals("the caller gets every byte", full, read)
+        assertEquals(listOf("⇠ body " + "b".repeat(1024) + "… (truncated, 20480 bytes)"), collector.responseBodyLogs())
+    }
+
+    @Test
+    fun `a response body the caller never reads logs no snippet`() = runTest {
+        val collector = SpanCollector()
+
+        bodyResponse(collector, "never read").close()
+
+        assertTrue(collector.responseBodyLogs().isEmpty())
+    }
+
+    @Test
+    fun `a response body closed part-way is marked partial only when provably so`() = runTest {
+        // 20 KiB with a Content-Length: one 4-byte read pulls a single segment, well short of the declared length.
+        val known = SpanCollector()
+        bodyResponse(known, "c".repeat(20 * 1024), bodyLimit = 32 * 1024).use { it.body!!.source().readUtf8(4) }
+        assertTrue(known.responseBodyLogs().single().endsWith("… (read partially)"))
+
+        // A converter that stops at the end of the JSON without reading EOF: every declared byte was seen, so no
+        // partial mark.
+        val whole = SpanCollector()
+        bodyResponse(whole, "{\"a\":1}").use { it.body!!.source().readUtf8(7) }
+        assertEquals(listOf("⇠ body {\"a\":1}"), whole.responseBodyLogs())
     }
 }

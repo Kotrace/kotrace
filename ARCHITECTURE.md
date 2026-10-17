@@ -218,6 +218,12 @@ the outcome; a consumer may still seed one by hand (`withContext(collector)` + i
 bespoke control. There is **no global registry** accumulating traces — that is what keeps memory flat and
 what makes kotrace's tail decision safe (§4): it buffers exactly one flow at a time.
 
+A hand-seeded collector can still end up holding **more than one tree** — two top-level spans under it, or a
+collector seeded inside a traced flow, whose spans are children of a span it does not hold. `reportTrace`
+walks every root (a parentless span, or one whose parent is not in the collector) into the one report, each
+record keeping its own `trace_id`/`parent_id`, and `renderTree` renders each root (ADR-026). Nothing is dropped
+because it is not under the first root.
+
 **The one process-global** (ADR-010). Per-*flow* state — the collector, the current span, the scope — is
 context-scoped and pure. **Config is not per-flow**: which sinks and policies a consumer runs is static and
 process-wide, so it lives in `Kotrace`, the install-once fan-out config. Every fan-out path resolves
@@ -413,11 +419,15 @@ omitted when empty) — the machine, PII-safe counterpart to the unredacted, `@U
 The core is pure Kotlin (`kotlinx-coroutines` only). Client/DB glue ships as opt-in modules so a Ktor or
 pure-JVM consumer drags neither:
 
-- **`kotrace-okhttp`** — `TracingCallFactory` opens the HTTP span at `newCall` **on the coroutine thread**
-  (where `currentThreadSpan()`/`currentThreadCollector()`/`currentThreadConfig()` still resolve) and tags it on the request;
-  `TracingInterceptor` reads the tag **on OkHttp's thread**, writes `traceparent`, and reflects
-  status/body back. The split exists because the interceptor cannot see the coroutine context — the tag is
-  the bridge. Captured bodies are logged as **`sensitive`** events.
+- **`kotrace-okhttp`** — `TracingCallFactory` captures the flow's trace context at `newCall` **on the coroutine
+  thread** (where `currentThreadSpan()`/`currentThreadCollector()`/`currentThreadConfig()` still resolve) as a
+  `TraceHandoff` and tags it on the request; `TracingInterceptor` reads the tag **on OkHttp's thread**, opens the
+  HTTP span **per execution** from it (a clone or retry gets its own span), writes `traceparent`, and reflects
+  status/body back while emitting under the flow's captured config override (ADR-023). The split exists because
+  the interceptor cannot see the coroutine context — the tag is the bridge, and it carries the whole context, not
+  only the parent span. Instrumentation never alters the call's response or exception. Captured bodies are
+  logged as **`sensitive`** events, bounded to `bodyLimit` bytes; a response body is copied as the caller reads
+  it (tee-on-read, never read ahead), and streaming and one-shot bodies are omitted (ADR-024).
 - **`kotrace-room`** — logs each query's SQL template (never the bound args) onto the active span, resolved
   via the `currentThreadSpan()` ThreadLocal (Room runs the suspend query under the caller's coroutine).
 
@@ -486,8 +496,13 @@ auto-roots and reports at its outcome (ADR-013), so the report boundary needs no
 `failureClassifier` (ADR-018/020). On **every** span it maps a returned value to `null` (success),
 `ReturnedFailure.CausedBy(throwable)` (span `ERROR` + canonical exception lineage), or
 `ReturnedFailure.ValueOnly` (span `ERROR`, no synthetic event/record). At the auto-root a classified failure
-supplies the default trace verdict by precedence — a `CausedBy(CancellationException)` → `CANCELLED`
-(mirroring a thrown escaping one), any other classification → `ERROR`, else `OK`. It is overridable per-call
+supplies the default trace verdict by precedence — a `CausedBy(CancellationException)` → `CANCELLED` only
+when the root's coroutine is itself cancelled (the same test as a thrown escaping one, ADR-022; a returned
+timeout is `ERROR`), any other classification → `ERROR`, else `OK`. **Cancellation vs failure (ADR-022):** a
+`CancellationException` means *cancellation* only while the running coroutine is no longer active; one seen while
+it is still active (an inner `withTimeout` expiring, a cancelled `Deferred` awaited) is a *failure*. A genuinely
+cancelled span is marked `ERROR` but records no exception event, so a failing sibling's cancelled neighbours
+never reach a crash sink as `JobCancellationException` birthplaces. It is overridable per-call
 (`span(failureClassifier = …) { }`), including a local opt-out `{ null }`. `span(returnedOutcome = …) { }`
 (ADR-016) remains for *overriding* that verdict at the auto-root
 (remap a status, force `OK`, or ride trace-level orphan failures up as `attached`, ADR-012) — an explicit

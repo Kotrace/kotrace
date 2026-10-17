@@ -3,6 +3,7 @@ package dev.kotrace
 import dev.kotrace.event.recordPropagatedException
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
 import java.security.SecureRandom
 
@@ -19,8 +20,10 @@ import java.security.SecureRandom
  *
  * **Auto-root (ADR-013).** A `span` opened with *neither* a current span *nor* a [SpanCollector] in context
  * owns the whole trace: it installs a collector, opens the root, runs [block], and calls [reportTrace] once
- * at the outcome. The **escaping** outcomes are core's: an escaping [CancellationException] →
- * [TraceStatus.CANCELLED], any other escaping throwable → [TraceStatus.ERROR] — the application throwable
+ * at the outcome. The **escaping** outcomes are core's: a **genuine cancellation** of the calling coroutine
+ * (a [CancellationException] with the coroutine no longer active) → [TraceStatus.CANCELLED], any other escaping
+ * throwable → [TraceStatus.ERROR] — including a `TimeoutCancellationException` escaping a `withTimeout` inside
+ * [block], which is a failure of the operation, not a cancellation of it (ADR-022). The application throwable is
  * always rethrown. On a **normal return** the trace's [TraceStatus] comes from the precedence chain below (an
  * explicit [returnedOutcome] wins; else the root's classified failure defaults the verdict; else [TraceStatus.OK]).
  * An explicit [returnedOutcome] can report a *returned* (not thrown) domain failure as `ERROR` and carry
@@ -29,8 +32,10 @@ import java.security.SecureRandom
  *
  * **Verdict precedence when auto-rooting on a normal return (ADR-018).** An explicit [returnedOutcome] (i.e.,
  * not the default) wins; otherwise the trace verdict comes from the **root's own classified failure**:
- * [ReturnedFailure.CausedBy] carrying a [CancellationException] → [TraceStatus.CANCELLED] (the same as a thrown
- * escaping one), any other classification → [TraceStatus.ERROR], else [TraceStatus.OK]. So a
+ * [ReturnedFailure.CausedBy] carrying a [CancellationException] → [TraceStatus.CANCELLED] only under the same
+ * genuine-cancellation test as a thrown one (ADR-022) — so a `Result.failure(TimeoutCancellationException)` from
+ * `runCatching { withTimeout { … } }` is `ERROR` — any other classification → [TraceStatus.ERROR], else
+ * [TraceStatus.OK]. So a
  * [failureClassifier] alone (no [returnedOutcome]) already reports a root-returned failure as `ERROR`.
  *
  * **`failureClassifier` sees `T` — do not discard the returned value.** The classifier is run on what [block]
@@ -47,7 +52,13 @@ import java.security.SecureRandom
  *
  * This is instrumentation, not error handling: [span] only observes and rethrows, so a caller may wrap
  * a body in it and still handle failures inside however it likes. ERROR propagates up the tree naturally
- * — the rethrown throwable passes through every enclosing [span], marking each ancestor.
+ * — the rethrown throwable passes through every enclosing [span], marking each ancestor. A span whose own
+ * coroutine is cancelled (a failing sibling, a cancelled caller) is marked ERROR but records **no** exception
+ * event: a cancellation is not a crash, so no sink receives a `JobCancellationException` birthplace (ADR-022).
+ * The test is on the throwable's **type**: blocking code that a cancellation interrupts and that surfaces it as
+ * something else — an `IOException("Canceled")`, a `ClosedByInterruptException` from `runInterruptible` — is
+ * still recorded as a failure, because telling it from a genuine crash raised while cancelling is not possible
+ * here. Rethrow such exceptions as a `CancellationException` if they should read as a cancellation.
  *
  * Make [returnedOutcome] **pure, fast and non-suspending**: it is report configuration on the traced
  * coroutine's critical path, not application logic — no side effects. A **non-fatal** throw from it is
@@ -94,7 +105,7 @@ suspend fun <T> span(
     // Non-auto-root: returnedOutcome is inert (only the auto-root consults it, ADR-016). This is a child, a
     // manual-boundary root, or an identified-but-uncollected span; the enclosing root or a manual reportTrace
     // owns the single report.
-    return executeSpan(
+    val exit = executeSpan(
         parent = spanContext?.span,
         collector = spanCollector,
         name = name,
@@ -103,16 +114,42 @@ suspend fun <T> span(
         scopeId = context[ScopeContext]?.scopeId,
         failureClassifier = failureClassifier,
         block = block,
-    ).value
+    )
+    return when (exit) {
+        is SpanExit.Completed -> exit.value
+        is SpanExit.Escaped -> throw exit.throwable
+    }
 }
 
-/** A normally completed span's value plus the classification needed only by its auto-root owner. */
-private class SpanCompletion<T>(val value: T, val classifiedFailure: ReturnedFailure?)
+/**
+ * How a span's block exited, with the genuine-cancellation verdict decided once, where the span first saw the
+ * outcome (ADR-022): the owner reads [cancelled] instead of re-checking a Job that may have been cancelled since —
+ * re-checking could flip a failure already recorded as ERROR to CANCELLED (a synchronous live adapter, another
+ * thread).
+ */
+private sealed interface SpanExit<out T> {
+    val cancelled: Boolean
+
+    /**
+     * A normal return: the value plus the classification needed only by the auto-root owner. [cancelled] is the
+     * verdict for a returned [ReturnedFailure.CausedBy].
+     */
+    class Completed<T>(val value: T, val classifiedFailure: ReturnedFailure?, override val cancelled: Boolean) :
+        SpanExit<T>
+
+    /**
+     * A thrown block: [throwable] exactly as it escaped, already recorded unless [cancelled]. The receiver must
+     * rethrow it — [span] for a non-auto-root span, [autoRootSpan] after reporting.
+     */
+    class Escaped(val throwable: Throwable, override val cancelled: Boolean) : SpanExit<Nothing>
+}
 
 /**
- * Opens, registers, runs and closes one span. The completion envelope keeps the root classifier's control-flow
- * result out of the persistent [Span] model while still carrying it to [autoRootSpan] without a second
- * invocation. A thrown block never produces a completion; it follows the unchanged record-and-rethrow path.
+ * Opens, registers, runs and closes one span, and returns how its block exited. The [SpanExit] keeps the root
+ * classifier's result and the cancellation verdict out of the persistent [Span] model while still carrying them
+ * to [autoRootSpan] without a second invocation or a second `isActive` check. A thrown block is recorded (unless
+ * it is a genuine cancellation) and **returned** as [SpanExit.Escaped], the span already ended; the caller
+ * rethrows it. A throw before the block runs (opening or registering the span) propagates as itself.
  */
 private suspend fun <T> executeSpan(
     parent: Span?,
@@ -123,7 +160,7 @@ private suspend fun <T> executeSpan(
     scopeId: String?,
     failureClassifier: (T) -> ReturnedFailure?,
     block: suspend () -> T,
-): SpanCompletion<T> {
+): SpanExit<T> {
     val opened = createSpan(parent, name, attributes, links, scopeId)
     collector?.add(opened)
     // Resolve the returned-failure classifier once (ADR-018/020): the per-call override if given, else the
@@ -138,7 +175,12 @@ private suspend fun <T> executeSpan(
         // A classified return marks ERROR; a CausedBy additionally records the throwable, while ValueOnly
         // deliberately emits no event (ADR-020). Runs only on a normal return; on a throw the catch owns it.
         val classifiedFailure = classifier?.let { classifyReturnedFailure(opened, it, value) }
-        SpanCompletion(value, classifiedFailure)
+        val causedBy = (classifiedFailure as? ReturnedFailure.CausedBy)?.throwable
+        // Decided once, before recording (ADR-022): a returned cancellation while this coroutine is itself
+        // cancelled mirrors a thrown one — not recorded — and the same verdict rides to the auto-root.
+        val cancelled = causedBy?.isCancellationOfCurrentCoroutine() == true
+        if (causedBy != null && !cancelled) recordReturnedFailure(opened, causedBy)
+        SpanExit.Completed(value, classifiedFailure, cancelled)
     } catch (t: Throwable) {
         // ERROR marks the whole failing path as the throwable rethrows through each enclosing span.
         // Which span is the *birthplace* is decided at read time by lineage key (ADR-015, see
@@ -146,6 +188,12 @@ private suspend fun <T> executeSpan(
         // share one canonical key even when coroutine stacktrace recovery copies `t` across each `withContext`
         // boundary, so the climb collapses to its deepest span.
         opened.markStatus(SpanStatus.ERROR)
+        // A genuine cancellation of this coroutine (a sibling failed, the caller was cancelled) is not a failure of
+        // this span: recording it would hand every crash sink a JobCancellationException "birthplace" per
+        // cancelled span (ADR-022). A CancellationException thrown while this coroutine is still active (an inner
+        // withTimeout expiring) is a failure, and is recorded like any other throwable below.
+        val cancelled = t.isCancellationOfCurrentCoroutine()
+        if (cancelled) return SpanExit.Escaped(t, cancelled = true)
         // Recording the throwable must never replace it: under strict-uninstalled (ADR-011)
         // resolvedThreadConfig can throw here, *before* the rethrow. Preserve the application throwable and
         // attach the failure as suppressed (ADR-013); a JVM-fatal failure still propagates. Record via the
@@ -157,7 +205,7 @@ private suspend fun <T> executeSpan(
             if (recordFailure.isFatalFault()) throw recordFailure
             t.alsoSuppress(recordFailure)
         }
-        throw t
+        SpanExit.Escaped(t, cancelled = false)
     } finally {
         opened.markEnd(System.nanoTime())
     }
@@ -172,6 +220,17 @@ private suspend fun <T> executeSpan(
 private val alwaysOkOutcome: (Any?) -> TraceOutcome = { TraceOutcome(TraceStatus.OK) }
 
 /**
+ * Whether this throwable is a **genuine cancellation of the running coroutine** (ADR-022): a
+ * [CancellationException] *and* the current coroutine is no longer active — a sibling failed, the caller was
+ * cancelled, an enclosing timeout fired. A [CancellationException] seen while the coroutine is still active was
+ * merely thrown *through* it — a `TimeoutCancellationException` escaping an inner `withTimeout`, the result of
+ * awaiting a `Deferred` that was cancelled — and is a failure of this operation, not a cancellation of it (the
+ * kotlinx.coroutines guidance: check `isActive` before treating a caught cancellation as your own).
+ */
+private suspend fun Throwable.isCancellationOfCurrentCoroutine(): Boolean =
+    this is CancellationException && !currentCoroutineContext().isActive
+
+/**
  * Sentinel default for [span]'s `failureClassifier` parameter, meaning "inherit the process classifier"
  * ([Kotrace.failureClassifier]). Non-capturing → JVM singleton, identity-compared (`===`); contravariance lets
  * this `(Any?) -> …` stand in for the `(T) -> …` parameter at every `T`. Resolution yields a *nullable*
@@ -183,12 +242,9 @@ private val InheritAmbient: FailureClassifier = { null }
  * Classifies a returned failure (ADR-018/020). Runs [classifier] on [value] under fault isolation
  * ([guardFailureClassifier] — a non-fatal classifier throw, including a classifier-*thrown*
  * [CancellationException], is contained as "no failure" and routed with [FaultPhase.FAILURE_CLASSIFIER]); a
- * non-null result marks the span [SpanStatus.ERROR] and is returned to the auto-root verdict. A
- * [ReturnedFailure.CausedBy] is additionally recorded through the propagation path (canonical lineage key,
- * so a returned failure's climb collapses to one birthplace, ADR-015); [ReturnedFailure.ValueOnly] emits no
- * event. A classifier that returns a `CausedBy(CancellationException)` is a failure like any other here — only
- * the auto-root verdict treats it specially (`CANCELLED`). Recording never fails a succeeding return: a
- * non-fatal record failure is contained, a JVM-fatal one rethrown.
+ * non-null result marks the span [SpanStatus.ERROR] and is returned to the caller, which records a
+ * [ReturnedFailure.CausedBy] through [recordReturnedFailure] unless it is a genuine cancellation (ADR-022);
+ * [ReturnedFailure.ValueOnly] emits no event.
  */
 private fun <T> classifyReturnedFailure(
     span: Span,
@@ -197,14 +253,21 @@ private fun <T> classifyReturnedFailure(
 ): ReturnedFailure? {
     val failure = guardFailureClassifier(::quietFaultHook) { classifier(value) } ?: return null
     span.markStatus(SpanStatus.ERROR)
-    val throwable = (failure as? ReturnedFailure.CausedBy)?.throwable ?: return failure
+    return failure
+}
+
+/**
+ * Records a returned [ReturnedFailure.CausedBy] throwable through the propagation path (canonical lineage key,
+ * so a returned failure's climb collapses to one birthplace, ADR-015). Recording never fails a succeeding
+ * return: a non-fatal record failure is contained, a JVM-fatal one rethrown.
+ */
+private fun recordReturnedFailure(span: Span, throwable: Throwable) {
     try {
         span.recordPropagatedException(throwable)
     } catch (recordFailure: Throwable) {
         if (recordFailure.isFatalFault()) throw recordFailure
         // contain: telemetry recording must never turn a returning operation into a throw
     }
-    return failure
 }
 
 /**
@@ -236,11 +299,13 @@ private fun reportAutoRoot(
  * The report's status on a **normal return** follows the precedence chain (ADR-018): an **explicit**
  * [returnedOutcome] (`!== alwaysOkOutcome`) wins and maps the returned value (a failure-as-value consumer maps
  * a returned domain failure to `ERROR` with attached orphans, ADR-016); otherwise the **root's own classified
- * failure** (carried by [SpanCompletion] from [classifyReturnedFailure]) defaults the verdict — a
- * [ReturnedFailure.CausedBy] carrying [CancellationException] → [TraceStatus.CANCELLED], any other
- * classification → [TraceStatus.ERROR]; otherwise [TraceStatus.OK]. The **escaping** outcomes are always core's,
- * never a mapper's: an escaping [CancellationException] → [TraceStatus.CANCELLED], any other escaping throwable
- * → [TraceStatus.ERROR], the throwable rethrown unchanged. [returnedOutcome] runs **exactly once**, on a normal
+ * failure** (carried by [SpanExit.Completed] from [classifyReturnedFailure]) defaults the verdict — a
+ * [ReturnedFailure.CausedBy] carrying [CancellationException] while this coroutine is itself cancelled →
+ * [TraceStatus.CANCELLED], any other classification → [TraceStatus.ERROR]; otherwise [TraceStatus.OK]. The
+ * **escaping** outcomes are always core's, never a mapper's: a genuine cancellation of this coroutine
+ * ([isCancellationOfCurrentCoroutine]) → [TraceStatus.CANCELLED], any other escaping throwable — a
+ * `TimeoutCancellationException` from an inner `withTimeout` included — → [TraceStatus.ERROR], the throwable
+ * rethrown unchanged (ADR-022). [returnedOutcome] runs **exactly once**, on a normal
  * return, and only here — never on a child, a manual-boundary root, or an identified-but-uncollected span.
  * Because it runs after [executeSpan]'s `finally` (root already ended), a mapper fault can neither flip the
  * root [SpanStatus] nor become its birthplace. Reports **after** the root has ended and **before** the
@@ -257,7 +322,7 @@ private suspend fun <T> autoRootSpan(
 ): T {
     val collector = SpanCollector()
     return withContext(collector) {
-        val completion = try {
+        val exit = try {
             executeSpan(
                 parent = null,
                 collector = collector,
@@ -269,28 +334,43 @@ private suspend fun <T> autoRootSpan(
                 block = block,
             )
         } catch (t: Throwable) {
-            // Escaping outcome is core's, not the mapper's: CancellationException → CANCELLED, else ERROR;
-            // report with the escaped throwable so a strict-mode report failure rides it as suppressed.
-            reportAutoRoot(collector, if (t is CancellationException) TraceStatus.CANCELLED else TraceStatus.ERROR, t)
-            throw t
+            // Thrown before the root's block ran (opening or registering it): no verdict was decided or acted on,
+            // so the live predicate is the only one.
+            reportEscaped(collector, t, cancelled = t.isCancellationOfCurrentCoroutine())
+        }
+        // Escaping outcome is core's, not the mapper's: a genuine cancellation of this coroutine → CANCELLED,
+        // anything else — a CancellationException escaping an inner withTimeout included — → ERROR (ADR-022).
+        // The root span already decided (and acted on) the verdict; re-checking the Job here could contradict it.
+        val completion = when (exit) {
+            is SpanExit.Completed -> exit
+            is SpanExit.Escaped -> reportEscaped(collector, exit.throwable, exit.cancelled)
         }
         // Normal return: the root has already ended (span's finally). Verdict precedence (ADR-018): an explicit
         // returnedOutcome wins; else the root's own classified failure supplies the default — a CausedBy
-        // CancellationException → CANCELLED (mirror of the escaping-cancellation case above), any other
-        // classification → ERROR; else OK. Read the root completion's result, never the general-purpose
-        // SpanStatus or the best-effort event timeline.
+        // CancellationException while this coroutine is itself cancelled → CANCELLED (mirror of the escaping case
+        // above; the verdict decided when it was classified — ADR-022), any other classification → ERROR; else OK.
+        // Read the root completion's
+        // result, never the general-purpose SpanStatus or the best-effort event timeline.
         val value = completion.value
         val classified = completion.classifiedFailure
-        val classifiedThrowable = (classified as? ReturnedFailure.CausedBy)?.throwable
         val outcome = when {
             returnedOutcome !== alwaysOkOutcome -> runReturnedOutcome(returnedOutcome, value)
-            classifiedThrowable is CancellationException -> TraceOutcome(TraceStatus.CANCELLED)
+            completion.cancelled -> TraceOutcome(TraceStatus.CANCELLED)
             classified != null -> TraceOutcome(TraceStatus.ERROR)
             else -> TraceOutcome(TraceStatus.OK)
         }
         reportAutoRoot(collector, outcome.status, escaped = null, attached = outcome.attached)
         value
     }
+}
+
+/**
+ * Reports an auto-root whose block escaped with [escaped] — [TraceStatus.CANCELLED] for a genuine cancellation,
+ * else [TraceStatus.ERROR] — then rethrows it unchanged; a strict-mode report failure rides it as suppressed.
+ */
+private fun reportEscaped(collector: SpanCollector, escaped: Throwable, cancelled: Boolean): Nothing {
+    reportAutoRoot(collector, if (cancelled) TraceStatus.CANCELLED else TraceStatus.ERROR, escaped)
+    throw escaped
 }
 
 /**
@@ -342,11 +422,28 @@ fun startSpan(name: String, attributes: Map<String, String> = emptyMap(), links:
     return opened
 }
 
-/** Closes a span opened by [startSpan], stamping its end, [status] and optional [error]. Mirrors OTel `span.end()`. */
+/**
+ * Closes a span opened by [startSpan] or [TraceHandoff.startSpan], stamping its end, [status] and optional
+ * [error]. Mirrors OTel `span.end()`.
+ *
+ * **Exactly once (ADR-023).** The first `end` wins: a later call — a retry reusing the span, a racing callback —
+ * is a no-op, so it can neither flip an ERROR to OK nor record [error] a second time.
+ *
+ * **Observe, never replace.** Recording [error] can itself fail (strict-uninstalled resolution, ADR-011); that
+ * telemetry failure is attached to [error] as suppressed instead of propagating, so the caller's own
+ * `throw error` still throws the application's throwable — the same precedence the suspend [span] applies
+ * (ADR-013). A JVM-fatal failure still propagates.
+ */
 @NonSuspendTracingBridge
 fun Span.end(status: SpanStatus = SpanStatus.OK, error: Throwable? = null) {
-    markCompleted(status, System.nanoTime()) // both fields in one atomic publish
-    if (error != null) this.recordPropagatedException(error) // ADR-015: canonical lineage key, collapses the climb
+    if (!tryComplete(status, System.nanoTime())) return // both fields in one atomic publish, first end wins
+    if (error == null) return
+    try {
+        recordPropagatedException(error) // ADR-015: canonical lineage key, collapses the climb
+    } catch (recordFailure: Throwable) {
+        if (recordFailure.isFatalFault()) throw recordFailure
+        error.alsoSuppress(recordFailure)
+    }
 }
 
 /**
@@ -359,7 +456,7 @@ fun Span.end(status: SpanStatus = SpanStatus.OK, error: Throwable? = null) {
  * [parent]: a link is a per-span statement, and its natural carrier is a trace root a caller opens with
  * links in hand.
  */
-private fun createSpan(
+internal fun createSpan(
     parent: Span?,
     name: String,
     attributes: Map<String, String>,

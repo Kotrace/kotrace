@@ -4,6 +4,8 @@ import dev.kotrace.event.ExceptionRecord
 import dev.kotrace.event.TraceRecord
 import dev.kotrace.event.addException
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runTest
@@ -166,16 +168,17 @@ class AutoRootReturnedOutcomeTest {
         assertEquals(TraceStatus.ERROR, report.statuses.single())
     }
 
-    @Test fun `an escaping CancellationException reports CANCELLED and does not call the mapper`() = runTest {
+    @Test fun `a cancelled caller reports CANCELLED and does not call the mapper`() = runTest {
         val report = CollectingReport()
         Kotrace.install(listOf(report))
         val calls = AtomicInteger(0)
-        val thrown = runCatching {
+        val job = launch {
             span<Int>("op", returnedOutcome = { calls.incrementAndGet(); TraceOutcome(TraceStatus.OK) }) {
-                throw CancellationException("cancelled")
+                awaitCancellation()
             }
-        }.exceptionOrNull()
-        assertTrue(thrown is CancellationException)
+        }
+        testScheduler.runCurrent()
+        job.cancelAndJoin()
         assertEquals(0, calls.get())
         assertEquals(TraceStatus.CANCELLED, report.statuses.single())
     }

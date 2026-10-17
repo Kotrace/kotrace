@@ -52,6 +52,30 @@ internal fun Throwable.alsoSuppress(failure: Throwable) {
     if (failure !== this) addSuppressed(failure)
 }
 
+/**
+ * Per-thread "a live fan-out is running here" flag (ADR-025). `internal` only so [liveFanOut] can inline; read it
+ * nowhere else.
+ */
+internal val liveFanOutRunning: ThreadLocal<Boolean> = ThreadLocal.withInitial { false }
+
+/**
+ * Runs one live fan-out ([block]: policies, record construction, `onLive`) unless one is already running on this
+ * thread (ADR-025). A live adapter that logs through kotrace — a Timber tree forwarding to `emitLog`, an adapter
+ * calling `span.log` — re-enters here from inside its own `onLive`; unguarded, that recursed until a fatal
+ * [StackOverflowError] reached the traced code. The nested emit is still **stored** on its span (the caller
+ * appends before fanning out) and still reaches the report path; it is only not fanned live a second time.
+ * Not routed to the fault hook: it is expected wiring, not a fault, and would fire on every forwarded log.
+ */
+internal inline fun liveFanOut(block: () -> Unit) {
+    if (liveFanOutRunning.get()) return
+    liveFanOutRunning.set(true)
+    try {
+        block()
+    } finally {
+        liveFanOutRunning.set(false)
+    }
+}
+
 /** Per-thread "a fault hook is running here" flag — the reentrancy guard (never a process-global boolean). */
 private val hookRunning = ThreadLocal.withInitial { false }
 

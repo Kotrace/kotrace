@@ -25,6 +25,9 @@ contract, so an OTel upgrade later is additive.
 - `TraceRecord` / `ReportAdapter` / `SpanCollector.reportTrace(status)` — fan a trace out at its end as one
   searchable record per log line + the birthplace throwable, each tagged `trace_id` / `span_id` /
   `parent_span_id`, to every `ReportAdapter` in the resolved `TraceConfig`. Backends group by any of the ids.
+  The status is `OK`, `ERROR` or `CANCELLED`. A `withTimeout` inside the span is `ERROR`; a `withTimeout` that
+  the caller wraps around a top-level span cancels it, so the trace is `CANCELLED` with no exception record
+  (ADR-022).
   The searchable counterpart to `renderTree`.
 - `Kotrace.install(adapters)` / `Kotrace.install { … }` — the **process-wide fan-out config** (ADR-010),
   installed once at startup (read-only after; a second installation throws; the provider overload resolves lazily
@@ -150,8 +153,8 @@ workload definitions, confidence intervals, limitations and reproduction command
 Read `Span.kt` and `SpanContext.kt` next for the data + propagation model. Tests in
 `src/test/kotlin/dev/kotrace/` double as usage examples (`TraceTreeTest` is the guided tour).
 
-For OkHttp, `kotrace-okhttp/` holds `TracingCallFactory` (tags the outgoing request with the active
-span, from the coroutine thread) + `TracingInterceptor` (reads the tag on OkHttp's thread and writes
+For OkHttp, `kotrace-okhttp/` holds `TracingCallFactory` (tags the outgoing request with the flow's trace
+context, from the coroutine thread) + `TracingInterceptor` (reads the tag on OkHttp's thread and writes
 `traceparent`). The split is deliberate — the interceptor cannot see the coroutine context. Wrap the
 client's `Call.Factory` with the factory and add the interceptor; both are inert with no active span.
 
@@ -179,9 +182,11 @@ println(collector.spans.renderTree())
 ## Using with OkHttp
 
 Two pieces, installed together on the client. `TracingInterceptor` writes the `traceparent`, but runs on
-OkHttp's own thread where the coroutine `SpanContext` is invisible — so `TracingCallFactory` first tags
-the request with the active span from the coroutine thread (at `newCall`), and the interceptor reads that
-tag. Both are inert without an active span, so wrap every client:
+OkHttp's own thread where the coroutine context is invisible — so `TracingCallFactory` first captures the
+flow's trace context (active span, collector, per-flow `TraceConfig`) on the coroutine thread at `newCall` and
+tags it on the request; the interceptor opens **one http span per execution** from that tag and emits under the
+flow's own config (ADR-023). A retry via `call.clone()` therefore gets its own span, and a telemetry fault never
+changes the call's response or exception. Both are inert without an active span, so wrap every client:
 
 ```kotlin
 import dev.kotrace.okhttp.TracingCallFactory
@@ -217,6 +222,15 @@ route template yourself:
 ```kotlin
 val calls = TracingCallFactory(http, spanName = { req -> "http ${req.method} ${routeTemplateOf(req)}" })  // e.g. /users/{id}
 ```
+
+**Body logging.** `TracingInterceptor(Level.BODY, bodyLimit = 8 * 1024)` logs request/response bodies as
+`sensitive` events (debug builds only). It is bounded and never changes the transport (ADR-024). A request body
+larger than `bodyLimit` is not written at all, and a smaller or streamed one only up to `bodyLimit + 1` bytes
+(the extra byte detects truncation) — except that an unknown-length body writing one large chunk has that chunk
+staged in memory once before the cap stops it. One-shot and duplex bodies are omitted rather than consumed. Nothing is read
+from a response before it is returned: the first `bodyLimit + 1` bytes are copied **as your code reads the
+body**, and the snippet is logged when you reach its end or close it. So a stream is never waited on, and a body
+you never read logs nothing.
 
 See `demo/…/Main.kt` for a full end-to-end run.
 
@@ -287,7 +301,7 @@ coroutine (same idea as OkHttp's request-tag bridge).
 | --- | --- | --- | --- |
 | `viewModelScope.launch`, suspend repo/usecase | yes | `span("…") { }` | ambient parent + collector flow with the context |
 | `withContext(Dispatchers.IO/Default)` hop | yes | `span { }` spans the hop | `SpanContext` is a `ThreadContextElement`, re-mirrored on the new thread |
-| Retrofit / OkHttp call | yes (call site) | `TracingCallFactory` + `TracingInterceptor`, call inside `span { }` | factory opens the http span on the coroutine thread; interceptor finishes it on OkHttp's thread via the request tag |
+| Retrofit / OkHttp call | yes (call site) | `TracingCallFactory` + `TracingInterceptor`, call inside `span { }` | factory captures the flow's context on the coroutine thread; interceptor opens and ends one http span per execution on OkHttp's thread via the request tag (ADR-023) |
 | Room suspend DAO query | yes | `db.tracing()` | `QueryCallback` reads `currentThreadSpan()` inline on Room's executor thread |
 | `CoroutineWorker.doWork()` | yes | `span { }` | it hands you a coroutine |
 | Non-suspend factory/interceptor invoked **inline on the coroutine thread** | no (but on that thread) | `startSpan()` / `Span.end()` (opt-in `@NonSuspendTracingBridge`) | the mirror is live inline — the one legitimate `startSpan` site (ADR-003) |

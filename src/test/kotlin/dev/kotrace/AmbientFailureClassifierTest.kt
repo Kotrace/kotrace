@@ -4,7 +4,10 @@ import dev.kotrace.event.ExceptionRecord
 import dev.kotrace.event.TraceRecord
 import dev.kotrace.event.exception
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.async
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.test.runTest
@@ -171,17 +174,31 @@ class AmbientFailureClassifierTest {
         assertSame("the throwable is on the span's timeline, like a thrown one", boom, op.exception)
     }
 
-    // --- Option D: a returned CancellationException mirrors a thrown one ---
+    // --- Option D (amended by ADR-022): a returned CancellationException mirrors a thrown one ---
 
-    @Test fun `a returned CancellationException reports CANCELLED and is still recorded`() = runTest {
+    @Test fun `a returned CancellationException while the coroutine is active is a failure - ERROR, still recorded`() = runTest {
         val report = CollectingReport()
         Kotrace.install(listOf(report), failureClassifier = resultClassifier)
         val cancel = CancellationException("cooperative")
 
         span("op") { Result.failure<Int>(cancel) }
 
-        assertEquals("returned cancellation mirrors a thrown one: CANCELLED, not ERROR", TraceStatus.CANCELLED, report.status)
-        assertSame("recorded like a thrown cancellation (a log sink sees it)", cancel, report.crashes.single().throwable)
+        assertEquals(
+            "mirrors a thrown one: the coroutine is still active, so this is a failure, not a cancellation (ADR-022)",
+            TraceStatus.ERROR,
+            report.status,
+        )
+        assertSame("recorded like any CausedBy throwable (a log sink sees it)", cancel, report.crashes.single().throwable)
+    }
+
+    @Test fun `runCatching around an expired withTimeout returns a failure the trace reports as ERROR`() = runTest {
+        val report = CollectingReport()
+        Kotrace.install(listOf(report), failureClassifier = resultClassifier)
+
+        val r: Result<Unit> = span("op") { runCatching { withTimeout(20) { delay(1_000) } } }
+
+        assertTrue(r.exceptionOrNull() is TimeoutCancellationException)
+        assertEquals("a returned timeout is not hidden as CANCELLED", TraceStatus.ERROR, report.status)
     }
 
     // --- Verdict precedence: explicit returnedOutcome wins ---

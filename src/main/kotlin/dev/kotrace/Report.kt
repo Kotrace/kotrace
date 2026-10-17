@@ -42,6 +42,12 @@ import java.util.IdentityHashMap
  * failure must not be silenced just because it is not the leaf-most throwable on a branch. They are
  * deliberately **not** written onto [Span.events]: doing so would let one flip the root into a birthplace and
  * shadow the tree's real crash origin. With no throwable to attach [attached] is empty and this is inert.
+ *
+ * **Every root is reported** (ADR-026). A collector normally holds one tree, but a manual one can hold several:
+ * two top-level `span {}` calls under the same collector (two traces), or a collector seeded *inside* a traced
+ * flow, whose spans are children of a span it does not hold. Each root — a span with no parent, or whose parent
+ * is not in this collector — is walked as its own tree, in start order, into the one report; each record keeps
+ * its own `trace_id` / `parent_id`. [attached] is keyed to the earliest root.
  */
 fun SpanCollector.reportTrace(status: TraceStatus, attached: List<Throwable> = emptyList()) {
     val config = resolvedThreadConfig()
@@ -49,8 +55,9 @@ fun SpanCollector.reportTrace(status: TraceStatus, attached: List<Throwable> = e
     if (adapters.isEmpty()) return
     val hook = config?.faultHook
     val all = spans
-    val root = all.firstOrNull { it.parentId == null } ?: return
-    val tree = TraceTreeIndex(all, root)
+    val roots = rootsOf(all)
+    if (roots.isEmpty()) return
+    val tree = TraceTreeIndex(all, roots)
 
     val entries = ArrayList<WalkEntry>()
     fun walk(span: Span) {
@@ -71,10 +78,11 @@ fun SpanCollector.reportTrace(status: TraceStatus, attached: List<Throwable> = e
         }
         tree.childrenOf(span).forEach(::walk)
     }
-    walk(root)
+    roots.forEach(::walk)
 
     if (attached.isNotEmpty()) {
         val now = System.nanoTime()
+        val root = roots.first()
         // Orphans are origins with no deeper copy — stamped BIRTHPLACE so the propagated gate never drops them.
         attached.forEach { entries += WalkEntry(root, ExceptionEvent(it, now), ExceptionOrigin.BIRTHPLACE) }
     }
@@ -89,6 +97,18 @@ fun SpanCollector.reportTrace(status: TraceStatus, attached: List<Throwable> = e
 }
 
 private class WalkEntry(val span: Span, val event: SpanEvent, val origin: ExceptionOrigin?)
+
+/**
+ * The roots of the forest in [all], earliest first (ADR-026): every span with no parent, **and** every span whose
+ * parent is not in [all] — the top of a subtree a nested manual collector recorded under someone else's span.
+ * Reading only the first `parentId == null` span silently dropped every other tree, and found nothing at all in
+ * a collector whose spans all hang off an outside parent.
+ */
+internal fun rootsOf(all: List<Span>): List<Span> {
+    if (all.size <= 1) return all
+    val ids = all.mapTo(HashSet(all.size)) { it.spanId }
+    return all.filter { it.parentId == null || it.parentId !in ids }.sortedBy { it.startNanos }
+}
 
 /**
  * Whether an event enters the failure **report** at all — the one declared statement of report membership.
@@ -140,7 +160,7 @@ private fun ReportAdapter.viewOf(entries: List<WalkEntry>): Sequence<TraceRecord
  * and smaller sibling sets merge into the largest. This avoids copying every accumulated key at each parent;
  * a trace without exceptions allocates no lineage sets.
  */
-internal class TraceTreeIndex(all: List<Span>, root: Span) {
+internal class TraceTreeIndex(all: List<Span>, roots: List<Span>) {
     private val childrenByParentId: Map<String, List<Span>> = indexChildren(all)
 
     private var birthplacesBySpan: IdentityHashMap<Span, List<ExceptionEvent>>? = null
@@ -153,7 +173,9 @@ internal class TraceTreeIndex(all: List<Span>, root: Span) {
     private val eventsBySpan = IdentityHashMap<Span, List<SpanEvent>>()
 
     init {
-        indexBirthplaces(root)
+        // Each root is an independent tree: lineage keys never merge across roots, so the same throwable seen
+        // under two roots is a birthplace in each.
+        roots.forEach { indexBirthplaces(it) }
     }
 
     /** Children of [parent], ordered by start — the tree edge is [Span.parentId] → [Span.spanId]. */
