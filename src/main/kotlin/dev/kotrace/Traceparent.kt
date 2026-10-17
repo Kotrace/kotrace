@@ -4,18 +4,13 @@ package dev.kotrace
 const val TRACEPARENT_HEADER = "traceparent"
 
 /**
- * The W3C `traceparent` value for this span: `version-traceid-spanid-flags`.
+ * The W3C `traceparent` value for this span, `version-traceid-spanid-flags`, by which a backend continues the trace
+ * with no OpenTelemetry dependency on either side. `flags = 01` marks it sampled.
  *
- * This one header is the whole client↔backend stitch: the backend continues the trace by reading it,
- * with **no** OpenTelemetry dependency on either side — the wire format is the contract, not the SDK.
- * `flags = 01` marks the trace sampled.
- *
- * The ids are validated against the W3C grammar — [Span.traceId] 32 and [Span.spanId] 16 lowercase hex chars,
- * neither all zeros — and an [IllegalArgumentException] is thrown otherwise, so a malformed header never goes
- * on the wire, where a backend would discard it or, worse, start a new trace. kotrace mints W3C ids, but a span
- * inherits its trace id from its parent, so a span opened under a hand-constructed [Span] can fail too. Callers
- * on an instrumentation path must not let that fail the operation: the OkHttp interceptor sends the request
- * without the header instead.
+ * Throws [IllegalArgumentException] unless [Span.traceId] is 32 and [Span.spanId] 16 lowercase hex chars, neither
+ * all zeros, so a malformed header never reaches the wire. kotrace mints valid ids, but a span inherits its trace
+ * id, so one opened under a hand-built [Span] can fail; instrumentation should then send no header rather than
+ * fail the operation.
  */
 fun Span.toTraceparent(sampled: Boolean = true): String {
     require(isW3cId(traceId, 32)) { "traceId is not a W3C trace-id (32 lowercase hex, not all zero): '$traceId'" }

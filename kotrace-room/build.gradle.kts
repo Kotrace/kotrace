@@ -57,6 +57,7 @@ dependencies {
 
     testImplementation(libs.room.runtime)
     testImplementation(libs.junit)
+    testImplementation(libs.mockk)
     testImplementation(libs.kotlinx.coroutines.test)
 }
 

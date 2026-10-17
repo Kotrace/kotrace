@@ -33,13 +33,12 @@ import org.jetbrains.kotlin.abi.tools.AbiTools
 import javax.inject.Inject
 
 /**
- * The binary-compatibility gate for an Android library, the one the Kotlin Gradle plugin's `abiValidation()` gives
- * the JVM modules. Under AGP 9's built-in Kotlin, `abiValidation()` registers its tasks but never collects the
- * compiled classes (KGP 2.4.10 and 2.4.20): its dump comes out empty, so a gate on it would pass any change.
+ * The binary-compatibility gate for an Android library. Under AGP 9's built-in Kotlin, KGP's `abiValidation()`
+ * never collects the compiled classes (2.4.10 and 2.4.20), so its dump is empty and would pass any change.
  *
- * This runs the same dumper (`org.jetbrains.kotlin:abi-tools` at the compiler's version, so the format matches the
- * JVM modules' dumps) over the release variant's classes, under the same task names and dump location:
- * `checkKotlinAbi` (run by `check`) compares against `api/<project>.api`, and `updateKotlinAbi` rewrites it.
+ * This runs the same dumper (`org.jetbrains.kotlin:abi-tools` at the compiler's version) over the release
+ * variant's classes, with the same task names and dump location: `checkKotlinAbi` (run by `check`) compares
+ * against `api/<project>.api`, and `updateKotlinAbi` rewrites it.
  *
  * Apply it next to `com.android.library`.
  */

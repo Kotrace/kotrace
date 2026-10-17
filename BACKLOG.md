@@ -72,9 +72,24 @@ flow — is fixed: birthplace now dedups per `ExceptionEvent` by a stable, fail-
   may route logs into a crash reporter. Related: ADR-020 (status-only classification), D01 (span-granular
   export), ADR-001 (symbol-only, PII-safe fields), ADR-015 (throwable lineage is unavailable here).
 
+- **D04 — a sink worker that uploads through the traced factory feeds itself.** A bridge captures no trace
+  context during a live fan-out (ADR-025), so an HTTP call made synchronously inside `onLive` is never traced.
+  But `LiveAdapter.onLive` tells a sink to hand records to a bounded worker, and a worker that uploads through
+  `TracingCallFactory` opens a root HTTP span per upload (a live adapter is installed). When uploads fail, each
+  failure is a fresh `ExceptionRecord` fanned back into the sink: offline, it uploads until its queue is full.
+  **Why now:** the fix costs nothing and is documented (`onLive` KDoc, README, ADR-025): the worker calls
+  through the plain `OkHttpClient`, which can be the app's own, and `OkHttpDispatcherBridgeTest` pins it.
+  **Cost:** a documented trap. **Trigger to repay:** a sink that can reach only the traced factory (a DI graph
+  or SDK that exposes nothing else). **Likely shape:** a scoped opt-out on the worker (`untraced { }`, a
+  per-thread flag `captureOrNull` honors, with a coroutine-context twin), or a request tag the factory honors.
+
 ### Tests
 
-_None._
+- **T01 — no test runs a real Room database.** `tracing()`'s wiring is unit-tested against a mocked
+  `RoomDatabase.Builder`: the SQL logger on a direct executor, the app's callback forwarded inline or on its
+  executor. That Room 2.8 then calls it inline on the query thread, under the caller's mirrored span, is Room's
+  behavior, read from its source and not exercised. **Trigger to repay:** a Room upgrade, or a report that SQL
+  lines stopped reaching spans. **Likely shape:** a Robolectric test with a KSP-generated in-memory database.
 
 ---
 

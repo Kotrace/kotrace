@@ -3,74 +3,48 @@ package dev.kotrace.event
 import dev.kotrace.Span
 import dev.kotrace.TraceLink
 import dev.kotrace.UnredactedTraceRead
-import dev.kotrace.isFatalFault
+import dev.kotrace.isJvmFatal
 import dev.kotrace.resolvedThreadConfig
 import java.util.Collections
 import java.util.IdentityHashMap
 
 /**
- * The birthplace throwable as a timeline event — the crash cause, ordered among the span's log lines.
- * Carries the raw [throwable] (not stringified attributes): a crash reporter needs the live object for
- * symbolication and grouping. It has no attributes, so a [dev.kotrace.TracePolicy] filtering on them leaves it alone;
- * only a policy that explicitly inspects an [ExceptionEvent] in [dev.kotrace.TracePolicy.acceptsEvent] can drop it.
+ * A throwable on a span's timeline, ordered among its log lines. It carries the raw [throwable], which a crash
+ * reporter needs for symbolication and grouping, and no attributes, so only a policy that inspects it in
+ * [dev.kotrace.TracePolicy.acceptsEvent] can drop it.
  */
 class ExceptionEvent internal constructor(
     val throwable: Throwable,
     override val atNanos: Long,
     /**
-     * Stable **lineage key** for report/render dedup (ADR-015). Birthplace selection collapses events that
-     * share a key to the deepest span carrying it, so one failure climbing the tree reports once. The key is
-     * an object compared by **identity** (see [dev.kotrace.TraceTreeIndex.birthplaceExceptionsOf]).
-     *
-     * Defaults to a **fresh, distinct** identity: a consumer-recorded event (public [addException]) is its own
-     * lineage and is never deduped away. Only the internal propagation recorder ([recordPropagatedException])
-     * passes the canonical [lineageKeyOf] key, so a *climb* — the same failure re-recorded on each enclosing
-     * span — collapses. `internal` on both the constructor and this property keeps the key out of the public
-     * API: an event can only enter a span's timeline through a verb (ADR-002/emit), and [dev.kotrace.Span.events]
-     * is read-only, so no consumer can construct or inject one with a chosen key.
+     * The identity-compared key the report dedups a climb by (ADR-015): events sharing it collapse to the deepest
+     * span carrying it. A fresh identity by default, so an exception a consumer records is never deduped; only
+     * [recordPropagatedException] passes the canonical [lineageKeyOf]. Internal, so no consumer can choose one.
      */
     internal val lineageKey: Any = Any(),
 ) : SpanEvent
 
 /**
- * The exact class name of the artificial **boundary** frame kotlinx.coroutines splices into a
- * stacktrace-recovery copy as it crosses a `withContext` boundary (verified against 1.11.0). We match the
- * boundary frame **specifically** — not `_COROUTINE._CREATION` (the debug creation-stack frame) nor any other
- * `_COROUTINE*` frame — because only a boundary crossing evidences a recovery copy; a creation frame appears
- * on ordinary exceptions built inside a coroutine. Narrower matching means fewer false positives (a false
- * positive would drop an escaping failure — the B01 direction).
+ * The artificial frame kotlinx.coroutines splices into a stacktrace-recovery copy at a `withContext` boundary
+ * (checked against 1.11.0). Only this frame evidences a copy; `_COROUTINE._CREATION` also appears on ordinary
+ * exceptions built inside a coroutine.
  */
 private const val COROUTINE_BOUNDARY_FRAME = "_COROUTINE._BOUNDARY"
 
-/** Legacy (pre-`_COROUTINE`) boundary marker: the class name of the `…(Coroutine boundary)…` artificial frame. */
+/** The legacy boundary marker, from before the `_COROUTINE` frames. */
 private const val COROUTINE_BOUNDARY_LEGACY = "Coroutine boundary"
 
 /** Bounds the cause walk so a pathological chain can never make [lineageKeyOf] loop long. */
 private const val MAX_RECOVERY_DEPTH = 100
 
 /**
- * The **canonical object** whose identity is [throwable]'s lineage key (ADR-015). A single local cause walk,
- * no comparison against anything deeper:
+ * The object whose identity is [throwable]'s lineage key (ADR-015): walk down [Throwable.cause] while the current
+ * throwable is a recognized stacktrace-recovery copy of it, and stop at the first that is not. Every boundary's
+ * copy thus resolves to the same original. Anything not provably a copy, such as `throw B(cause = A)`, keeps its
+ * own identity (**fail open**): a duplicate record at worst, never a dropped failure.
  *
- * 1. Start at [throwable].
- * 2. While the current object is a **recognized coroutine stacktrace-recovery wrapper** — *its own* stack
- *    trace carries the recovery artificial frame **and** its direct [Throwable.cause] is of the **same**
- *    runtime class — step to that cause. (The wrapper carries the frame; the original underneath generally
- *    does not.)
- * 3. Stop at the first object that is not a recognized wrapper; its identity is the key.
- *
- * This collapses the right things and nothing else. Recovery **off** (or a non-copyable throwable): the same
- * instance is observed at every boundary, step 2 never fires, one identity → one lineage. Recovery **on**:
- * every boundary's fresh copy resolves down its recovery chain to the *same* original → one lineage. Anything
- * not *provably* a recovery wrapper — including a semantic `cause` such as `throw B(cause = A)` — is left as
- * its own identity (**fail open**): duplicate records at worst, the escaping failure never dropped. Identity
- * cycle detection and [MAX_RECOVERY_DEPTH] keep the walk finite.
- *
- * **Total by contract.** [Throwable.cause] / [Throwable.message] / [Throwable.stackTrace] are all overridable,
- * so a hostile throwable can throw from any of them. This must never propagate: the internal recorder runs on
- * the failure path — including [dev.kotrace.end], which (unlike the suspend `span` catch) has no strict-mode
- * guard around it. A non-fatal accessor throw is swallowed, and we fail to open on the last object safely held;
- * only a JVM-fatal fault is rethrown.
+ * **Total.** `cause`, `message` and `stackTrace` are overridable and can throw; this runs on the failure path,
+ * including [dev.kotrace.end], so a non-fatal accessor throw ends the walk at the last object held.
  */
 internal fun lineageKeyOf(throwable: Throwable): Any {
     var current: Throwable = throwable
@@ -84,29 +58,16 @@ internal fun lineageKeyOf(throwable: Throwable): Any {
             depth++
         }
     } catch (fault: Throwable) {
-        if (fault.isFatalFault()) throw fault
-        // A hostile cause/message/stackTrace accessor threw — fail open on the last object safely held.
+        if (fault.isJvmFatal()) throw fault
     }
     return current
 }
 
 /**
- * Whether this throwable is a coroutine stacktrace-recovery copy of [cause] — see [lineageKeyOf]. Three
- * conjuncts, deliberately biased to **false negatives** (a missed copy costs only a duplicate record; a false
- * positive would drop an escaping failure — the B01 direction):
- *
- * 1. *its own* stack trace carries a coroutine **boundary** artificial frame ([COROUTINE_BOUNDARY_FRAME] /
- *    legacy marker) — spliced in as the copy crosses a `withContext`; the original underneath does not;
- * 2. the direct [Throwable.cause] is of the **same runtime class** — recovery copies the class;
- * 3. the copy carries the same **message** as that cause — recovery copies the message.
- *
- * The message conjunct keeps a *same-class semantic* wrap — `throw Foo(newMessage, cause = A)` — from being
- * mistaken for a recovery copy and collapsing the escaping failure into `A`. (A different-class wrap is already
- * excluded by conjunct 2.) It is deliberately strict in the safe direction: a copy made through a cause-only
- * constructor may carry the cause's `toString()` rather than its `message` and so fail conjunct 3 — that only
- * costs a duplicate record (fail open), never a dropped failure. These are strong heuristics, not proof:
- * `stackTrace` is publicly mutable, so a caller *could* forge a boundary frame; that residual is unavoidable
- * and accepted (ADR-015).
+ * Whether this is a coroutine stacktrace-recovery copy of [cause]: the same class and message, and a boundary
+ * frame in its own stack trace. Biased to false negatives, which cost a duplicate record; a false positive would
+ * drop an escaping failure. The message check keeps a same-class semantic wrap (`throw Foo(msg, cause = A)`) from
+ * collapsing into `A`. A forged boundary frame could fool it; that residual is accepted (ADR-015).
  */
 private fun Throwable.isRecoveryWrapperOf(cause: Throwable): Boolean =
     javaClass == cause.javaClass &&
@@ -114,24 +75,19 @@ private fun Throwable.isRecoveryWrapperOf(cause: Throwable): Boolean =
         stackTrace.any { it.className == COROUTINE_BOUNDARY_FRAME || it.className.contains(COROUTINE_BOUNDARY_LEGACY) }
 
 /**
- * Whether an emitted [ExceptionRecord] is the failure's **origin** or a **copy** re-recorded as it climbed
- * the tree (ADR-019). The report classifies every exception record it emits ([BIRTHPLACE] = deepest span
- * carrying the lineage, [PROPAGATED] = an ancestor copy); the **live** path emits an exception before the tree
- * exists, so birthplace cannot be known there and a live record carries `origin = null` (unclassified).
+ * Whether a reported [ExceptionRecord] is the failure's **origin** ([BIRTHPLACE], the deepest span carrying it) or
+ * a **copy** re-recorded on an ancestor as it climbed ([PROPAGATED]) (ADR-019). A live record is unclassified.
  */
 enum class ExceptionOrigin { BIRTHPLACE, PROPAGATED }
 
 /**
- * The crash record — identity + the birthplace [throwable]. Synthesized from an [ExceptionEvent] at
- * fan-out; it carries no attributes, so a policy filtering on them keeps it by default — only a policy that
- * covers exceptions ([dev.kotrace.TracePolicy.acceptsEvent]) can drop the crash cause.
+ * The crash record: identity plus the raw [throwable]. It carries no attributes, so only a policy that covers
+ * exceptions ([dev.kotrace.TracePolicy.acceptsEvent]) can drop it.
  *
- * Two-sink PII split (see [dev.kotrace.Span]'s invariant): the raw [throwable] — the one field allowed to
- * carry user data — must go **only** to a crash reporter, never to the general [toJson] log path (which
- * renders the class name only). An adapter routing it there **must stamp [traceId] as a searchable key on
- * the crash report** (e.g., Crashlytics `setCustomKey("trace_id", traceId)` before `recordException`);
- * `trace_id` is the sole join key between the two sinks. Without it, operations can see *that* a trace
- * failed in the log store but cannot pull its detail from the crash reporter.
+ * The [throwable] is the one field allowed to carry user data (see [dev.kotrace.Span]), so it goes **only** to a
+ * crash reporter, never to the [toJson] log path. An adapter routing it there **must stamp [traceId] as a
+ * searchable key on the crash report** (Crashlytics `setCustomKey("trace_id", traceId)`): it is the sole join key
+ * between the log store and the crash reporter.
  */
 data class ExceptionRecord(
     override val traceId: String?,
@@ -144,63 +100,42 @@ data class ExceptionRecord(
     override val links: List<TraceLink>,
     val throwable: Throwable,
     /**
-     * Birthplace-vs-propagated classification (ADR-019). `null` on a **live** record (unclassified — the tree
-     * is incomplete when it is emitted). On a **report** record it is [ExceptionOrigin.BIRTHPLACE] or
-     * [ExceptionOrigin.PROPAGATED]; the default report view emits only the birthplaces (a crash sink stays
-     * one-per-lineage-per-branch), a `acceptsPropagatedException` adapter also receives the propagated copies.
+     * `null` on a live record, emitted before the tree is complete (ADR-019). On a report record,
+     * [ExceptionOrigin.BIRTHPLACE] or [ExceptionOrigin.PROPAGATED]; by default an adapter receives only the
+     * birthplaces, one with `acceptsPropagatedException` also the copies.
      */
     val origin: ExceptionOrigin? = null,
 ) : TraceRecord
 
 /**
- * Records the birthplace [cause] as an [ExceptionEvent] on this span's timeline, and — like [log]/[addNamed]
- * — offers it to each live adapter as it happens, so a debug live watch sees a crash the moment it is thrown
- * rather than only at report fan-out ([dev.kotrace.reportTrace]).
+ * Records [cause] on this span's timeline and offers it to each live adapter as it happens, so a live watch sees a
+ * crash when it is thrown. Like every event verb it appends unconditionally (ADR-002), so a layer-filtered trace
+ * never loses its crash; a policy keeps it by default.
  *
- * Like every event verb it appends unconditionally (there is no capture gate — ADR-002); a layer-filtered
- * trace must never lose its crash. A live adapter then sees it iff its policy [dev.kotrace.accepts] the
- * [ExceptionEvent], which by default keeps it (a crash carries no `acceptsSpan`/sensitive gate, only the
- * opt-in [dev.kotrace.TracePolicy.acceptsEvent]). On the report path the appended event reaches the **default**
- * view once, at the birthplace ([dev.kotrace.reportTrace]); an [dev.kotrace.TracePolicy.acceptsPropagatedException]
- * adapter also sees the ancestor copies, origin-marked (ADR-019).
+ * A throwable that escapes [dev.kotrace.span] is re-recorded on every enclosing span, so a live watch sees one line
+ * per ancestor, deepest first. By default the report keeps only the birthplace (ADR-019).
  *
- * Note the throwable climbs the tree: it is re-recorded on every enclosing span as it rethrows
- * ([dev.kotrace.span]), so a live watch sees one line per ancestor — deepest (birthplace) first. The **default**
- * report view dedups that to the single birthplace record (an opt-in view keeps the whole marked climb); live
- * deliberately does not, showing the propagation trail.
+ * [info] merges over the span's [dev.kotrace.Span.info] onto the live [ExceptionRecord.info] only, such as a marker
+ * kotrace does not interpret (ADR-010); the event itself holds none, so the report is unaffected.
  *
- * [info] is optional record-level metadata (ADR-010): it merges over the span's [dev.kotrace.Span.info] onto
- * the emitted [ExceptionRecord.info] **without** touching the [ExceptionEvent], which stays object-only (a
- * throwable, no attribute bag — ADR-005). A consumer uses it to carry an emit marker (an "explicit report"
- * flag, a user-report id) that kotrace does not interpret. It rides the *live* record only — the event holds
- * no info, so the report path (which rebuilds records from the event) is unaffected.
- *
- * This is the **public** verb: each call is its **own lineage** (a fresh [ExceptionEvent.lineageKey]), so an
- * exception a consumer records explicitly is never deduped against another (ADR-015). kotrace's own *climb*
- * re-recording goes through the internal [recordPropagatedException] instead, which stamps the canonical key.
+ * Each call is its **own lineage**, never deduped against another (ADR-015).
  */
 fun Span.addException(cause: Throwable, info: Map<String, String> = emptyMap()) {
     emit(ExceptionEvent(cause, System.nanoTime()), resolvedThreadConfig(), info)
 }
 
 /**
- * Records a **climbing** throwable (ADR-015): the internal counterpart of [addException] used by the
- * [dev.kotrace.span]
- * catch and [dev.kotrace.end] as a failure propagates up the tree. It stamps the event with the *canonical*
- * [lineageKeyOf] the throwable, so the same failure re-recorded on every enclosing span shares one key and
- * report/render collapse it to its deepest birthplace — surviving the coroutine stacktrace-recovery copy that
- * makes the climbing object a different instance at each boundary.
+ * Records a **climbing** throwable with its canonical [lineageKeyOf], so every enclosing span's record of one
+ * failure shares a key and the report collapses it to its birthplace (ADR-015).
  */
 internal fun Span.recordPropagatedException(cause: Throwable) {
     emit(ExceptionEvent(cause, System.nanoTime(), lineageKeyOf(cause)), resolvedThreadConfig())
 }
 
 /**
- * The **first** throwable still on this span's timeline, if any — the first [ExceptionEvent] on it. A span past
- * [Span.MAX_EVENTS] that holds nothing but exceptions has discarded its oldest ones (ADR-029). On the
- * span where a failure was born that is its birthplace throwable; on an ancestor it climbed through, it is the
- * propagated copy (ADR-019). The report marks which is which ([ExceptionRecord.origin]); this accessor does not.
- * Unredacted ([UnredactedTraceRead]): the raw throwable, message included.
+ * The first throwable still on this span's timeline, if any: its birthplace throwable where the failure was born,
+ * a propagated copy on an ancestor (ADR-019). A span past [Span.MAX_EVENTS] holding only exceptions has discarded
+ * its oldest ones (ADR-029). Unredacted ([UnredactedTraceRead]): the raw throwable, message included.
  */
 @UnredactedTraceRead
 val Span.exception: Throwable?

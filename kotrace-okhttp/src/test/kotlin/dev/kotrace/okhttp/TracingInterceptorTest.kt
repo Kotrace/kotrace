@@ -13,6 +13,7 @@ import dev.kotrace.TraceConfig
 import dev.kotrace.TraceHandoff
 import dev.kotrace.TracePolicy
 import dev.kotrace.TraceStatus
+import dev.kotrace.event.ExceptionEvent
 import dev.kotrace.event.LogEvent
 import dev.kotrace.event.SpanEvent
 import dev.kotrace.event.TraceRecord
@@ -21,6 +22,7 @@ import io.mockk.mockk
 import io.mockk.slot
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withContext
+import okhttp3.Call
 import okhttp3.Interceptor
 import okhttp3.MediaType
 import okhttp3.Protocol
@@ -30,11 +32,14 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
 import okhttp3.ResponseBody.Companion.toResponseBody
 import okio.BufferedSink
+import okio.Timeout
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.io.IOException
+import java.util.concurrent.TimeUnit
 
 /**
  * Proves the interceptor opens the HTTP span from the factory's tag, puts a spec-correct `traceparent` for
@@ -135,10 +140,63 @@ class TracingInterceptorTest {
     }
 
     @Test
+    fun `a JVM-fatal error from a breadcrumb still propagates`() = runTest {
+        val fatal = object : dev.kotrace.LiveAdapter {
+            override val policy = object : TracePolicy {
+                override val acceptsSensitive = true
+            }
+            override fun onLive(record: TraceRecord): Unit = throw NoClassDefFoundError("gone")
+        }
+        val handoff = withContext(SpanCollector() + TraceConfig(listOf(fatal))) { TraceHandoff.captureOrNull()!! }
+        val request = Request.Builder().url("https://graph.example.com/accounts")
+            .tag(HttpTrace::class.java, HttpTrace(handoff, "http GET", emptyMap())).build()
+
+        val thrown = runCatching { run(request, code = 200) }.exceptionOrNull()
+
+        assertTrue("the fatal error is not contained", thrown is NoClassDefFoundError)
+    }
+
+    @Test
     fun `a request with no tag passes through without a header`() {
         val sent = run(Request.Builder().url("https://graph.example.com/accounts").build(), code = 200)
 
         assertNull("no trace, no traceparent", sent.header("traceparent"))
+    }
+
+    /** Drives the interceptor against a call OkHttp canceled mid-flight, whose call-timeout budget is [callTimeoutNanos]. */
+    private fun runCanceled(request: Request, callTimeoutNanos: Long): Throwable? {
+        val canceledCall = mockk<Call> {
+            every { isCanceled() } returns true
+            every { timeout() } returns Timeout().timeout(callTimeoutNanos, TimeUnit.NANOSECONDS)
+        }
+        val chain = mockk<Interceptor.Chain> {
+            every { request() } returns request
+            every { call() } returns canceledCall
+            every { proceed(any()) } throws IOException("Canceled")
+        }
+        return runCatching { TracingInterceptor().intercept(chain) }.exceptionOrNull()
+    }
+
+    @Test
+    fun `a call its caller canceled records no exception, and says so in http outcome`() = runTest {
+        val collector = SpanCollector()
+        val thrown = runCanceled(tagged(collector), callTimeoutNanos = 0) // no callTimeout: the caller canceled it
+
+        assertTrue("the call's own exception still reaches the caller", thrown is IOException)
+        val span = collector.httpSpan()
+        assertEquals(SpanStatus.ERROR, span.status)
+        assertTrue("a cancellation is not a crash", span.events.none { it is ExceptionEvent })
+        assertEquals("canceled", span.info["http.outcome"])
+    }
+
+    @Test
+    fun `a call whose callTimeout fired records the exception, and says so in http outcome`() = runTest {
+        val collector = SpanCollector()
+        runCanceled(tagged(collector), callTimeoutNanos = 1) // a budget already spent: the timeout canceled it
+
+        val span = collector.httpSpan()
+        assertTrue("a timeout is a failure", span.events.any { it is ExceptionEvent })
+        assertEquals("call_timeout", span.info["http.outcome"])
     }
 
     /** A no-op report adapter, present only so a `TraceConfig` is in scope; storage is unconditional (no capture gate, ADR-002). */

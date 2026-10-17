@@ -1,17 +1,10 @@
 package dev.kotrace
 
 /**
- * The terminal verdict of a whole trace, handed to a [ReportAdapter] at [reportTrace]. It is the caller's
- * to supply; the auto-root boundary (ADR-013) derives it from the block's **completion** — a normal return
- * is [OK], a genuine cancellation of the root's coroutine (an escaping `CancellationException` with that
- * coroutine no longer active) is [CANCELLED], any other escaping throwable is [ERROR] — a
- * `TimeoutCancellationException` from a `withTimeout` inside the root included, since a timeout is a failure of
- * the operation (ADR-022) — not
- * from the root [SpanStatus], which is binary ([OK]/[ERROR]) and cannot by itself distinguish [CANCELLED]
- * from [ERROR]. Distinct from [SpanStatus] on purpose: that is one node's live status, this is the trace's
- * completion outcome. Values are SCREAMING_SNAKE to match [SpanStatus]; the shared [OK] / [ERROR] read
- * identically across both. The separate type holds outcomes a single span cannot express: [CANCELLED] now,
- * a future `PARTIAL` once it has a producer — neither widening [SpanStatus].
+ * The verdict of a whole trace, handed to a [ReportAdapter] by [reportTrace]. The auto-root (ADR-013) derives it
+ * from how the block completed: a normal return is [OK], a genuine cancellation of the root's coroutine is
+ * [CANCELLED], and any other throwable is [ERROR], a timeout inside the root included (ADR-022). It is separate
+ * from the binary [SpanStatus] because a trace has outcomes a single span cannot express.
  *
  * **Where the timeout sits decides the verdict.** `span("load") { withTimeout(5_000) { … } }` is [ERROR]: the
  * timeout fails the operation inside the span, and the `TimeoutCancellationException` is reported as its

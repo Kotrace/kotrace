@@ -5,21 +5,17 @@ import dev.kotrace.TraceLink
 import java.util.Locale
 
 /**
- * One flat, adapter-ready line lifted off a [dev.kotrace.Span] — the unit fanned out to a [dev.kotrace.TraceAdapter]. The
- * identity fields ([traceId] / [spanId] / [parentId] / [operation]) are the searchable join keys that a
- * flattened line carries but a raw [SpanEvent] does not; a backend rebuilds the tree from them.
+ * One flat line lifted off a [dev.kotrace.Span], the unit fanned out to a [dev.kotrace.TraceAdapter]. Unlike a
+ * raw [SpanEvent] it carries the identity fields ([traceId] / [spanId] / [parentId] / [operation]), the join keys a
+ * backend rebuilds the tree from.
  *
- * Sealed to three kinds, one per [SpanEvent] kind a span produces: a [LogRecord] (breadcrumb), a
- * [NamedRecord] (named/analytics event), and an [ExceptionRecord] (the crash, from an [ExceptionEvent] — carried
- * with an [ExceptionOrigin] on the report path; a default view keeps only the birthplace, gated on
- * [dev.kotrace.TracePolicy.acceptsPropagatedException] and [dev.kotrace.TracePolicy.acceptsEvent], ADR-019).
+ * One kind per [SpanEvent] kind: a [LogRecord], a [NamedRecord], and an [ExceptionRecord], which the report marks
+ * with an [ExceptionOrigin] (ADR-019).
  */
 sealed interface TraceRecord {
     /**
-     * The owning span's trace id — a searchable join key. **Nullable**: a span-less emit
-     * ([emitLog]/[emitNamed]/[emitException], ADR-010) has no trace, so its record carries a null
-     * [traceId] (and [spanId] / [operation]); its correlation, if any, rides [scopeId] instead. A record
-     * lifted off a real [Span] always has these set.
+     * The owning span's trace id. Null, like [spanId] and [operation], on a span-less emit
+     * ([emitLog]/[emitNamed]/[emitException], ADR-010), which correlates through [scopeId] instead.
      */
     val traceId: String?
     val spanId: String?
@@ -28,43 +24,29 @@ sealed interface TraceRecord {
     val atNanos: Long
 
     /**
-     * The correlation umbrella above [traceId] (`scope ⊇ trace ⊇ span`, ADR-010) — the ambient
-     * [dev.kotrace.withScope] id active when this record was emitted, or null outside any scope. A **plain
-     * correlation key**: never subject to duration, outcome, the report path, or waterfall rendering — those
-     * are trace semantics. A span opened inside a scope stamps it alongside [traceId]; a span-less emit
-     * inside a scope carries it alone. Rendered by [toJson] only when non-null (back-compat).
+     * The [dev.kotrace.withScope] id active when this record was emitted, or null (ADR-010): a correlation key
+     * above [traceId] (`scope ⊇ trace ⊇ span`), with no trace semantics.
      */
     val scopeId: String?
 
     /**
-     * The owning span's late **emitted info** ([dev.kotrace.Span.info]) — a result value like `http.status`,
-     * stamped onto every record lifted off that span. Distinct from a record's own [AttributedRecord.attributes]
-     * (event attributes): [info] is span-scoped and never a policy filter key (ADR-001). Best-effort on a live
-     * record (whatever was stamped by emit time), final on a report record (span complete).
+     * The owning span's [dev.kotrace.Span.info] (`http.status`), never a filter key (ADR-001). Best-effort on a
+     * live record, final on a report record.
      */
     val info: Map<String, String>
 
-    /**
-     * The owning span's birth-set **cross-trace links** ([dev.kotrace.Span.links]) — references to other
-     * traces, stamped onto every record lifted off that span (span-scoped, the same treatment as [info]).
-     * Empty for a span with no links. See [TraceLink] for why a link is [TraceLink.traceId] only.
-     */
+    /** The owning span's cross-trace [dev.kotrace.Span.links]; empty when it has none. */
     val links: List<TraceLink>
 }
 
-/**
- * A record carrying free-form [attributes] — the flattened counterpart of [AttributedEvent], shared by
- * [LogRecord] and [NamedRecord]. [ExceptionRecord] is deliberately not one: its `Throwable` is its data.
- */
+/** A record carrying free-form [attributes]. [ExceptionRecord] is not one: its `Throwable` is its data. */
 sealed interface AttributedRecord : TraceRecord {
     val attributes: Map<String, String>
 }
 
 /**
- * Flattens a [SpanEvent] into its [TraceRecord] kind, stamping this span's identity — and its ambient
- * [Span.scopeId] — onto the line. [extraInfo] is merged over the span's [Span.info] (empty by default);
- * it is how [dev.kotrace.event.addException]'s record-level `info` reaches the record without riding the
- * object-only [ExceptionEvent] (ADR-005/ADR-010).
+ * Flattens [event] into its [TraceRecord], stamped with this span's identity and [Span.scopeId]. [extraInfo]
+ * merges over [Span.info]: it is how [addException]'s `info` reaches the record (ADR-010).
  */
 internal fun Span.recordOf(
     event: SpanEvent,
@@ -75,32 +57,21 @@ internal fun Span.recordOf(
     return when (event) {
         is LogEvent -> LogRecord(traceId, spanId, parentId, name, event.atNanos, scopeId, info, links, event.attributes, event.message, event.sensitive)
         is NamedEvent -> NamedRecord(traceId, spanId, parentId, name, event.atNanos, scopeId, info, links, event.name, event.attributes)
-        // origin (ADR-019) classifies a report exception (BIRTHPLACE/PROPAGATED); the live path passes null.
         is ExceptionEvent -> ExceptionRecord(traceId, spanId, parentId, name, event.atNanos, scopeId, info, links, event.throwable, origin)
     }
 }
 
 /**
- * A one-line JSON rendering with snake_case identity keys — the shape a JSON log pipeline (ELK, Loki, …)
- * ingests as structured fields, so `trace_id` / `span_id` are queryable rather than substrings. Hand-rolled
- * (no serialization dependency); string values are JSON-escaped, so a quote or newline stays valid.
+ * A one-line JSON rendering for a log pipeline (ELK, Loki), with snake_case keys so `trace_id` and `span_id` are
+ * queryable fields.
  *
- * Wire shape (ADR-004): the record's own identity (`trace_id`, `span_id`, `parent_span_id`, `operation`,
- * `kind`, and the per-kind `message` / `name` / `exception`) are top-level keys; the two open string→string
- * maps ride **nested** under their own objects — `"attributes":{…}` and `"info":{…}` — not spread as
- * sibling keys. Nesting is namespaced by construction: a consumer-chosen `attributes`/`info` key can never
- * collide with a reserved identity key (or with the other map), so nothing is emitted twice and no value is
- * silently dropped. Modern backends still query a nested field by its dotted/underscored path
- * (`attributes.http_method`), and a nested object maps to a single Elasticsearch `flattened` field, avoiding
- * top-level mapping explosion. Empty maps are omitted, keeping the line lean. This renderer is machine
- * egress — never PII (see [dev.kotrace.Span]'s invariant): the exception carries its class name only.
+ * Wire shape (ADR-004): identity and the per-kind `message` / `name` / `exception` are top-level keys; the
+ * `attributes` and `info` maps are **nested** objects, so a consumer's key can never collide with a reserved one.
+ * Empty maps and absent optional keys are omitted. This is machine egress, never PII (see [dev.kotrace.Span]): an
+ * exception renders its class name only.
  *
- * Why hand-rolled, not `kotlinx.serialization`:
- * - Zero dependency. kotrace is a core lib every consumer pulls transitively; a `@Serializable`-based
- *   renderer would force the serialization runtime + plugin onto all of them.
- * - The domain is closed and trivial (3 sealed kinds, string→string maps only), so there is no
- *   polymorphism/number-typing to configure; the only real hand-rolling risk is escaping, handled in
- *   [appendEscaped]. Revisit if the shape gains typed values.
+ * Hand-rolled rather than `kotlinx.serialization`, so every consumer of this core library is spared the runtime and
+ * plugin; the shape is closed and string-only, and escaping is the one risk ([appendEscaped]).
  */
 fun TraceRecord.toJson(): String = buildString {
     append('{')
@@ -121,41 +92,31 @@ fun TraceRecord.toJson(): String = buildString {
         }
         is ExceptionRecord -> {
             appendField("kind", "exception"); append(',')
-            // Class name only — never throwable.message. message is not fully in our control (stdlib /
-            // third-party interpolate user data), and toJson feeds a general log store (ELK/Loki), the wrong
-            // sink for PII (see Span's invariant). The full message lives on record.throwable, for an adapter
-            // that routes it to a crash reporter — the sink allowed to hold PII. Correlate the two by trace_id.
+            // Class name only: the message can hold user data, and belongs in a crash reporter, joined by trace_id.
             appendField("exception", record.throwable.javaClass.name)
-            // exception_origin is emitted only for a PROPAGATED copy (ADR-019): BIRTHPLACE and live/null omit
-            // it, so a default birthplace-only report is byte-identical to pre-ADR-019 — parallel to scope_id.
+            // Only for a PROPAGATED copy (ADR-019), so a birthplace-only report keeps its older shape.
             if (record.origin == ExceptionOrigin.PROPAGATED) { append(','); appendField("exception_origin", "propagated") }
         }
     }
     appendObject("info", info)
     appendLinks("links", links)
-    // scope_id is emitted only when present (ADR-010): absent = today's shape, so an unscoped record and
-    // every pre-scope tool are untouched — parallel to how empty attributes/info/links omit their key.
     appendOptionalField("scope_id", scopeId)
     append('}')
 }
 
-/**
- * Renders `"key":value`. The key is escaped too, not only the value: `attributes` / `info` / link keys are
- * consumer-chosen strings, and an unescaped quote or newline there would break the line or inject a field.
- */
+/** Renders `"key":value`, escaping the key too: map keys are consumer-chosen and could break the line. */
 private fun StringBuilder.appendField(key: String, value: String?) {
     append('"').appendEscaped(key).append("\":")
     if (value == null) append("null") else append('"').appendEscaped(value).append('"')
 }
 
-/** Renders `,"key":"value"` only when [value] is non-null (leads with the comma, so the caller need not). */
+/** Renders `,"key":"value"` only when [value] is non-null. */
 private fun StringBuilder.appendOptionalField(key: String, value: String?) {
     if (value == null) return
     append(',').append('"').appendEscaped(key).append("\":\"").appendEscaped(value).append('"')
 }
 
-/** Renders [map] as a nested `"key":{…}` object. Empty maps emit nothing (leaner line, stable enough — a
- *  consumer reads a missing object as no attributes/info). Leads with a comma, so the caller need not. */
+/** Renders `,"key":{…}`, or nothing for an empty [map]. */
 private fun StringBuilder.appendObject(key: String, map: Map<String, String>) {
     if (map.isEmpty()) return
     append(',').append('"').append(key).append("\":{")
@@ -168,9 +129,7 @@ private fun StringBuilder.appendObject(key: String, map: Map<String, String>) {
     append('}')
 }
 
-/** Renders [links] as a nested `"key":[{…}]` array, each link a `{"trace_id":…,"attributes":{…}}` object.
- *  Empty list emits nothing (leaner line, mirrors [appendObject]). A link's `attributes` object is itself
- *  omitted when empty. Leads with a comma, so the caller need not. */
+/** Renders `,"key":[{"trace_id":…,"attributes":{…}}]`, or nothing for empty [links]. */
 private fun StringBuilder.appendLinks(key: String, links: List<TraceLink>) {
     if (links.isEmpty()) return
     append(',').append('"').append(key).append("\":[")

@@ -6,17 +6,13 @@ import dev.kotrace.event.NamedEvent
 import java.util.concurrent.TimeUnit
 
 /**
- * Renders a trace as an indented tree — a **human debug read**, not a [report][reportTrace]. It is egress
- * to a `String` for a person, ungated: it walks every span and every event (`NamedEvent`s and `sensitive`
- * log messages included), so its output must never reach a sink or crash report. `report` is the machine
- * counterpart — flat, id-stamped [dev.kotrace.event.TraceRecord]s, policy-gated, fanned out to adapters.
- * Times are milliseconds relative to each root span's start; a list holding several trees (ADR-026) renders
- * each root in turn.
+ * Renders a trace as an indented tree for a **person** to read, not a [report][reportTrace]. No policy applies: it
+ * shows every event, `sensitive` messages included, so its output must never reach a sink or crash report. Times
+ * are milliseconds from each root's start; several trees (ADR-026) render one after another.
  */
 @UnredactedTraceRead
 fun List<Span>.renderTree(): String {
     if (isEmpty()) return "(no spans)"
-    // Every root, each as its own tree (ADR-026) — the same forest the report walks.
     val roots = rootsOf(this)
     val tree = TraceTreeIndex(this, roots)
     val sb = StringBuilder()
@@ -38,12 +34,8 @@ private fun StringBuilder.renderRoot(root: Span, tree: TraceTreeIndex) {
         val relEnd = span.endNanos?.let { TimeUnit.NANOSECONDS.toMillis(it - base) }
         sb.append("$indent└─ ${span.name} [${relStart}ms → ${relEnd}ms] ${durMs(span)}ms ${span.status}\n")
         if (span.attributes.isNotEmpty()) sb.append("$indent      attrs: ${span.attributes}\n")
-        // Show a throwable only at its birthplace (per-event, by lineage key — ADR-015); ancestors merely
-        // carry ERROR status up the path. Every selected exception renders inline, in timestamp order with
-        // the log lines, so a span holding two distinct failures shows both `error:` lines.
+        // A throwable shows only at its birthplace (ADR-015); ancestors just carry ERROR.
         val birthplaces = tree.birthplaceExceptionsOf(span)
-        // Read the same per-span snapshot the birthplace index used (ADR-019), so rendering is internally
-        // consistent with the classification — a late off-thread append can't be shown yet unclassified.
         tree.eventsOf(span).sortedBy { it.atNanos }.forEach { event ->
             val line = when (event) {
                 is LogEvent -> "${event.attributes}: ${event.message}"

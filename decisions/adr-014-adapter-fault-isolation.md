@@ -1,7 +1,7 @@
 # ADR-014 — Per-adapter fault isolation across every fan-out phase
 
 - **Date:** 2026-09-12
-- **Status:** Accepted
+- **Status:** Accepted (amended 2026-09-27 — see [Amendment](#amendment-2026-09-27--one-public-jvm-fatal-predicate))
 - **Affects:** the three fan-out sites — live (`Emit.kt`), span-less live (`SpanlessEmit.kt`), and report
   (`Report.kt`) — plus a diagnostic hook carried on `TraceConfig` (`TraceConfig.kt`, added as a second
   constructor parameter defaulting to null). `ReportAdapter` KDoc gains a
@@ -168,6 +168,16 @@ throws is swallowed. A fault raised from within a running hook does not re-enter
 while a fault on another thread is unaffected. No hook installed ⇒ a non-fatal fault is swallowed, siblings
 run, operation unaffected. Strict-uninstalled config resolution still propagates (not treated as an adapter
 fault; its outcome precedence is ADR-013's).
+
+## Amendment (2026-09-27) — one public JVM-fatal predicate
+
+The JVM-fatal set above was defined three times: an internal `isFatalFault()` in the core, and a copy in each
+integration module (`kotrace-okhttp`, `kotrace-room`), which cannot see the core's `internal`. Three copies of the
+rule this ADR fixes can drift apart. The core now exposes it once as public `Throwable.isJvmFatal()`, which the
+core and both integrations call. It is public rather than shared through compiler friend paths, which the ABI
+gate would not check: an `internal` change in the core could then break an already-published integration at
+runtime. It also gives code that contains its own telemetry faults (an adapter, a bridge) the same rule. The
+core's ABI grows by that one function; the set itself is unchanged.
 
 ---
 

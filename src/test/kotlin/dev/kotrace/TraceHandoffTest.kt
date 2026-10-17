@@ -39,6 +39,10 @@ class TraceHandoffTest {
         return result!!.getOrThrow()
     }
 
+    /** Opens [name] under the captured context, as the OkHttp interceptor does. */
+    private fun TraceHandoff.openSpan(name: String): Span =
+        startSpan(name, parent = parent, collector = collector, scopeId = scopeId)
+
     @Test fun `nothing to consume a span - no span, no collector, no live adapter - captures null`() {
         assertNull(TraceHandoff.captureOrNull())
     }
@@ -58,7 +62,7 @@ class TraceHandoffTest {
             }
         }
 
-        val child = onPlainThread { handoff.startSpan("bridge").also { it.end() } }
+        val child = onPlainThread { handoff.openSpan("bridge").also { it.end() } }
 
         assertEquals(parent!!.traceId, child.traceId)
         assertEquals(parent!!.spanId, child.parentId)
@@ -72,7 +76,7 @@ class TraceHandoffTest {
         val handoff = withContext(SpanCollector() + TraceConfig(listOf(flowOverride))) { TraceHandoff.captureOrNull()!! }
 
         val seenAfter = onPlainThread {
-            handoff.withCapturedConfig { handoff.startSpan("bridge").log { "on the flow's config" } }
+            handoff.withCapturedConfig { handoff.openSpan("bridge").log { "on the flow's config" } }
             currentThreadConfig()
         }
 
@@ -86,7 +90,7 @@ class TraceHandoffTest {
         Kotrace.install(listOf(global))
         val handoff = withContext(SpanCollector()) { TraceHandoff.captureOrNull()!! }
 
-        onPlainThread { handoff.withCapturedConfig { handoff.startSpan("bridge").log { "x" } } }
+        onPlainThread { handoff.withCapturedConfig { handoff.openSpan("bridge").log { "x" } } }
 
         assertEquals("x", (global.records.single() as dev.kotrace.event.LogRecord).message)
     }

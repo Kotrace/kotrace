@@ -13,6 +13,7 @@ import java.util.concurrent.atomic.AtomicInteger
 import kotlin.concurrent.thread
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
@@ -127,6 +128,17 @@ class AdapterFaultIsolationTest {
         }.exceptionOrNull()
         assertTrue("fatal propagates", thrown is OutOfMemoryError)
         assertEquals("fatal never routed to the hook", 0, hook.faults.size)
+    }
+
+    @Test fun `isJvmFatal is exactly the set fault isolation rethrows`() {
+        // Public so the integrations and consumer adapters apply the same rule (ADR-014).
+        @Suppress("DEPRECATION") val threadDeath = ThreadDeath()
+        listOf(OutOfMemoryError(), StackOverflowError(), NoClassDefFoundError(), threadDeath).forEach {
+            assertTrue("${it.javaClass.simpleName} is fatal", it.isJvmFatal())
+        }
+        listOf(RuntimeException(), AssertionError(), kotlin.coroutines.cancellation.CancellationException()).forEach {
+            assertFalse("${it.javaClass.simpleName} is contained", it.isJvmFatal())
+        }
     }
 
     @Test fun `a hook that itself throws is swallowed`() = runTest {

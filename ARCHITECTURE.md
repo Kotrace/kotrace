@@ -379,7 +379,8 @@ thrown, not only at fan-out.
 **Opening spans.** `span(name, attributes) { }` opens a child (suspend, closes on return); `startSpan(name,
 attributes)` does the same for non-suspend code off the coroutine frame (closed with `Span.end()`). Both
 mint the span through one private `createSpan(parent, …)` — the parent resolved from the coroutine context
-(`span`) or the `currentThreadSpan()` mirror (`startSpan`). `startSpan`/`end` are the non-suspend bridge,
+(`span`), or for `startSpan` passed in, defaulting to the `currentThreadSpan()` mirror (a `TraceHandoff`'s
+captured parent off the coroutine's thread, ADR-023). `startSpan`/`end` are the non-suspend bridge,
 gated behind the `@NonSuspendTracingBridge` opt-in (`ERROR`) because — unlike `span` — they do not install
 the span into the coroutine context, so a nested suspend `span` would misparent; the OkHttp bridge opts in
 at its one legitimate site (ADR-003). The `attributes` a span is opened with are its fixed filter

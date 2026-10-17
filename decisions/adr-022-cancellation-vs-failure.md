@@ -81,8 +81,10 @@ inner `withTimeout` expiring, or awaiting a `Deferred` that was cancelled, does 
   is actually cancelled.
 - A cancellation records no `ExceptionRecord`: neither the cancelled spans of a `CANCELLED` trace nor the cancelled
   siblings of a failure produce one, and a live adapter no longer receives a `JobCancellationException` line per
-  cancelled span. A `CANCELLED` report can still carry a failure a nested span recorded before the cancellation
-  arrived (see the amendments above).
+  cancelled span. Nor does an HTTP call cancelled with its coroutine: OkHttp's `IOException("Canceled")` is not
+  recorded (ADR-023), while a call that hit its `callTimeout` is a failure, like any timeout, and is recorded. A
+  `CANCELLED` report can still carry a failure a nested span recorded before the cancellation arrived (see the
+  amendments above).
 - The rethrow contract is unchanged: every throwable, cancellation or not, is rethrown as-is.
 - **Only a `CancellationException` qualifies.** A sibling interrupted by the cancellation that surfaces it as
   another type (`IOException("Canceled")`, `ClosedByInterruptException` from `runInterruptible`) is still

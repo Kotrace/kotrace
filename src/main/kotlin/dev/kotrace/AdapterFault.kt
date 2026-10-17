@@ -1,71 +1,60 @@
 package dev.kotrace
 
 /**
- * The phase a fault was contained in — passed to an [AdapterFaultHook] so a consumer can tell a live
- * breadcrumb failure from a report failure. [LIVE], [SPANLESS_LIVE] and [REPORT] are fan-out phases (ADR-014);
- * [RETURNED_OUTCOME] is the auto-root value mapper (ADR-016) and [FAILURE_CLASSIFIER] the per-span
- * `failureClassifier` (ADR-018/020) — both are report/classification-time inputs, not adapters, so both are
- * reported with `adapter = null`. When contained, the classification is treated as "no failure" (and the
- * mapper falls back to [TraceStatus.OK]).
+ * The phase a fault was contained in, passed to an [AdapterFaultHook]. [LIVE], [SPANLESS_LIVE] and [REPORT] are
+ * fan-out phases (ADR-014). [RETURNED_OUTCOME] is the auto-root value mapper (ADR-016) and [FAILURE_CLASSIFIER]
+ * the `failureClassifier` (ADR-018/020): neither is an adapter, so both report `adapter = null`, and a contained
+ * fault means "no failure" (the mapper falls back to [TraceStatus.OK]).
  */
 enum class FaultPhase { LIVE, SPANLESS_LIVE, REPORT, RETURNED_OUTCOME, FAILURE_CLASSIFIER }
 
 /**
- * An **opt-in** diagnostic hook (ADR-014) invoked when a fan-out phase contains a fault — a throwing
- * [TracePolicy], a throwing `onLive`/`onReport`, or a throwing shared record construction. It exists so a
- * consumer can *observe* suppressed faults (log or count them); it is **not** required, and kotrace's
- * default (no hook) swallows the fault silently so a broken sink can never crash the traced operation.
+ * An **opt-in** hook (ADR-014) told of each fault kotrace contains: a throwing [TracePolicy], `onLive` or
+ * `onReport`, or record construction. Without one the fault is swallowed silently, so a broken sink can never
+ * crash the traced operation. Carried on [TraceConfig].
  *
- * Carried on [TraceConfig]. Contract:
- * - `adapter` is the sink whose region threw, or `null` for a fault with no single adapter owner: a shared,
- *   per-event record-construction fault (the event is then not delivered to any accepting adapter), a report's
- *   `attached` list that throws while being read ([FaultPhase.REPORT] — the report then carries no orphan
- *   failures), or a throwing auto-root value mapper ([FaultPhase.RETURNED_OUTCOME], ADR-016 — the trace then
- *   reports [TraceStatus.OK] with no attachments).
- * - A **non-fatal** throw from [onAdapterFault] itself is swallowed; a JVM-fatal one
- *   ([VirtualMachineError]/[ThreadDeath]/[LinkageError]) is rethrown.
- * - **Per-thread reentrancy**: while a hook is running on a thread, a further fault on that thread is dropped
- *   without re-invoking it. Fan-out from within a hook is allowed, but any nested fault is not re-notified.
- *   A hook must not rely on emitting through kotrace.
- * - **Concurrency**: the reentrancy guard is *per-thread*, so [onAdapterFault] may run **concurrently on
- *   different threads** (parallel traced flows fanning out at once). An implementation that accumulates state
- *   (a counter, a log buffer) must be thread-safe.
+ * - `adapter` is the sink that threw, or `null` when no single adapter owns the fault: a shared record
+ *   construction (that event then reaches no adapter), a report's `attached` list that throws (the report carries
+ *   no orphans), or the auto-root value mapper (the trace reports [TraceStatus.OK]).
+ * - A non-fatal throw from [onAdapterFault] itself is swallowed; a JVM-fatal one ([isJvmFatal]) is rethrown.
+ * - While the hook runs on a thread, a further fault on that thread is dropped without re-invoking it.
+ * - It may run concurrently on different threads, so any state it keeps must be thread-safe.
  */
 fun interface AdapterFaultHook {
     fun onAdapterFault(phase: FaultPhase, adapter: TraceAdapter?, cause: Throwable)
 }
 
 /**
- * JVM-fatal throwables kotrace never swallows (ADR-014): they are rethrown past fault isolation — no hook, no
- * sibling continuation. An [OutOfMemoryError]/[StackOverflowError] ([VirtualMachineError]), a [ThreadDeath],
- * or a [LinkageError] means the process is compromised; containing it would hide a fatal state.
+ * Whether this is a JVM-fatal throwable, which kotrace never swallows (ADR-014): an [OutOfMemoryError] or
+ * [StackOverflowError] ([VirtualMachineError]), a [ThreadDeath], or a [LinkageError] means the process is
+ * compromised, and containing it would hide a fatal state. kotrace rethrows these past fault isolation — no hook,
+ * no sibling continuation — and its OkHttp and Room integrations do the same.
+ *
+ * Public so code that contains its own telemetry faults (an adapter, a bridge, an integration) applies the same
+ * rule: catch `Throwable`, rethrow when this is `true`, contain otherwise.
  */
-internal fun Throwable.isFatalFault(): Boolean =
+fun Throwable.isJvmFatal(): Boolean =
     this is VirtualMachineError || this is ThreadDeath || this is LinkageError
 
 /**
- * Attaches [failure] as a suppressed exception on this throwable — unless it is the **same instance**, since
- * `addSuppressed(this)` throws `IllegalArgumentException` ("Self-suppression not permitted"), which would
- * itself replace the application throwable (ADR-013). Used so a telemetry/strict failure never displaces the
- * throwable it should ride alongside.
+ * Attaches [failure] as suppressed, unless it is this same instance: self-suppression throws, which would replace
+ * the application throwable (ADR-013).
  */
 internal fun Throwable.alsoSuppress(failure: Throwable) {
     if (failure !== this) addSuppressed(failure)
 }
 
 /**
- * Per-thread "a live fan-out is running here" flag (ADR-025). `internal` only so [liveFanOut] can inline; read it
- * nowhere else.
+ * Whether a live fan-out is running on this thread (ADR-025). Internal for [liveFanOut] and for
+ * [TraceHandoff.captureOrNull], which refuses to trace a sink's own I/O.
  */
 internal val liveFanOutRunning: ThreadLocal<Boolean> = ThreadLocal.withInitial { false }
 
 /**
- * Runs one live fan-out ([block]: policies, record construction, `onLive`) unless one is already running on this
- * thread (ADR-025). A live adapter that logs through kotrace — a Timber tree forwarding to `emitLog`, an adapter
- * calling `span.log` — re-enters here from inside its own `onLive`; unguarded, that recursed until a fatal
- * [StackOverflowError] reached the traced code. The nested emit is still **stored** on its span (the caller
- * appends before fanning out) and still reaches the report path; it is only not fanned live a second time.
- * Not routed to the fault hook: it is expected wiring, not a fault, and would fire on every forwarded log.
+ * Runs one live fan-out unless one is already running on this thread (ADR-025). A live adapter that logs through
+ * kotrace (a Timber tree forwarding to `emitLog`) re-enters from its own `onLive`, which recursed into a
+ * [StackOverflowError]. The nested event is still stored and reported, only not fanned live again. Not a fault, so
+ * the hook is not told.
  */
 internal inline fun liveFanOut(block: () -> Unit) {
     if (liveFanOutRunning.get()) return
@@ -77,80 +66,67 @@ internal inline fun liveFanOut(block: () -> Unit) {
     }
 }
 
-/** Per-thread "a fault hook is running here" flag — the reentrancy guard (never a process-global boolean). */
+/** Whether a fault hook is running on this thread: the reentrancy guard. */
 private val hookRunning = ThreadLocal.withInitial { false }
 
-/** Routes a contained fault to [hook], per-thread-reentrancy-guarded; a non-fatal throw from the hook is swallowed. */
 private fun notifyFault(phase: FaultPhase, adapter: TraceAdapter?, hook: AdapterFaultHook?, cause: Throwable) {
     if (hook == null || hookRunning.get()) return
     hookRunning.set(true)
     try {
         hook.onAdapterFault(phase, adapter, cause)
     } catch (fromHook: Throwable) {
-        if (fromHook.isFatalFault()) throw fromHook
-        // a non-fatal throw from the hook is swallowed — the hook can never propagate
+        if (fromHook.isJvmFatal()) throw fromHook
     } finally {
         hookRunning.set(false)
     }
 }
 
-/** Runs a Unit adapter region (`onLive`/`onReport`): a non-fatal fault is contained + routed to [hook], a fatal rethrown. */
+/** Runs an adapter's `onLive` or `onReport`, containing a non-fatal fault. */
 internal fun guardAdapter(phase: FaultPhase, adapter: TraceAdapter?, hook: AdapterFaultHook?, block: () -> Unit) {
     try {
         block()
     } catch (t: Throwable) {
-        if (t.isFatalFault()) throw t
+        if (t.isJvmFatal()) throw t
         notifyFault(phase, adapter, hook, t)
     }
 }
 
-/** Runs an adapter's boolean policy region: a non-fatal fault is contained (treated as *reject*) + routed; a fatal rethrown. */
+/** Runs an adapter's policy; a non-fatal fault is contained and read as *reject*. */
 internal fun guardPolicy(phase: FaultPhase, adapter: TraceAdapter, hook: AdapterFaultHook?, block: () -> Boolean): Boolean =
     try {
         block()
     } catch (t: Throwable) {
-        if (t.isFatalFault()) throw t
+        if (t.isJvmFatal()) throw t
         notifyFault(phase, adapter, hook, t)
         false
     }
 
-/**
- * Runs the shared, per-event record construction: a non-fatal fault returns `null` (delivery of that one
- * event is aborted for **all** accepting adapters) and is routed with `adapter = null`; a fatal is rethrown.
- */
+/** Runs work shared by every adapter; a non-fatal fault returns `null`, so no adapter receives that event. */
 internal fun <R : Any> guardShared(phase: FaultPhase, hook: AdapterFaultHook?, block: () -> R): R? =
     try {
         block()
     } catch (t: Throwable) {
-        if (t.isFatalFault()) throw t
+        if (t.isJvmFatal()) throw t
         notifyFault(phase, null, hook, t)
         null
     }
 
 /**
- * Runs the auto-root return-value mapper (ADR-016): a non-fatal fault returns `null` (the caller then reports
- * [TraceStatus.OK]) and is routed with `adapter = null`; a fatal is rethrown. Unlike [guardShared] the [hook]
- * is a **supplier resolved only on a fault**, so a successful mapper never resolves config ahead of the
- * report — preserving the ADR-016 `markEnd → mapper → report/config-resolution` ordering.
+ * Runs the auto-root value mapper (ADR-016); a non-fatal fault returns `null`. The [hook] is resolved only on a
+ * fault, so a successful mapper never resolves config ahead of the report.
  */
 internal fun <R : Any> guardReturnedOutcome(hook: () -> AdapterFaultHook?, block: () -> R): R? =
     try {
         block()
     } catch (t: Throwable) {
-        if (t.isFatalFault()) throw t
+        if (t.isJvmFatal()) throw t
         notifyFault(FaultPhase.RETURNED_OUTCOME, null, hook(), t)
         null
     }
 
 /**
- * Runs the per-span `failureClassifier` (ADR-018/020) on a normal return: a **non-fatal** throw — including a
- * classifier-thrown [kotlinx.coroutines.CancellationException], which is a config fault here, distinct from a
- * classifier that returns [ReturnedFailure.CausedBy] carrying one — is contained (returns `null`, i.e. "no
- * failure classified") and routed with [FaultPhase.FAILURE_CLASSIFIER] and `adapter = null`; a JVM-fatal
- * fault is rethrown. Telemetry classification must never turn a succeeding return into a failure. The [hook]
- * is a **supplier resolved only on a fault**, so a successful classifier never resolves config on the hot
- * path. A `null` result is ambiguous by design —
- * "classifier said not-a-failure" and "classifier faulted and was contained" both mean *do not record*.
+ * Runs the `failureClassifier` (ADR-018/020); a non-fatal throw, a thrown `CancellationException` included, is
+ * contained as "no failure", so classification never fails a return. The [hook] is resolved only on a fault.
  */
 internal fun guardFailureClassifier(
     hook: () -> AdapterFaultHook?,
@@ -159,7 +135,7 @@ internal fun guardFailureClassifier(
     try {
         block()
     } catch (t: Throwable) {
-        if (t.isFatalFault()) throw t
+        if (t.isJvmFatal()) throw t
         notifyFault(FaultPhase.FAILURE_CLASSIFIER, null, hook(), t)
         null
     }

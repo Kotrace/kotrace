@@ -15,19 +15,15 @@ import org.gradle.work.DisableCachingByDefault
 import java.io.File
 
 /**
- * The release guard: a published version is immutable. The static Maven repo would silently accept a re-publish
- * of an already-released version with different bytes — a consumer compiled against the old jar then fails at
- * runtime (`NoSuchMethodError`). So every remote publish, of every project (a BOM included), first runs
- * [CheckReleaseVersion], which checks that
- *  - the working tree is clean: Gradle builds the working tree, not HEAD, so uncommitted or untracked source
- *    would ship bytes no commit describes (and would slip past the tag check below on a tagged HEAD);
- *  - no `v<version>` tag exists on a commit other than HEAD; a re-release from the tagged commit is allowed;
- *  - every artifact of this version already in the target Maven repo ([REPO_DIR_PROPERTY]) was published from
- *    HEAD. Each POM records its commit ([COMMIT_POM_PROPERTY]), so this is checked against what was actually
- *    published — not against a tag, which can be moved onto any commit after the fact.
+ * The release guard: a published version is immutable. The static Maven repo would accept a re-publish with
+ * different bytes, and a consumer compiled against the old jar would then fail at runtime. So every remote publish
+ * of every project first runs [CheckReleaseVersion], which checks that
+ *  - the working tree is clean, since Gradle builds the working tree, not HEAD;
+ *  - no `v<version>` tag points at a commit other than HEAD;
+ *  - every artifact of this version already in the Maven repo ([REPO_DIR_PROPERTY]) was published from HEAD, as
+ *    its POM records ([COMMIT_POM_PROPERTY]); a tag can be moved, the published POM cannot.
  *
- * A `-SNAPSHOT` version is mutable by definition (Maven stores each publish under a timestamped name), so it
- * skips the tag and repo checks and keeps only the clean-tree one: every snapshot is still exactly a commit.
+ * A `-SNAPSHOT` is mutable by definition, so it keeps only the clean-tree check.
  *
  * Apply it to the root project; it wires every project's publications.
  */

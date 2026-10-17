@@ -2,6 +2,10 @@ public abstract interface class dev/kotrace/AdapterFaultHook {
 	public abstract fun onAdapterFault (Ldev/kotrace/FaultPhase;Ldev/kotrace/TraceAdapter;Ljava/lang/Throwable;)V
 }
 
+public final class dev/kotrace/AdapterFaultKt {
+	public static final fun isJvmFatal (Ljava/lang/Throwable;)Z
+}
+
 public final class dev/kotrace/FaultPhase : java/lang/Enum {
 	public static final field FAILURE_CLASSIFIER Ldev/kotrace/FaultPhase;
 	public static final field LIVE Ldev/kotrace/FaultPhase;
@@ -186,8 +190,9 @@ public final class dev/kotrace/TraceFormatKt {
 
 public final class dev/kotrace/TraceHandoff {
 	public static final field Companion Ldev/kotrace/TraceHandoff$Companion;
-	public final fun startSpan (Ljava/lang/String;Ljava/util/Map;Ljava/util/List;)Ldev/kotrace/Span;
-	public static synthetic fun startSpan$default (Ldev/kotrace/TraceHandoff;Ljava/lang/String;Ljava/util/Map;Ljava/util/List;ILjava/lang/Object;)Ldev/kotrace/Span;
+	public final fun getCollector ()Ldev/kotrace/SpanCollector;
+	public final fun getParent ()Ldev/kotrace/Span;
+	public final fun getScopeId ()Ljava/lang/String;
 	public final fun withCapturedConfig (Lkotlin/jvm/functions/Function0;)Ljava/lang/Object;
 }
 
@@ -200,8 +205,8 @@ public final class dev/kotrace/TraceKt {
 	public static synthetic fun end$default (Ldev/kotrace/Span;Ldev/kotrace/SpanStatus;Ljava/lang/Throwable;ILjava/lang/Object;)V
 	public static final fun span (Ljava/lang/String;Ljava/util/Map;Ljava/util/List;Lkotlin/jvm/functions/Function1;Lkotlin/jvm/functions/Function1;Lkotlin/jvm/functions/Function1;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
 	public static synthetic fun span$default (Ljava/lang/String;Ljava/util/Map;Ljava/util/List;Lkotlin/jvm/functions/Function1;Lkotlin/jvm/functions/Function1;Lkotlin/jvm/functions/Function1;Lkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
-	public static final fun startSpan (Ljava/lang/String;Ljava/util/Map;Ljava/util/List;)Ldev/kotrace/Span;
-	public static synthetic fun startSpan$default (Ljava/lang/String;Ljava/util/Map;Ljava/util/List;ILjava/lang/Object;)Ldev/kotrace/Span;
+	public static final fun startSpan (Ljava/lang/String;Ljava/util/Map;Ljava/util/List;Ldev/kotrace/Span;Ldev/kotrace/SpanCollector;Ljava/lang/String;)Ldev/kotrace/Span;
+	public static synthetic fun startSpan$default (Ljava/lang/String;Ljava/util/Map;Ljava/util/List;Ldev/kotrace/Span;Ldev/kotrace/SpanCollector;Ljava/lang/String;ILjava/lang/Object;)Ldev/kotrace/Span;
 }
 
 public final class dev/kotrace/TraceLink {

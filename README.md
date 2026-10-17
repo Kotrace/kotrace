@@ -123,6 +123,27 @@ support. A newer version in your build wins through normal dependency resolution
 | Room (`kotrace-room`) | `compileOnly`: bring your own |
 | JVM bytecode | Java 11 |
 
+**Upgrading from 0.4.** 0.5.0 is a breaking release: recompile against it.
+
+- **Binary.** `TracingCallFactory` gained `spanName` (ADR-021). In Room, `TracingQueryCallback` gained `delegate`
+  and `tracing()` gained `delegate` and `delegateExecutor` (ADR-028). In the core, the opt-in `startSpan` gained
+  `parent`, `collector` and `scopeId` (ADR-023). Their 0.4.0 JVM signatures are gone.
+- **Source.** `Kotrace.resetForTest()` needs `@OptIn(KotraceTestApi::class)`, best granted to the test source set
+  only, and reading `Span.events` or `Span.exception` needs `@OptIn(UnredactedTraceRead::class)` (ADR-028).
+- **Behavior and wire.**
+  - HTTP spans are named `http <METHOD>`, never the URL path, so the `operation` field changes (ADR-021).
+  - `CANCELLED` means the root's coroutine was really cancelled. A timeout inside the operation is `ERROR`, and a
+    cancelled span records no exception (ADR-022).
+  - Each execution of a call opens its own HTTP span, emitting under the flow's config (ADR-023). A call its caller
+    canceled records no exception, while one that hit its `callTimeout` does; both mark the span's `http.outcome`
+    info (ADR-022/023).
+  - `Level.BODY` is bounded and reads a response only as your code does (ADR-024).
+  - An emit made from inside `onLive` is stored but not fanned out live again, and an HTTP call made there is not
+    traced (ADR-025).
+  - A report covers every root of a collector, not only the first (ADR-026).
+  - `toTraceparent()` throws on an id that is not W3C (ADR-028).
+  - A span keeps up to `Span.MAX_EVENTS` (1,000) events, dropping the oldest first (ADR-029).
+
 ## How to run (build + test)
 
 ```bash
@@ -243,6 +264,12 @@ suspend fun price(): String = span("pricing.fetch") {
 **Retrofit**: pass the wrapped factory via `Retrofit.Builder().callFactory(TracingCallFactory(http))`
 (not `.client(...)`) so every generated call is tagged from the coroutine thread.
 
+**A trace sink's own uploads** go through the plain client, never the factory: `http.newCall(…)`, or a
+separate `Retrofit.Builder().client(http)`. Only a call the factory made is tagged, and the interceptor passes
+an untagged one straight through, so the sink can share the app's client and connection pool. A sink that
+uploaded from a worker thread through the factory would open a span per upload whose failure feeds back into
+the sink: offline, it uploads until its queue is full. (A call made inside `onLive` itself is never traced.)
+
 Order between the factory and interceptor does not matter (tag is placed before dispatch, read during
 the chain). With no span, no collector and no live adapter to consume it, a call passes through untagged and
 unmodified; with only a live adapter installed, a call outside any span opens a root http span.
@@ -294,7 +321,9 @@ is high-volume, so tag it at a level your capture policy drops by default (e.g. 
 Room keeps a single query callback, so `.tracing()` replaces one you set with `setQueryCallback`. Pass yours as
 `.tracing(attrs, delegate = myCallback, delegateExecutor = myExecutor)` to keep it. `.tracing()` does not work
 with `setDriver(SQLiteDriver)`: Room rejects every query callback when a driver is configured, and `build()`
-throws.
+throws. A trace sink that writes to a database built with `.tracing()` logs its own inserts (as `sensitive` lines)
+onto every traced flow; give the sink its own, uninstrumented database. (For a sink's HTTP uploads, see "A
+trace sink's own uploads" under Using with OkHttp.)
 
 ## Span-less emits & scopes
 

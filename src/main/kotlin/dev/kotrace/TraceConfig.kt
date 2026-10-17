@@ -8,31 +8,26 @@ import kotlin.coroutines.CoroutineContext
 private val currentConfigThreadLocal = ThreadLocal<TraceConfig?>()
 
 /**
- * The [TraceConfig] active in the current coroutine, or null — read straight from the `CoroutineContext`,
- * the source of truth. This is the getter a **suspend** caller uses; it is the config counterpart of
- * [currentSpan]. Non-suspend code off the coroutine frame (a synchronous factory or callback with no
- * `coroutineContext` handle) cannot call a suspend function, so it reads [currentThreadConfig] instead.
+ * The per-flow [TraceConfig] in the current coroutine, or null. Non-suspend code reads [currentThreadConfig]
+ * instead.
  */
 suspend fun currentConfig(): TraceConfig? = currentCoroutineContext()[TraceConfig]
 
 /**
- * The [TraceConfig] mirrored onto *this thread*, or null — the thread-local bridge for **non-suspend** code
- * running on a coroutine's thread (the OkHttp `Call.Factory`, a Room callback), which has no
- * `coroutineContext` reference. It reaches the live adapters for the trace it belongs
- * to. Maintained by [TraceConfig]'s [ThreadContextElement] mirror, same mechanism as [SpanContext]; the
- * config counterpart of [currentThreadSpan]. A genuine suspend caller should prefer [currentConfig], which
- * reads the context directly rather than the mirror.
+ * The per-flow [TraceConfig] mirrored onto this thread, or null: for **non-suspend** code running on a
+ * coroutine's thread (the OkHttp `Call.Factory`, a Room callback). A suspend caller should prefer
+ * [currentConfig].
  */
 fun currentThreadConfig(): TraceConfig? = currentConfigThreadLocal.get()
 
 /**
- * Runs [block] with [config] as this thread's mirrored per-flow override, restoring the previous value after —
- * the explicit counterpart of [TraceConfig]'s `ThreadContextElement` mirror, for a bridge running on a thread no
- * coroutine resumed on ([TraceHandoff.withCapturedConfig]). A null [config] means "no override" (the
- * process-wide [Kotrace] config applies), exactly as on any thread without a flow.
+ * Runs [block] with [config] mirrored onto this thread, then restores the previous value: the mirror for a thread
+ * no coroutine resumed on ([TraceHandoff.withCapturedConfig]). A null [config] means "no override". When the
+ * thread already mirrors [config] (no override on either side, or the flow's own thread), it touches nothing.
  */
-internal fun <T> withThreadConfig(config: TraceConfig?, block: () -> T): T {
+internal fun <T> withMirroredConfig(config: TraceConfig?, block: () -> T): T {
     val previous = currentConfigThreadLocal.get()
+    if (previous === config) return block()
     currentConfigThreadLocal.set(config)
     try {
         return block()
@@ -42,12 +37,8 @@ internal fun <T> withThreadConfig(config: TraceConfig?, block: () -> T): T {
 }
 
 /**
- * The [TraceConfig] a fan-out path uses: the per-flow context override ([currentThreadConfig]) if one is
- * present, else the process-wide [Kotrace] config (ADR-010). This is what makes every path — span and
- * span-less, live and report, suspend and non-suspend — fan to the same adapters, differing only in the
- * coroutine mechanism that locates the flow. Null when neither is installed — a safe no-op, unless the
- * strict-uninstalled latch ([Kotrace.strictWhenUninstalled]) is armed, in which case that null resolution is
- * a hard error instead (ADR-011): the emit reached kotrace before any config was installed.
+ * The config every fan-out uses: the per-flow override, else the process-wide [Kotrace] config (ADR-010). Null
+ * when neither exists, which throws instead once [Kotrace.strictWhenUninstalled] is armed (ADR-011).
  */
 internal fun resolvedThreadConfig(): TraceConfig? =
     (currentThreadConfig() ?: Kotrace.defaultConfig())
@@ -62,28 +53,17 @@ internal fun resolvedThreadConfig(): TraceConfig? =
         }
 
 /**
- * An immutable fan-out configuration — the consumer's [adapters]. It has two homes (ADR-010): the
- * process-wide default installed once via [Kotrace.install], and — optionally — a **per-flow override**
- * carried ambiently in the `CoroutineContext`, seeded at a trace's root next to its [SpanCollector]. Every
- * fan-out site resolves [resolvedThreadConfig] = `currentThreadConfig() ?: Kotrace.defaultConfig()`, so a
- * context override wins for its flow and the global covers everything else (span-less emits, non-suspend
- * roots, untraced flows). Overlay one only when a flow needs different sinks than the process default.
+ * An immutable fan-out configuration: the consumer's [adapters]. It is either the process-wide default
+ * ([Kotrace.install]) or a **per-flow override** in the `CoroutineContext`, which wins for its flow (ADR-010).
+ * Overlay one only when a flow needs different sinks.
  *
- * [liveAdapters] / [reportAdapters] are partitioned once here, so the per-event hot path checks a
- * precomputed list rather than filtering on every log call. There is no capture gate (ADR-002): the event
- * verbs store unconditionally and each adapter's [TracePolicy] filters once, at fan-out. A rejected event
- * never builds a [dev.kotrace.event.LogEvent]'s lazy message — the message resolves only when an adapter
- * accepts it (see [dev.kotrace.event.emit]). As a
- * [ThreadContextElement] it mirrors itself onto a ThreadLocal on every résumé and
- * restores the previous on the way out — that mirror is what [currentThreadConfig] reads for the non-suspend
- * call-site bridge, while a suspend caller reads this element directly via [currentConfig].
+ * Every event is stored; each adapter's [TracePolicy] filters it at fan-out (ADR-002), and a
+ * [dev.kotrace.event.LogEvent]'s lazy message is built only once an adapter accepts it. As a
+ * [ThreadContextElement] it mirrors itself onto the thread for [currentThreadConfig].
  */
 class TraceConfig(
     val adapters: List<TraceAdapter>,
-    /**
-     * An optional [AdapterFaultHook] (ADR-014) observing faults contained during fan-out. Null (the default)
-     * ⇒ faults are swallowed silently.
-     */
+    /** Told of each fault contained during fan-out (ADR-014); with none, faults are swallowed silently. */
     val faultHook: AdapterFaultHook? = null,
 ) : ThreadContextElement<TraceConfig?>, AbstractCoroutineContextElement(Key) {
 

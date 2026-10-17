@@ -2,9 +2,9 @@
 
 - **Date:** 2026-09-25
 - **Status:** Accepted
-- **Affects:** the live fan-out (`Span.emit`, the span-less `emitLog`/`emitNamed`/`emitException`) and
-  `Kotrace.install { provider }` resolution. No API or wire change; KDoc on `LiveAdapter.onLive` and the provider
-  `install` state the contract.
+- **Affects:** the live fan-out (`Span.emit`, the span-less `emitLog`/`emitNamed`/`emitException`),
+  `Kotrace.install { provider }` resolution and, by amendment, `TraceHandoff.captureOrNull()`. No API or wire
+  change; KDoc on `LiveAdapter.onLive`, the provider `install` and `captureOrNull` state the contract.
 - **Builds on:** [ADR-014](adr-014-adapter-fault-isolation.md) (fault isolation — which already guards the fault
   hook against reentrancy, but not adapters), [ADR-010](adr-010-spanless-fanout-and-ambient-scope.md) (lazy
   provider), [ADR-011](adr-011-strict-uninstalled-optin.md) (strict-uninstalled).
@@ -56,3 +56,16 @@ ADR-014 classes as JVM-fatal and rethrows into the traced code, so the app crash
   still loops asynchronously. The `onLive` KDoc says not to do that.
 - Emits made during provider resolution are lost by design. A provider should build adapters, not log through
   them.
+- **A sink's own HTTP I/O is never traced (amendment, review).** `TraceHandoff.captureOrNull()` returns `null`
+  during a live fan-out on its thread. Otherwise a sink uploading through a `TracingCallFactory` client traced its
+  own call, whose span was fanned out live **from OkHttp's thread**, past this ADR's same-thread guard, back into
+  the sink, which uploaded again. Offline, each failed upload added a fresh exception: one real crash produced over
+  200 uploads in 1.5 s. A sink that hands records to a worker thread is outside this rule, so its worker must call
+  through the plain client rather than the `TracingCallFactory` wrapping it. That can be the app's own
+  `OkHttpClient`: the interceptor passes a call the factory did not tag straight through. The `onLive` KDoc and
+  README say so, and BACKLOG D04 tracks an explicit opt-out for a sink that can reach only the traced factory.
+- A nested span emit is still stored, so a live adapter writing through a Room database built with `tracing()` adds
+  one `sensitive` `SQL …` line per record to the traced flow's span. It reaches only adapters that accept
+  sensitive events, but it counts toward `Span.MAX_EVENTS` (ADR-029). Dropping nested span emits was weighed and
+  kept rejected, since they can be legitimate data; the `onLive` KDoc and README tell a sink to use an
+  uninstrumented database.

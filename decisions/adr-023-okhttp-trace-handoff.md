@@ -36,7 +36,8 @@ span's life was tied to `Call` creation rather than execution. Verified conseque
 - **`TraceHandoff`** (core, opt-in bridge API) — an immutable capture of the calling thread's mirrored span,
   collector, per-flow config override and scope id. `captureOrNull()` returns `null` when nothing would consume a
   span (no span, no collector, no live adapter in the override-else-global config — fixing 4).
-  `startSpan(…)` opens a child of the captured parent, registered in the captured collector, on **any** thread.
+  It exposes the captured `parent`, `collector` and `scopeId`; `startSpan(…, parent, collector, scopeId)`, whose
+  defaults read the thread mirrors, opens a child under them on **any** thread.
   `withCapturedConfig { … }` mirrors the captured override onto the current thread for the block and restores it
   (fixing 1).
 - **The factory captures, the interceptor opens.** `newCall` tags an internal `HttpTrace(handoff, spanName,
@@ -49,6 +50,27 @@ span's life was tied to `Call` creation rather than execution. Verified conseque
 - **The interceptor only observes.** Each telemetry step runs under a local guard that contains non-fatal faults;
   the response is returned and the exception rethrown exactly as without kotrace (fixing the rest of 2). A JVM-fatal
   error still propagates (ADR-014).
+- **A canceled call is a cancellation (amendment, review).** When `proceed` throws an `IOException` and the call
+  itself is canceled (`call.isCanceled()`: the caller's coroutine was cancelled and Retrofit cancelled the call,
+  or an explicit `cancel()`), the HTTP span is ended `ERROR` **without** that exception, mirroring ADR-022's
+  genuinely cancelled spans. Before this, every trace cancelled with a call in flight carried a spurious
+  `IOException("Canceled")` birthplace, so a `CANCELLED` trace held a crash record and a failing sibling produced
+  two. Only an `IOException` qualifies: any other throwable from a canceled call is recorded.
+- **A call timeout is a failure (amendment, second review).** OkHttp enforces `callTimeout` by canceling the call,
+  so the first version of the rule above dropped timeouts too. A timeout is a failure (ADR-022), and the HTTP span
+  is often the only place it can be recorded: a call made outside any span, or a timeout the caller handles. A
+  canceled call whose call-timeout budget (`call.timeout()`) is spent is therefore recorded, and logged as
+  `call timeout`. The budget is measured from the span's start, which trails the call's by whatever interceptors
+  run before this one, so the last tenth of the budget counts too: a cancel that late reads as a timeout, which
+  errs toward a record rather than a lost failure.
+- **`http.outcome` tells the two apart (amendment, third review).** The throwable a timeout records is OkHttp's
+  own cancellation exception (`IOException("Canceled")` on OkHttp 4, `SocketException("Socket closed")` on 5), and
+  the "call timeout" breadcrumb is `sensitive`, so a default crash sink saw only "Canceled". Both cases now stamp
+  the HTTP span's emitted info `http.outcome` (`call_timeout` or `canceled`), a symbol every record of the span
+  carries — an additive wire field, like `http.status`. A timeout that escapes into a caller's span is recorded
+  twice: at the HTTP span, and at the caller's span as the `InterruptedIOException("timeout")` OkHttp wraps it
+  in. That wrapper is a different throwable, so a different lineage (ADR-015); the two records share a trace id,
+  and `http.outcome` on the HTTP one says it was the timeout.
 
 ## Options considered
 
