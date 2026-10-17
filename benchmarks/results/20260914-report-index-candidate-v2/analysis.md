@@ -1,4 +1,4 @@
-# Report tree index experiment — candidate v2
+# Report tree index experiment: candidate v2
 
 Trạng thái: **giữ candidate v2**. Ngày 2026-09-14.
 

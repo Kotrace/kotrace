@@ -1,4 +1,4 @@
-# kotrace benchmark run — stage 2b
+# kotrace benchmark run: stage 2b
 
 - Run id: `20260914-sol-high-stage2b`
 - Requested Codex profile: `gpt-5.6-sol`, reasoning `high`

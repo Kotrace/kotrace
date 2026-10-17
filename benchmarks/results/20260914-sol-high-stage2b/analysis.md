@@ -1,4 +1,4 @@
-# Phân tích benchmark kotrace — giai đoạn 3
+# Phân tích benchmark kotrace: giai đoạn 3
 
 Trạng thái: **hoàn tất**. Ngày 2026-09-14.
 
@@ -45,8 +45,8 @@ allocation và cấu trúc thuật toán, không dựa vào một ngưỡng tùy
 |---|---:|---:|
 | `runBlocking` baseline | 84,3 ± 1,5 ns/flow | 208 B/flow |
 | `withContext(config)` baseline | 401,9 ± 51,5 ns/flow | 512 B/flow |
-| auto-root, không config | 8,14 ± 0,41 µs/flow | 14.843 B/flow |
-| auto-root, config rỗng | 8,32 ± 0,46 µs/flow | 15.496 B/flow |
+| auto-root, không configuration | 8,14 ± 0,41 µs/flow | 14.843 B/flow |
+| auto-root, configuration rỗng | 8,32 ± 0,46 µs/flow | 15.496 B/flow |
 | auto-root, 1 live adapter | 8,42 ± 0,22 µs/flow | 15.304 B/flow |
 | auto-root, report adapter không consume | 9,58 ± 4,21 µs/flow | 15.504 B/flow |
 
@@ -60,7 +60,7 @@ với các biến thể auto-root khác.
 
 | Event/batch | Score | Quy đổi có fixed cost | Allocation |
 |---:|---:|---:|---:|
-| 0 | 18,1 ± 0,5 ns | — | 224 B/batch |
+| 0 | 18,1 ± 0,5 ns | không áp dụng | 224 B/batch |
 | 10 | 348,7 ± 3,4 ns | 34,9 ns/event | 1.344 B/batch |
 | 100 | 3,69 ± 0,04 µs | 36,9 ns/event | 29.424 B/batch |
 | 1.000 | 84,15 ± 1,18 µs | 84,1 ns/event | 2.092.225 B/batch |
@@ -167,17 +167,17 @@ chứng minh cơ chế: `onLive` được gọi đồng bộ và latency sink n�
 
 ## Ưu tiên đề xuất
 
-1. **P1 — đã đánh giá và loại locked event-buffer candidate.** Candidate cải thiện mạnh ở `N=100/1.000`
+1. **P1: đã đánh giá và loại locked event-buffer candidate.** Candidate cải thiện mạnh ở `N=100/1.000`
    và shared 4/16 workers, nhưng làm trace 0 event, read path và report path xấu đi. Giữ
    `CopyOnWriteArrayList`; không thử candidate khác nếu chưa có workload production chứng minh span nhiều
    event là trường hợp ưu tiên.
-2. **P1 — hoàn tất: pre-index report tree một lần.** Candidate v2 dựng adjacency đã sort trước walk và
+2. **P1, hoàn tất: pre-index report tree một lần.** Candidate v2 dựng adjacency đã sort trước walk và
    tính birthplace lineage post-order; paired benchmark cho speedup 11,2–12,9× ở 512 span.
-3. **P2 — giữ synchronous adapter contract nhưng làm backpressure hiển nhiên.** KDoc/sample nên khuyến nghị
-   adapter tự enqueue sang bounded worker nếu sink có I/O; library không nên âm thầm đổi semantics sang async.
-4. **P2 — sửa outcome benchmark trước khi dùng nó cho quyết định policy.** Adapter phải gate theo status thật;
+3. **P2: giữ synchronous adapter contract nhưng làm backpressure hiển nhiên.** KDoc/sample nên khuyến nghị
+   adapter tự enqueue sang bounded worker nếu sink có I/O; library không nên âm thầm đổi semantics sang asynchronous.
+4. **P2: sửa outcome benchmark trước khi dùng nó cho quyết định policy.** Adapter phải gate theo status thật;
    thêm failure-heavy report fixture để đo riêng chi phí ADR-015 birthplace walk.
-5. **P3 — bổ sung retained-heap probe.** Hiện chỉ có allocation/operation; chưa biết retained graph của trace
+5. **P3: bổ sung retained-heap probe.** Hiện chỉ có allocation/operation; chưa biết retained graph của trace
    mở 10.000 event nên không được dùng các số B/op trên làm memory-retention claim.
 
 ## Điểm chưa giải thích và ngưỡng dừng

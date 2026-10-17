@@ -44,7 +44,7 @@ Allocation append không còn tăng gần bậc hai. Candidate giải quyết đ
 | report balanced / 512 spans | 47,06 µs | 52,67 µs | +11,9% | +14,9% |
 
 Ở trace 0 event, mỗi `Span` trả thêm 48 B cho lock + mutable backing store. Snapshot iterator phải copy list
-khi đọc, nên report—workload một event trên mỗi span—chậm hơn ở phần lớn shape/size. Regression report tại
+khi đọc, nên report (workload một event trên mỗi span) chậm hơn ở phần lớn shape/size. Regression report tại
 16 spans là 13,0–19,3%; tại 512 spans là 5,4–17,0%.
 
 ## Verification

@@ -1,4 +1,4 @@
-# Report tree index candidate v2 — metadata
+# Report tree index candidate v2: metadata
 
 - Baseline: `../20260914-sol-high-stage2b/main-gc.json`
 - Candidate data: `report-gc.json`
