@@ -1,7 +1,7 @@
 package dev.kotrace
 
 /**
- * Marks an API that exists **only for tests** — currently [Kotrace.resetForTest], which clears the
+ * Marks an API that exists **only for tests**, currently [Kotrace.resetForTest], which clears the
  * install-once latch that ADR-010 relies on. Called from production code, it would let a second `install`
  * silently replace a live sink, which is exactly what install-once exists to prevent.
  *

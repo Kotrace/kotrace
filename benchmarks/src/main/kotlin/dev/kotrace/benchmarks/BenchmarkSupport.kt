@@ -3,20 +3,20 @@
 
 package dev.kotrace.benchmarks
 
-import dev.kotrace.LiveAdapter
-import dev.kotrace.ReportAdapter
 import dev.kotrace.Span
 import dev.kotrace.SpanCollector
 import dev.kotrace.SpanStatus
 import dev.kotrace.TraceConfig
-import dev.kotrace.TracePolicy
 import dev.kotrace.TraceStatus
+import dev.kotrace.adapter.LiveAdapter
+import dev.kotrace.adapter.ReportAdapter
+import dev.kotrace.adapter.TracePolicy
 import dev.kotrace.event.ExceptionEvent
 import dev.kotrace.event.TraceRecord
 import dev.kotrace.event.addException
 import dev.kotrace.event.addNamed
 import dev.kotrace.event.log
-import dev.kotrace.reportTrace
+import dev.kotrace.report.reportTrace
 import dev.kotrace.span
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineName
@@ -82,7 +82,7 @@ private class CountingReportAdapter(
     }
 }
 
-/** Thread-bound config plus deterministic in-memory sinks for JMH worker state. */
+/** Thread-bound configuration plus deterministic in-memory sinks for JMH worker state. */
 class BenchSession(
     mode: String,
     adapterCount: Int = 1,
@@ -129,6 +129,14 @@ class BenchSession(
         val before = delivered()
         repeat(eventCount) { index -> span.log { "event-$index" } }
         return span.events.size.toLong() + delivered() - before + sinkChecksum()
+    }
+
+    /** [eventCount] logs onto one span capped at [maxEvents] (ADR-033): past the cap every append also evicts. */
+    fun captureCappedBatch(eventCount: Int, maxEvents: Int): Long {
+        val span = freshSpan(maxEvents)
+        val before = delivered()
+        repeat(eventCount) { index -> span.log { "event-$index" } }
+        return span.events.size.toLong() + span.droppedEvents + delivered() - before + sinkChecksum()
     }
 
     fun captureKindBatch(eventCount: Int, kind: String): Long {
@@ -349,9 +357,16 @@ class ConcurrencyHarness(
     private val executor = Executors.newFixedThreadPool(4)
     private val dispatcher: CoroutineDispatcher = executor.asCoroutineDispatcher()
 
+    /** How many events the last shared-span run evicted, for the preflight test. */
+    internal var lastDropped: Int = -1
+        private set
+
     fun run(workerCount: Int, eventsPerWorker: Int): Long = when (mode) {
         "BASELINE" -> runBaseline(workerCount, eventsPerWorker)
-        "SHARED" -> runSharedSpan(workerCount, eventsPerWorker)
+        // A cap above the workload, so nothing is evicted: the workload the 2026-09-14 baseline measured.
+        "SHARED" -> runSharedSpan(workerCount, eventsPerWorker, maxEvents = maxOf(workerCount * eventsPerWorker, 1))
+        // The default cap (ADR-029): 16 workers of 100 events pass it, so appends also evict under contention.
+        "SHARED_CAPPED" -> runSharedSpan(workerCount, eventsPerWorker, maxEvents = Span.MAX_EVENTS)
         "CHILDREN" -> runChildSpans(workerCount, eventsPerWorker)
         else -> error("Unknown concurrency mode: $mode")
     }
@@ -364,10 +379,10 @@ class ConcurrencyHarness(
         }
     }
 
-    private fun runSharedSpan(workerCount: Int, eventsPerWorker: Int): Long {
+    private fun runSharedSpan(workerCount: Int, eventsPerWorker: Int, maxEvents: Int): Long {
         val adapter = CountingLiveAdapter(AcceptAllPolicy)
         val config = TraceConfig(listOf(adapter))
-        val root = freshSpan()
+        val root = freshSpan(maxEvents)
         return runBlocking(dispatcher) {
             withContext(config) {
                 coroutineScope {
@@ -377,7 +392,8 @@ class ConcurrencyHarness(
                         }
                     }.awaitAll()
                 }
-                root.events.size.toLong() + adapter.count() + adapter.checksum()
+                lastDropped = root.droppedEvents
+                root.events.size.toLong() + root.droppedEvents + adapter.count() + adapter.checksum()
             }
         }
     }
@@ -412,10 +428,11 @@ class ConcurrencyHarness(
     }
 }
 
-private fun freshSpan(): Span = Span(
+private fun freshSpan(maxEvents: Int = Span.MAX_EVENTS): Span = Span(
     traceId = TRACE_ID,
     spanId = SPAN_ID,
     parentId = null,
     name = "benchmark",
     startNanos = 1L,
+    maxEvents = maxEvents,
 )

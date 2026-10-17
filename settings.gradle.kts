@@ -1,6 +1,6 @@
 pluginManagement {
-    // Build-only plugins (the release guard); never published. Named apart from `build-logic`, which an app
-    // pulling kotrace into its own composite build may already include.
+    // Build-only plugins, never published. Named apart from `build-logic`, which an app including kotrace in its own
+    // composite build may already have.
     includeBuild("build-logic") { name = "kotrace-build-logic" }
     repositories {
         google()
@@ -12,27 +12,16 @@ plugins {
     id("org.gradle.toolchains.foojay-resolver-convention") version "1.0.0"
 }
 
+// The root project is the pure Kotlin core (`dev.kotrace:kotrace`). Each integration is its own module, so a
+// consumer takes no HTTP client or Android dependency it does not use.
 rootProject.name = "kotrace"
 
-// The root project is the pure-Kotlin tracer core (`dev.kotrace:kotrace`). `:kotrace-okhttp` is the
-// OkHttp instrumentation module — kept separate so the core drags no HTTP client (OTel api/instrumentation
-// split). A Ktor or backend consumer takes only the core.
 include(":kotrace-okhttp")
-
-// `:kotrace-room` is the Room instrumentation module — Android, so kept out of the pure-JVM core (same
-// split as `:kotrace-okhttp`). A pure-JVM or okhttp-only consumer never drags androidx.room.
 include(":kotrace-room")
-
-// `:kotrace-bom` is the Bill of Materials — a constraints-only `java-platform` pinning one coherent set
-// of kotrace module versions, so consumers align them without a version on each dependency.
+// Bill of materials: aligns the versions of every published module.
 include(":kotrace-bom")
-
-// Local performance harness only. It depends on the core project but is neither published nor imported by
-// consumers; keeping JMH here prevents benchmark dependencies from leaking into kotrace's runtime surface.
+// Unpublished: the JMH harness, kept apart so JMH never reaches a consumer, and the runnable showcase.
 include(":benchmarks")
-
-// `:demo` is a runnable showcase, not a published artifact — nested/parallel tracing and the OkHttp
-// `traceparent` glue, driven end-to-end against a throwaway in-process server. Never published.
 include(":demo")
 
 dependencyResolutionManagement {

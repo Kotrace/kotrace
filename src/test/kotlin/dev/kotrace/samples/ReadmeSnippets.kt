@@ -1,16 +1,16 @@
 package dev.kotrace.samples
 
 import dev.kotrace.Kotrace
-import dev.kotrace.LiveAdapter
-import dev.kotrace.ReportAdapter
 import dev.kotrace.SpanCollector
-import dev.kotrace.TracePolicy
 import dev.kotrace.TraceStatus
 import dev.kotrace.UnredactedTraceRead
+import dev.kotrace.adapter.LiveAdapter
+import dev.kotrace.adapter.ReportAdapter
+import dev.kotrace.adapter.TracePolicy
 import dev.kotrace.event.TraceRecord
 import dev.kotrace.event.emitException
 import dev.kotrace.event.emitNamed
-import dev.kotrace.renderTree
+import dev.kotrace.report.renderTree
 import dev.kotrace.span
 import dev.kotrace.withScope
 import kotlinx.coroutines.withContext
@@ -23,7 +23,7 @@ import kotlinx.coroutines.withContext
 @Suppress("unused", "UNUSED_VARIABLE", "UnusedVariable")
 internal object ReadmeSnippets {
 
-    // Stand-ins for the consumer-side adapters and build config the snippets refer to.
+    // Stand-ins for the consumer-side adapters and build configuration the snippets refer to.
     private class CrashAdapter(reporter: Any) : ReportAdapter {
         override val policy = object : TracePolicy {}
         override fun onReport(status: TraceStatus, records: Sequence<TraceRecord>) = Unit
@@ -66,23 +66,23 @@ internal object ReadmeSnippets {
                 }
             }
         }
-        @OptIn(UnredactedTraceRead::class)           // human debug read — never route this to a sink (ADR-008)
+        @OptIn(UnredactedTraceRead::class)           // human debug read, never route this to a sink (ADR-008)
         println(collector.spans.renderTree())
         // end README snippet
     }
 
     fun spanlessAndScope() {
         // README snippet: spanless-scope
-        // 1. Once at startup (or Kotrace.install { diGraph.adapters() } to resolve lazily under DI).
+        // 1. Once at startup (or Kotrace.install { diGraph.adapters() } to resolve lazily under dependency injection).
         Kotrace.install(listOf(myLiveAdapter))
 
-        // 2. Orphan emit — no coroutine, no span needed. Fans live to the installed adapters.
+        // 2. Orphan emit: no coroutine, no span needed. Fans live to the installed adapters.
         fun onPushReceived(cause: Throwable) {
             emitNamed("push_received", mapOf("channel" to "promo"))
-            emitException(cause, mapOf("report" to "explicit"))   // info rides ExceptionRecord.info
+            emitException(cause, mapOf("report" to "explicit"))   // rides ExceptionRecord.spanAttributes
         }
 
-        // 3. A scope — everything inside carries scope_id = "session-42"; a span additionally carries its trace_id.
+        // 3. A scope: everything inside carries scope_id = "session-42"; a span additionally carries its trace_id.
         suspend fun handleSession() = withScope("session-42") {
             emitNamed("session_started")                 // scope_id only
             span("checkout") { /* … */ }                 // trace_id + scope_id

@@ -3,9 +3,9 @@ plugins {
     application
 }
 
-// A runnable showcase only — not a library, not published (no `maven-publish`, no group/version).
+// A runnable showcase, never published.
 dependencies {
-    // Pulls the core (:) transitively, plus the okhttp module for the traceparent-on-the-wire demo.
+    // The core comes through the OkHttp module.
     implementation(project(":kotrace-okhttp"))
     implementation(libs.okhttp)
 }

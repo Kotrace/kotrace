@@ -1,5 +1,9 @@
 package dev.kotrace
 
+import dev.kotrace.adapter.FaultHook
+import dev.kotrace.adapter.FaultPhase
+import dev.kotrace.adapter.ReportAdapter
+import dev.kotrace.adapter.TracePolicy
 import dev.kotrace.event.ExceptionRecord
 import dev.kotrace.event.TraceRecord
 import dev.kotrace.event.addException
@@ -10,8 +14,6 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withContext
-import java.util.concurrent.atomic.AtomicInteger
-import java.util.concurrent.atomic.AtomicReference
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -20,6 +22,8 @@ import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
+import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
 
 /**
  * The return-aware `span` overload (ADR-016): auto-root maps the **returned value** to the trace outcome via
@@ -45,7 +49,7 @@ class AutoRootReturnedOutcomeTest {
 
     private fun Throwable.chain(): Sequence<Throwable> = generateSequence(this) { it.cause }
 
-    // A domain failure carried as a *value* — the failure-as-value model this overload exists for.
+    // A domain failure carried as a *value*: the failure-as-value model this overload exists for.
     private sealed interface Out<out T> {
         data class Ok<T>(val value: T) : Out<T>
         data class Fail(val cause: Throwable, val rollback: List<Throwable> = emptyList()) : Out<Nothing>
@@ -72,7 +76,7 @@ class AutoRootReturnedOutcomeTest {
         assertEquals(TraceStatus.ERROR, report.statuses.single())
         val crashes = report.records.single().filterIsInstance<ExceptionRecord>()
         // Exactly two, no duplication: the birthplace cause (walked from the root's own event) then the
-        // attached orphan (appended after the walk, past the dedup) — order is deterministic.
+        // attached orphan (appended after the walk, past the dedup); order is deterministic.
         assertEquals("exactly the cause + the one orphan, in order", listOf(cause, rollback), crashes.map { it.throwable })
         // Both keyed to the root: same trace_id, operation = root span name.
         val rootTraceId = report.records.single().first().traceId
@@ -123,9 +127,9 @@ class AutoRootReturnedOutcomeTest {
         assertEquals("root ended before onReport saw the trace", true, endedAtReport)
     }
 
-    @Test fun `a successful mapper does not resolve config before the report`() = runTest {
-        // Regression guard for the eager-resolution fix: the fault hook (config) must be resolved LAZILY, so a
-        // successful mapper never triggers the lazy config provider ahead of the report. Install a lazy
+    @Test fun `a successful mapper does not resolve configuration before the report`() = runTest {
+        // Regression guard for the eager-resolution fix: the fault hook (configuration) must be resolved LAZILY, so a
+        // successful mapper never triggers the lazy configuration provider ahead of the report. Install a lazy
         // provider counting its resolutions; assert it is still unresolved when the mapper runs, and resolved
         // by report time. (Under the old eager `quietFaultHook()` this would already read 1 at mapper time.)
         val report = CollectingReport()
@@ -133,13 +137,13 @@ class AutoRootReturnedOutcomeTest {
         Kotrace.install { providerResolutions.incrementAndGet(); listOf(report) }
         var resolvedAtMapper = -1
         span("op", returnedOutcome = { resolvedAtMapper = providerResolutions.get(); TraceOutcome(TraceStatus.OK) }) { }
-        assertEquals("lazy config not resolved before/at the mapper on success", 0, resolvedAtMapper)
-        assertTrue("config resolved by report time", providerResolutions.get() >= 1)
+        assertEquals("lazy configuration not resolved before/at the mapper on success", 0, resolvedAtMapper)
+        assertTrue("configuration resolved by report time", providerResolutions.get() >= 1)
         assertEquals(TraceStatus.OK, report.statuses.single())
     }
 
-    @Test fun `a fatal config provider still lets the mapper run first, then propagates`() = runTest {
-        // The mapper must run before config is resolved: install a provider that throws a JVM-fatal on
+    @Test fun `a fatal configuration provider still lets the mapper run first, then propagates`() = runTest {
+        // The mapper must run before configuration is resolved: install a provider that throws a JVM-fatal on
         // resolution (which only happens at report, after the mapper). The mapper runs (count 1) and only then
         // does the fatal from report-time resolution propagate. Under the old eager order the mapper would
         // never run (count 0) because resolution preceded it.
@@ -149,7 +153,7 @@ class AutoRootReturnedOutcomeTest {
         val thrown = runCatching {
             span("op", returnedOutcome = { calls.incrementAndGet(); TraceOutcome(TraceStatus.OK) }) { }
         }.exceptionOrNull()
-        assertEquals("mapper ran before config resolution's fatal propagated", 1, calls.get())
+        assertEquals("mapper ran before configuration resolution's fatal propagated", 1, calls.get())
         assertTrue("the fatal propagates from report-time resolution", thrown!!.chain().any { it === fatal })
     }
 
@@ -193,7 +197,7 @@ class AutoRootReturnedOutcomeTest {
             span("child", returnedOutcome = { calls.incrementAndGet(); TraceOutcome(TraceStatus.ERROR) }) { 1 }
         }
         assertEquals("a nested return-aware span is a child; mapper inert", 0, calls.get())
-        // Only the enclosing auto-root reports, and its verdict is completion-derived (OK) — the child's
+        // Only the enclosing auto-root reports, and its verdict is completion-derived (OK); the child's
         // ERROR mapper had no say.
         assertEquals("exactly one report, from the enclosing root", 1, report.reports)
         assertEquals(TraceStatus.OK, report.statuses.single())
@@ -225,32 +229,34 @@ class AutoRootReturnedOutcomeTest {
 
     // --- Mapper-fault isolation ---
 
-    private class CapturingHook : AdapterFaultHook {
+    private class CapturingHook : FaultHook {
         val phases = mutableListOf<FaultPhase>()
-        val adapters = mutableListOf<TraceAdapter?>()
+        val faultMessages = mutableListOf<String?>()
         val causes = mutableListOf<Throwable>()
-        override fun onAdapterFault(phase: FaultPhase, adapter: TraceAdapter?, cause: Throwable) {
-            phases += phase; adapters += adapter; causes += cause
+        override fun onFault(phase: FaultPhase, faultMessage: String?, cause: Throwable) {
+            phases += phase; faultMessages += faultMessage; causes += cause
         }
     }
 
     @Test fun `a non-fatal throwing mapper is contained - OK fallback, value unchanged, hook notified`() = runTest {
         val report = CollectingReport()
         val hook = CapturingHook()
-        Kotrace.install(listOf(report), hook)
+        Kotrace.installFaultHook(hook)
+        Kotrace.install(listOf(report))
         val boom = RuntimeException("mapper blew up")
         val out = span("op", returnedOutcome = { throw boom }) { 99 }
         assertEquals("returned value is unchanged by a mapper fault", 99, out)
         assertEquals("contained ⇒ fallback OK, never an invented failure", TraceStatus.OK, report.statuses.single())
         assertEquals("routed with the new phase", listOf(FaultPhase.RETURNED_OUTCOME), hook.phases)
-        assertNull("mapper fault has no single adapter owner", hook.adapters.single())
+        assertEquals("the mapper is the step that failed", "span.returned_outcome", hook.faultMessages.single())
         assertSame(boom, hook.causes.single())
     }
 
     @Test fun `a mapper-thrown CancellationException is contained, not trace cancellation`() = runTest {
         val report = CollectingReport()
         val hook = CapturingHook()
-        Kotrace.install(listOf(report), hook)
+        Kotrace.installFaultHook(hook)
+        Kotrace.install(listOf(report))
         val out = span("op", returnedOutcome = { throw CancellationException("spurious") }) { 7 }
         assertEquals("block already returned; nothing to cancel", 7, out)
         assertEquals("contained → OK, not CANCELLED", TraceStatus.OK, report.statuses.single())
@@ -271,18 +277,18 @@ class AutoRootReturnedOutcomeTest {
     // --- Strict-mode precedence (ADR-013 / ADR-011) ---
 
     @Test fun `strict-mode failure on a normal return propagates as itself`() = runTest {
-        Kotrace.strictWhenUninstalled() // armed, nothing installed → reportTrace's config resolution throws
+        Kotrace.strictWhenNotInstalled() // armed, nothing installed → reportTrace's configuration resolution throws
         val thrown = runCatching {
             span("op", returnedOutcome = { TraceOutcome(TraceStatus.OK) }) { 42 }
         }.exceptionOrNull()
         assertTrue(
             "with nothing escaping, the strict failure propagates",
-            thrown!!.chain().any { it is IllegalStateException && it.message?.contains("strict-uninstalled") == true },
+            thrown!!.chain().any { it is IllegalStateException && it.message?.contains("strict-not-installed") == true },
         )
     }
 
     @Test fun `strict-mode preserves an escaping application throwable over the strict failure`() = runTest {
-        Kotrace.strictWhenUninstalled()
+        Kotrace.strictWhenNotInstalled()
         val app = IllegalStateException("app")
         val thrown = runCatching {
             span<Int>("op", returnedOutcome = { TraceOutcome(TraceStatus.OK) }) { throw app }
@@ -294,7 +300,7 @@ class AutoRootReturnedOutcomeTest {
         // ADR-016 §strict: the block's own birthplace recording (addException → resolvedThreadConfig) can trip
         // strict *inside the block*, before the mapper sees the value. That throw escapes as an application
         // throwable, so the mapper is never consulted (the block did not return normally).
-        Kotrace.strictWhenUninstalled()
+        Kotrace.strictWhenNotInstalled()
         val calls = AtomicInteger(0)
         val thrown = runCatching {
             span("op", returnedOutcome = { calls.incrementAndGet(); TraceOutcome(TraceStatus.OK) }) {
@@ -305,7 +311,7 @@ class AutoRootReturnedOutcomeTest {
         assertEquals("block threw before returning ⇒ mapper never runs", 0, calls.get())
         assertTrue(
             "the strict failure escapes",
-            thrown!!.chain().any { it is IllegalStateException && it.message?.contains("strict-uninstalled") == true },
+            thrown!!.chain().any { it is IllegalStateException && it.message?.contains("strict-not-installed") == true },
         )
     }
 
@@ -315,7 +321,7 @@ class AutoRootReturnedOutcomeTest {
         val report = CollectingReport()
         Kotrace.install(listOf(report))
         // Merging the two overloads into one (returnedOutcome defaulted, before block) intentionally drops the
-        // block-as-4th-positional shape `span(name, attrs, links, { })` — that position now binds
+        // block-as-4th-positional shape `span(name, attrs, links, { })`: that position now binds
         // returnedOutcome, so the block must be a trailing lambda. These surviving shapes report OK by default:
         span("trailing") { }
         span("with-attrs", emptyMap(), emptyList()) { }

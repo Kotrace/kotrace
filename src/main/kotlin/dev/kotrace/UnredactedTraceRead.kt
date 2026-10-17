@@ -1,5 +1,8 @@
 package dev.kotrace
 
+import dev.kotrace.report.renderTree
+import dev.kotrace.report.reportTrace
+
 /**
  * Marks an **unredacted, human-only** trace read: [List.renderTree] and the raw timeline behind it, [Span.events]
  * and [dev.kotrace.event.exception] (ADR-028). Unlike [reportTrace] and `toJson`, no policy applies: `sensitive`
@@ -10,7 +13,7 @@ package dev.kotrace
  * output safe to ship.
  */
 @RequiresOptIn(
-    message = "An unredacted human debug read — it exposes sensitive log messages and raw exception text. " +
+    message = "An unredacted human debug read: it exposes sensitive log messages and raw exception text. " +
         "Never route what it returns to a sink, logger, or crash report. For machine egress use reportTrace / " +
         "toJson instead.",
     level = RequiresOptIn.Level.ERROR,

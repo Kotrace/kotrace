@@ -14,7 +14,7 @@ import org.junit.Test
 
 /**
  * Cross-trace links (ADR-009). A [TraceLink] is a birth-set, span-scoped reference to another *trace* by
- * `trace_id` only — it rides onto every record lifted off the linking span and surfaces in `toJson` as a
+ * `trace_id` only: it rides onto every record lifted off the linking span and surfaces in `toJson` as a
  * nested `links` array. A span with no links is unchanged on the wire.
  */
 class LinkTest {

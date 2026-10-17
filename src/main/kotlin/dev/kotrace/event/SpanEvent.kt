@@ -10,8 +10,8 @@ sealed interface SpanEvent {
 
 /**
  * An event carrying free-form [attributes]: static symbols, never user content. Severity, tag and layer ride here,
- * interpreted only by the consumer's [dev.kotrace.TracePolicy]. [ExceptionEvent] is not one: its `Throwable` is its
- * data, and an attribute bag would invite copying `exception.message` into it.
+ * interpreted only by the consumer's [dev.kotrace.adapter.TracePolicy]. [ExceptionEvent] is not one: its `Throwable` is
+ * its data, and an attribute bag would invite copying `exception.message` into it.
  */
 sealed interface AttributedEvent : SpanEvent {
     val attributes: Map<String, String>

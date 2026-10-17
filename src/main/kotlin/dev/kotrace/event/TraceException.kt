@@ -3,7 +3,7 @@ package dev.kotrace.event
 import dev.kotrace.Span
 import dev.kotrace.TraceLink
 import dev.kotrace.UnredactedTraceRead
-import dev.kotrace.isJvmFatal
+import dev.kotrace.bridge.runIsolated
 import dev.kotrace.resolvedThreadConfig
 import java.util.Collections
 import java.util.IdentityHashMap
@@ -11,7 +11,7 @@ import java.util.IdentityHashMap
 /**
  * A throwable on a span's timeline, ordered among its log lines. It carries the raw [throwable], which a crash
  * reporter needs for symbolication and grouping, and no attributes, so only a policy that inspects it in
- * [dev.kotrace.TracePolicy.acceptsEvent] can drop it.
+ * [dev.kotrace.adapter.TracePolicy.acceptsEvent] can drop it.
  */
 class ExceptionEvent internal constructor(
     val throwable: Throwable,
@@ -44,21 +44,19 @@ private const val MAX_RECOVERY_DEPTH = 100
  * own identity (**fail open**): a duplicate record at worst, never a dropped failure.
  *
  * **Total.** `cause`, `message` and `stackTrace` are overridable and can throw; this runs on the failure path,
- * including [dev.kotrace.end], so a non-fatal accessor throw ends the walk at the last object held.
+ * including [dev.kotrace.bridge.end], so a non-fatal accessor throw ends the walk at the last object held.
  */
 internal fun lineageKeyOf(throwable: Throwable): Any {
     var current: Throwable = throwable
     val seen = Collections.newSetFromMap(IdentityHashMap<Throwable, Boolean>())
     var depth = 0
-    try {
+    runIsolated(phase = null, recover = {}) {
         while (seen.add(current) && depth < MAX_RECOVERY_DEPTH) {
             val cause = current.cause ?: break
             if (!current.isRecoveryWrapperOf(cause)) break
             current = cause
             depth++
         }
-    } catch (fault: Throwable) {
-        if (fault.isJvmFatal()) throw fault
     }
     return current
 }
@@ -82,12 +80,16 @@ enum class ExceptionOrigin { BIRTHPLACE, PROPAGATED }
 
 /**
  * The crash record: identity plus the raw [throwable]. It carries no attributes, so only a policy that covers
- * exceptions ([dev.kotrace.TracePolicy.acceptsEvent]) can drop it.
+ * exceptions ([dev.kotrace.adapter.TracePolicy.acceptsEvent]) can drop it.
  *
  * The [throwable] is the one field allowed to carry user data (see [dev.kotrace.Span]), so it goes **only** to a
  * crash reporter, never to the [toJson] log path. An adapter routing it there **must stamp [traceId] as a
  * searchable key on the crash report** (Crashlytics `setCustomKey("trace_id", traceId)`): it is the sole join key
  * between the log store and the crash reporter.
+ *
+ * [origin] is `null` on a live record, emitted before the tree is complete (ADR-019). On a report record it is
+ * [ExceptionOrigin.BIRTHPLACE] or [ExceptionOrigin.PROPAGATED]; by default an adapter receives only the
+ * birthplaces, one with `acceptsPropagatedException` also the copies.
  */
 data class ExceptionRecord(
     override val traceId: String?,
@@ -96,14 +98,9 @@ data class ExceptionRecord(
     override val operation: String?,
     override val atNanos: Long,
     override val scopeId: String? = null,
-    override val info: Map<String, String>,
+    override val spanAttributes: Map<String, String>,
     override val links: List<TraceLink>,
     val throwable: Throwable,
-    /**
-     * `null` on a live record, emitted before the tree is complete (ADR-019). On a report record,
-     * [ExceptionOrigin.BIRTHPLACE] or [ExceptionOrigin.PROPAGATED]; by default an adapter receives only the
-     * birthplaces, one with `acceptsPropagatedException` also the copies.
-     */
     val origin: ExceptionOrigin? = null,
 ) : TraceRecord
 
@@ -115,13 +112,14 @@ data class ExceptionRecord(
  * A throwable that escapes [dev.kotrace.span] is re-recorded on every enclosing span, so a live watch sees one line
  * per ancestor, deepest first. By default the report keeps only the birthplace (ADR-019).
  *
- * [info] merges over the span's [dev.kotrace.Span.info] onto the live [ExceptionRecord.info] only, such as a marker
- * kotrace does not interpret (ADR-010); the event itself holds none, so the report is unaffected.
+ * [attributes] merge over the span's [dev.kotrace.Span.attributes] onto the live [ExceptionRecord.spanAttributes]
+ * only, such as a marker kotrace does not interpret (ADR-010); the event itself holds none, so the report is
+ * unaffected.
  *
  * Each call is its **own lineage**, never deduped against another (ADR-015).
  */
-fun Span.addException(cause: Throwable, info: Map<String, String> = emptyMap()) {
-    emit(ExceptionEvent(cause, System.nanoTime()), resolvedThreadConfig(), info)
+fun Span.addException(cause: Throwable, attributes: Map<String, String> = emptyMap()) {
+    emit(ExceptionEvent(cause, System.nanoTime()), resolvedThreadConfig(), attributes)
 }
 
 /**
@@ -134,7 +132,7 @@ internal fun Span.recordPropagatedException(cause: Throwable) {
 
 /**
  * The first throwable still on this span's timeline, if any: its birthplace throwable where the failure was born,
- * a propagated copy on an ancestor (ADR-019). A span past [Span.MAX_EVENTS] holding only exceptions has discarded
+ * a propagated copy on an ancestor (ADR-019). A span past [Span.maxEvents] holding only exceptions has discarded
  * its oldest ones (ADR-029). Unredacted ([UnredactedTraceRead]): the raw throwable, message included.
  */
 @UnredactedTraceRead

@@ -4,16 +4,16 @@
 package dev.kotrace.room
 
 import dev.kotrace.Kotrace
+import dev.kotrace.SpanCollector
+import dev.kotrace.TraceConfig
+import dev.kotrace.TraceStatus
+import dev.kotrace.adapter.ReportAdapter
+import dev.kotrace.adapter.TracePolicy
 import dev.kotrace.event.AttributedEvent
 import dev.kotrace.event.LogEvent
-import dev.kotrace.ReportAdapter
-import dev.kotrace.SpanCollector
 import dev.kotrace.event.SpanEvent
-import dev.kotrace.TraceConfig
-import dev.kotrace.TracePolicy
 import dev.kotrace.event.TraceRecord
-import dev.kotrace.TraceStatus
-import dev.kotrace.reportTrace
+import dev.kotrace.report.reportTrace
 import dev.kotrace.span
 import androidx.room.RoomDatabase
 import io.mockk.CapturingSlot
@@ -32,13 +32,13 @@ import java.util.concurrent.Executor
 /**
  * The callback logs the executed SQL onto the active span (resolved via the `currentThreadSpan()` ThreadLocal,
  * which is live on the query thread) and never logs the bound values. Severity rides as a caller-supplied
- * `"level"` attribute — kotrace holds no level taxonomy — which the consumer's capture policy ranks.
+ * `"level"` attribute (kotrace holds no level taxonomy), which the consumer's capture policy ranks.
  */
 class TracingQueryCallbackTest {
 
     private val debug = mapOf("level" to "DEBUG")
 
-    /** A report adapter whose policy accepts every event, incl. DEBUG. */
+    /** A report adapter whose policy accepts every event, including DEBUG. */
     private val captureAll = object : ReportAdapter {
         override val policy = object : TracePolicy {
             override fun acceptsEvent(event: SpanEvent) = true
@@ -46,7 +46,7 @@ class TracingQueryCallbackTest {
         override fun onReport(status: TraceStatus, records: Sequence<TraceRecord>) = Unit
     }
 
-    /** A collecting report adapter whose policy drops DEBUG (keeps INFO/WARN/ERROR) — the typical production default. */
+    /** A collecting report adapter whose policy drops DEBUG (keeps INFO/WARN/ERROR), the typical production default. */
     private val dropDebug = object : ReportAdapter {
         val records = mutableListOf<TraceRecord>()
         override val policy = object : TracePolicy {
@@ -59,7 +59,7 @@ class TracingQueryCallbackTest {
     }
 
     @Test
-    fun `logs SQL text to the active span, never the bind args`() = runTest {
+    fun `logs SQL text to the active span, never the bind arguments`() = runTest {
         val collector = SpanCollector()
         withContext(collector + TraceConfig(listOf(captureAll))) {
             span("account.get") {
@@ -82,7 +82,7 @@ class TracingQueryCallbackTest {
             }
             collector.reportTrace(TraceStatus.OK)
         }
-        assertFalse("DEBUG event is stored — no capture gate (ADR-002)", collector.spans.single().events.isEmpty())
+        assertFalse("DEBUG event is stored: no capture gate (ADR-002)", collector.spans.single().events.isEmpty())
         assertTrue("but the policy drops it at fan-out", dropDebug.records.isEmpty())
     }
 
@@ -98,7 +98,7 @@ class TracingQueryCallbackTest {
             }
         }
 
-        assertEquals("the delegate sees the query and its args", listOf("SELECT 1 WHERE x = ?" to listOf<Any?>(42)), seen)
+        assertEquals("the delegate sees the query and its arguments", listOf("SELECT 1 WHERE x = ?" to listOf<Any?>(42)), seen)
         assertEquals("and the span still logs it", 1, collector.spans.single().events.filterIsInstance<LogEvent>().size)
     }
 
@@ -117,26 +117,29 @@ class TracingQueryCallbackTest {
     }
 
     @Test
-    fun `a telemetry fault never escapes into Room, and the app's callback still runs`() = runTest {
-        // Room runs the callback in a coroutine on its callback scope: a throw escaping onQuery would reach the
-        // uncaught-exception handler (a crash on Android) and cancel that scope for every later query.
+    fun `the strict-not-installed failure reaches Room, after the app's callback ran`() = runTest {
+        // Strict is armed only in a debug build, to make a missing install loud (ADR-011/035). Every other logging
+        // fault is contained, since a throw in Room's callback scope can crash the app.
         val seen = mutableListOf<String>()
         val appCallback = androidx.room.RoomDatabase.QueryCallback { sql, _ -> seen += sql }
-        Kotrace.strictWhenUninstalled() // nothing installed: every emit on this flow throws (ADR-011)
-        try {
-            withContext(SpanCollector()) {
-                span("account.get") { TracingQueryCallback(debug, delegate = appCallback).onQuery("SELECT 1", emptyList()) }
-            }
+        Kotrace.strictWhenNotInstalled() // nothing installed: every emit on this flow throws
+        val thrown = try {
+            runCatching {
+                withContext(SpanCollector()) {
+                    span("account.get") { TracingQueryCallback(debug, delegate = appCallback).onQuery("SELECT 1", emptyList()) }
+                }
+            }.exceptionOrNull()
         } finally {
             Kotrace.resetForTest()
         }
 
-        assertEquals(listOf("SELECT 1"), seen)
+        assertEquals("the app's callback still saw the query", listOf("SELECT 1"), seen)
+        assertTrue("the strict failure, not a contained one", thrown?.message.orEmpty().contains("strict-not-installed"))
     }
 
     @Test
     fun `a JVM-fatal error while logging still propagates`() = runTest {
-        val fatal = object : dev.kotrace.LiveAdapter {
+        val fatal = object : dev.kotrace.adapter.LiveAdapter {
             override val policy = object : TracePolicy {
                 override val acceptsSensitive = true
             }
@@ -153,7 +156,7 @@ class TracingQueryCallbackTest {
     }
 
     @Test
-    fun `a delegate executor runs each query later, with its bind args snapshotted`() {
+    fun `a delegate executor runs each query later, with its bind arguments snapshotted`() {
         val tasks = mutableListOf<Runnable>()
         val seen = mutableListOf<Pair<String, List<Any?>>>()
         val forwarded = androidx.room.RoomDatabase.QueryCallback { sql, args -> seen += sql to args }

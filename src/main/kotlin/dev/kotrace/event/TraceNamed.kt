@@ -5,8 +5,8 @@ import dev.kotrace.TraceLink
 import dev.kotrace.resolvedThreadConfig
 
 /**
- * A named occurrence on a span ([name] plus [attributes]), OTel's `event.name` shape, such as a product-analytics
- * event; its meaning lives in the consumer's adapter. [attributes] values are static symbols, never user content.
+ * A named occurrence on a span ([name] plus [attributes]), such as a product-analytics event; its meaning lives in
+ * the consumer's adapter. [attributes] values are static symbols, never user content.
  */
 class NamedEvent(
     val name: String,
@@ -25,14 +25,14 @@ data class NamedRecord(
     override val operation: String?,
     override val atNanos: Long,
     override val scopeId: String? = null,
-    override val info: Map<String, String>,
+    override val spanAttributes: Map<String, String>,
     override val links: List<TraceLink>,
     val name: String,
     override val attributes: Map<String, String>,
 ) : AttributedRecord
 
 /**
- * Adds a [NamedEvent] to this span, for a [dev.kotrace.LiveAdapter] such as an analytics sink. A named event is
+ * Adds a [NamedEvent] to this span, for a [dev.kotrace.adapter.LiveAdapter] such as an analytics sink. A named event is
  * live-only: it is never part of a report.
  */
 fun Span.addNamed(name: String, attributes: Map<String, String> = emptyMap()) {

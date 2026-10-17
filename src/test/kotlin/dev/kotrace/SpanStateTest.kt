@@ -3,6 +3,8 @@
 
 package dev.kotrace
 
+import dev.kotrace.bridge.NonSuspendTracingBridge
+import dev.kotrace.bridge.end
 import dev.kotrace.event.exception
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
@@ -11,7 +13,7 @@ import org.junit.Test
 
 /**
  * The terminal-state safe-publication (D1 / ADR-006): [Span.status] / [Span.endNanos] read off one atomic
- * [State][Span] pair. Behavioral cover for the refactor — the race itself is not unit-testable; correctness
+ * [State][Span] pair. Behavioral cover for the refactor; the race itself is not unit-testable; correctness
  * is by construction (single atomic publish = happens-before + consistent pair).
  */
 class SpanStateTest {

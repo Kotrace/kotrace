@@ -1,13 +1,14 @@
 package dev.kotrace.okhttp
 
-import dev.kotrace.NonSuspendTracingBridge
 import dev.kotrace.Span
 import dev.kotrace.SpanStatus
 import dev.kotrace.TRACEPARENT_HEADER
-import dev.kotrace.end
+import dev.kotrace.adapter.FaultPhase
+import dev.kotrace.bridge.NonSuspendTracingBridge
+import dev.kotrace.bridge.end
+import dev.kotrace.bridge.runIsolated
+import dev.kotrace.bridge.startSpan
 import dev.kotrace.event.log
-import dev.kotrace.isJvmFatal
-import dev.kotrace.startSpan
 import dev.kotrace.toTraceparent
 import okhttp3.Headers
 import okhttp3.Interceptor
@@ -27,7 +28,8 @@ import java.util.concurrent.atomic.AtomicBoolean
 /**
  * Opens and closes the HTTP [Span] for each execution of a call [TracingCallFactory] tagged: injects the W3C
  * `traceparent` so the backend continues the trace, and stamps the span's status, timing and error. It emits under
- * the flow's captured config (ADR-023), and a telemetry fault never changes the call's response or exception. An
+ * the flow's captured configuration (ADR-023), and a telemetry fault never changes the call's response or exception: it
+ * reaches the `FaultHook` as `FaultPhase.HTTP` (ADR-035), and only an armed strict check fails the call. An
  * untagged request passes through untouched. Install it with `addInterceptor` (once per call), not
  * `addNetworkInterceptor` (once per hop).
  *
@@ -38,7 +40,7 @@ import java.util.concurrent.atomic.AtomicBoolean
  *
  * A call its caller canceled ends its span ERROR without recording an exception, like a cancelled span (ADR-022).
  * A call that hit its `callTimeout` is a failure and is recorded, although OkHttp enforces the timeout by canceling
- * the call. The span's `http.outcome` info (`canceled` or `call_timeout`) tells them apart for a non-sensitive sink.
+ * the call. The span's `http.outcome` attribute (`canceled` or `call_timeout`) tells them apart for a non-sensitive sink.
  * A timeout records OkHttp's own cancellation exception; the caller receives it wrapped in an
  * `InterruptedIOException("timeout")`.
  *
@@ -76,33 +78,28 @@ class TracingInterceptor(
 
     /**
      * One execution, one span (ADR-023): a cloned or retried call gets its own span. Every telemetry step runs under
-     * [bestEffort], so a telemetry fault can neither fail the call nor replace its exception.
+     * [runIsolated], so a telemetry fault can neither fail the call nor replace its exception (ADR-035).
      */
     @OptIn(NonSuspendTracingBridge::class)
     private fun traced(chain: Interceptor.Chain, trace: HttpTrace): Response {
         val handoff = trace.handoff
         val span = startSpan(
             trace.spanName,
-            trace.attributes,
+            trace.traits,
             parent = handoff.parent,
             collector = handoff.collector,
             scopeId = handoff.scopeId,
         )
         // The inherited trace id may not be W3C-shaped, and toTraceparent refuses it (ADR-028): send the request
         // without the header rather than fail it.
-        val traceparent = try {
-            span.toTraceparent()
-        } catch (t: Throwable) {
-            if (t.isJvmFatal()) throw t
-            null
-        }
+        val traceparent = runIsolated(phase = null, recover = { null }) { span.toTraceparent() }
         // Never keep a caller-set traceparent: it would tie the request to an unrelated trace.
         val request = chain.request().newBuilder().apply {
             if (traceparent == null) removeHeader(TRACEPARENT_HEADER) else header(TRACEPARENT_HEADER, traceparent)
         }.build()
 
         val path = request.url.encodedPath
-        bestEffort {
+        runIsolated(FaultPhase.HTTP, "http.request.log", recover = {}) {
             if (traceparent == null && level >= Level.BASIC) span.log { "traceparent omitted: the trace id is not a W3C trace-id" }
             if (level >= Level.HEADERS) span.log(sensitive = true) { "⇢ ${request.method} $path headers${request.headers.render()}" }
             if (level >= Level.BODY) request.bodySnippet()?.let { snippet -> span.log(sensitive = true) { "⇢ body $snippet" } }
@@ -116,9 +113,11 @@ class TracingInterceptor(
             // failure whatever state the call is in.
             val canceled = t is IOException && isCanceled(chain)
             val timedOut = canceled && callTimeoutSpent(chain, span)
-            bestEffort {
+            runIsolated(FaultPhase.HTTP, "http.failure.log", escaping = t, recover = {}) {
                 // Before the log and the record, so every record of this span carries it.
-                if (canceled) span.putInfo(HttpSpan.OUTCOME, if (timedOut) HttpSpan.CALL_TIMEOUT else HttpSpan.CANCELED)
+                if (canceled) {
+                    span.putAttribute(HttpSpan.OUTCOME, if (timedOut) HttpSpan.CALL_TIMEOUT else HttpSpan.CANCELED)
+                }
                 if (level >= Level.BASIC) {
                     span.log(sensitive = true) {
                         val outcome = when {
@@ -137,26 +136,28 @@ class TracingInterceptor(
         // Capture plain values, never the Response: a report adapter evaluates the lazy messages after the body closed.
         val code = response.code
         val headers = response.headers
-        bestEffort {
-            span.putInfo(HttpSpan.STATUS, code.toString())
-            val tookMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startNanos)
-            if (level >= Level.BASIC) span.log(sensitive = true) { "← $code ${request.method} $path (${tookMs}ms)" }
-            if (level >= Level.HEADERS) span.log(sensitive = true) { "⇠ $code headers${headers.render()}" }
+        // The span ends even when a strict failure propagates from a step below (ADR-035).
+        try {
+            runIsolated(FaultPhase.HTTP, "http.response.log", recover = {}) {
+                span.putAttribute(HttpSpan.STATUS, code.toString())
+                val tookMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startNanos)
+                if (level >= Level.BASIC) span.log(sensitive = true) { "← $code ${request.method} $path (${tookMs}ms)" }
+                if (level >= Level.HEADERS) span.log(sensitive = true) { "⇠ $code headers${headers.render()}" }
+            }
+            return if (level >= Level.BODY) response.withBodyCapture(request, span, trace) else response
+        } finally {
+            span.end(if (response.isSuccessful) SpanStatus.OK else SpanStatus.ERROR)
         }
-        val returned = if (level >= Level.BODY) response.withBodyCapture(request, span, trace) else response
-        span.end(if (response.isSuccessful) SpanStatus.OK else SpanStatus.ERROR)
-        return returned
     }
 
     /**
      * The response with its body wrapped in a [TeeSource] that logs the snippet onto [span] once the caller is done
-     * reading, on whatever thread that is. A stream is logged as omitted; on any non-fatal fault the original
-     * response is returned.
+     * reading, on whatever thread that is. A stream is logged as omitted; on a fault the original response is returned.
      */
     @OptIn(NonSuspendTracingBridge::class)
     private fun Response.withBodyCapture(request: Request, span: Span, trace: HttpTrace): Response {
         if (bodyLimit == 0L) return this
-        return try {
+        return runIsolated(FaultPhase.HTTP, "http.response.body", recover = { this }) {
             // Nullable on OkHttp 4 (the declared floor, ADR-027), never null on 5.
             val body = body ?: return this
             val type = body.contentType()
@@ -166,7 +167,7 @@ class TracingInterceptor(
                 else -> null
             }
             if (omitted != null) {
-                bestEffort { span.log(sensitive = true) { "⇠ body $omitted" } }
+                runIsolated(FaultPhase.HTTP, "http.response.body.omitted", recover = {}) { span.log(sensitive = true) { "⇠ body $omitted" } }
                 return this
             }
             val contentLength = body.contentLength()
@@ -174,15 +175,12 @@ class TracingInterceptor(
                 // Partial only when provably so: a JSON converter often stops at the closing brace, before EOF.
                 val partial = !reachedEnd && contentLength >= 0 && seen < contentLength
                 trace.handoff.withCapturedConfig {
-                    bestEffort {
+                    runIsolated(FaultPhase.HTTP, "http.response.body.log", recover = {}) {
                         captured.snippet(contentLength, partial)?.let { snippet -> span.log(sensitive = true) { "⇠ body $snippet" } }
                     }
                 }
             }
             newBuilder().body(tee.buffer().asResponseBody(type, contentLength)).build()
-        } catch (t: Throwable) {
-            if (t.isJvmFatal()) throw t
-            this
         }
     }
 
@@ -190,30 +188,18 @@ class TracingInterceptor(
      * Whether the call's `callTimeout` is spent. The span opens after earlier interceptors, so its clock trails the
      * call's: the last tenth of the budget counts too, reading a late cancel as a timeout rather than losing one.
      */
-    private fun callTimeoutSpent(chain: Interceptor.Chain, span: Span): Boolean = try {
-        val budget = chain.call().timeout().timeoutNanos()
-        budget > 0 && System.nanoTime() - span.startNanos >= budget - budget / 10
-    } catch (t: Throwable) {
-        if (t.isJvmFatal()) throw t
-        false
-    }
-
-    /** Whether the call itself was canceled; a chain that cannot say (a test double) reads as not canceled. */
-    private fun isCanceled(chain: Interceptor.Chain): Boolean = try {
-        chain.call().isCanceled()
-    } catch (t: Throwable) {
-        if (t.isJvmFatal()) throw t
-        false
-    }
-
-    /** Runs one telemetry step, containing any non-fatal fault (ADR-014). */
-    private inline fun bestEffort(block: () -> Unit) {
-        try {
-            block()
-        } catch (t: Throwable) {
-            if (t.isJvmFatal()) throw t
+    private fun callTimeoutSpent(chain: Interceptor.Chain, span: Span): Boolean =
+        runIsolated(phase = null, recover = { false }) {
+            val budget = chain.call().timeout().timeoutNanos()
+            budget > 0 && System.nanoTime() - span.startNanos >= budget - budget / 10
         }
-    }
+
+    /**
+     * Whether the call itself was canceled; a chain that cannot say (a test double) reads as not canceled. Like
+     * [callTimeoutSpent], a probe, not a telemetry step: a chain that cannot answer is no fault to report.
+     */
+    private fun isCanceled(chain: Interceptor.Chain): Boolean =
+        runIsolated(phase = null, recover = { false }) { chain.call().isCanceled() }
 
     private fun Headers.render(): String = buildString {
         this@render.forEach { (name, value) -> append("\n    $name: $value") }
@@ -232,13 +218,15 @@ class TracingInterceptor(
         val length = body.contentLength()
         if (length > bodyLimit) return "(body omitted, $length bytes)"
         val capped = CappedSink(captureLimit)
-        try {
-            val sink = capped.buffer()
-            body.writeTo(sink)
-            sink.flush()
-        } catch (t: Throwable) {
-            // SnippetFull stops the write at the cap; a read failure keeps whatever was captured.
-            if (t.isJvmFatal()) throw t
+        // A failure keeps whatever was captured.
+        runIsolated(FaultPhase.HTTP, "http.request.body", recover = {}) {
+            try {
+                val sink = capped.buffer()
+                body.writeTo(sink)
+                sink.flush()
+            } catch (_: SnippetFull) {
+                // The cap stops the write, by design: no fault.
+            }
         }
         return capped.captured.snippet(length, partial = false)
     }
@@ -257,7 +245,17 @@ class TracingInterceptor(
     }
 }
 
-/** Keeps the first [limit] bytes written to it, then stops the writer with [SnippetFull] (ADR-024). */
+/**
+ * The sink a request body is written into to capture its snippet (ADR-024). A request body can be written more than
+ * once, so this copy never touches the one sent on the wire.
+ *
+ * It keeps the first [limit] bytes in [captured] and discards the rest, since a [Sink] must consume every byte it is
+ * given. Once [limit] bytes are kept it throws [SnippetFull], so `writeTo` stops instead of serializing the rest of a
+ * large body. [limit] is one byte over the snippet length: that extra byte is how the snippet knows it was truncated.
+ *
+ * The cap bounds the copy, not memory: okio stages a single large write whole before this sink sees it, so the caller
+ * omits a body whose declared length is already over the limit.
+ */
 private class CappedSink(private val limit: Long) : Sink {
     val captured = Buffer()
 
@@ -274,8 +272,14 @@ private class CappedSink(private val limit: Long) : Sink {
 }
 
 /**
- * Copies the first [limit] bytes the caller reads through it and hands them to [onDone] once, when the caller
- * reaches the end or closes the body (ADR-024). It reads only when the caller does.
+ * Wraps a response body's source to capture its snippet while the caller reads (ADR-024). A response body can be read
+ * only once, so kotrace never reads it itself: every read passes through unchanged and the first [limit] bytes are
+ * copied aside. It adds no read and no wait, and keeps nothing beyond those bytes.
+ *
+ * [onDone] runs exactly once, on the caller's thread, when the caller reaches the end of the body or closes it,
+ * whichever comes first. It receives the copied bytes, `seen` (every byte read through, past [limit] too) and
+ * `reachedEnd`, false when the caller closed before the end, as a JSON converter does when it stops at the closing
+ * brace. A body the caller never reads and never closes never calls it.
  */
 private class TeeSource(
     delegate: Source,
@@ -312,5 +316,11 @@ private class TeeSource(
 }
 
 
-/** Control flow only: stops a body's `writeTo` at the snippet cap. No stack trace, no suppression. */
-private class SnippetFull : RuntimeException("kotrace: body snippet limit reached", null, false, false)
+/**
+ * Control flow only: stops a body's `writeTo` at the snippet cap. It records no stack trace, by overriding
+ * [fillInStackTrace] rather than through the constructor that takes `writableStackTrace`, which Android has only
+ * from API 24.
+ */
+private class SnippetFull : RuntimeException("kotrace: body snippet limit reached") {
+    override fun fillInStackTrace(): Throwable = this
+}

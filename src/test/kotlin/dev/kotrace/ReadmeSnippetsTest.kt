@@ -7,7 +7,7 @@ import java.io.File
 
 /**
  * Keeps README code honest (ADR-007): every ```kotlin block is tagged `<!-- snippet: name -->`, and every
- * non-Gradle one must equal — imports aside, indentation normalized — a `README snippet` region in a sample
+ * non-Gradle one must equal (imports aside, indentation normalized) a `README snippet` region in a sample
  * source file that `check` compiles. Editing a README snippet without its compiled twin (or vice versa) fails
  * here, so the README cannot show code that no longer compiles.
  */

@@ -1,45 +1,46 @@
 package dev.kotrace.event
 
-import dev.kotrace.FaultPhase
-import dev.kotrace.accepts
+import dev.kotrace.adapter.FaultPhase
+import dev.kotrace.adapter.accepts
+import dev.kotrace.bridge.runIsolated
 import dev.kotrace.currentThreadScopeId
-import dev.kotrace.guardAdapter
-import dev.kotrace.guardPolicy
-import dev.kotrace.guardShared
-import dev.kotrace.liveFanOut
+import dev.kotrace.internal.liveFanOut
 import dev.kotrace.resolvedThreadConfig
 
 /**
  * The span-less counterpart of [log] / [addNamed] / [addException] (ADR-010), for an emit outside any span (an
  * app-lifecycle callback, a push handler). The record has no span identity and goes **live only**, since there is
- * no tree to report; each adapter's policy still gates it, minus [dev.kotrace.TracePolicy.acceptsSpan]. Inside a
- * [dev.kotrace.withScope] it carries the [TraceRecord.scopeId].
+ * no tree to report; each adapter's policy still gates it, minus [dev.kotrace.adapter.TracePolicy.acceptsSpan]. Inside
+ * a [dev.kotrace.withScope] it carries the [TraceRecord.scopeId].
  */
-private fun emitSpanless(event: SpanEvent, info: Map<String, String> = emptyMap()) {
+private fun emitSpanless(event: SpanEvent, attributes: Map<String, String> = emptyMap()) {
     val config = resolvedThreadConfig()
     val live = config?.liveAdapters ?: return
     if (live.isEmpty()) return
-    val hook = config.faultHook
     // Inside a live fan-out on this thread it has nowhere to be stored, so it is dropped (ADR-025).
     liveFanOut {
+        // A faulting policy reads as reject.
         val accepting = live.filter { adapter ->
-            guardPolicy(FaultPhase.SPANLESS_LIVE, adapter, hook) { adapter.policy.accepts(event) }
+            runIsolated(FaultPhase.SPANLESS_LIVE, "spanless.policy", recover = { false }) {
+                adapter.policy.accepts(event)
+            }
         }
         if (accepting.isEmpty()) return
-        val record = guardShared(FaultPhase.SPANLESS_LIVE, hook) {
-            spanlessRecordOf(event, currentThreadScopeId(), info)
+        // Shared by every adapter, so a fault here is no one adapter's: no adapter receives the event.
+        val record = runIsolated(FaultPhase.SPANLESS_LIVE, "spanless.record", recover = { null }) {
+            spanlessRecordOf(event, currentThreadScopeId(), attributes)
         } ?: return
         accepting.forEach { adapter ->
-            guardAdapter(FaultPhase.SPANLESS_LIVE, adapter, hook) { adapter.onLive(record) }
+            runIsolated(FaultPhase.SPANLESS_LIVE, "spanless.deliver", recover = {}) { adapter.onLive(record) }
         }
     }
 }
 
-/** Flattens a span-less [event]: null identity, the ambient [scopeId], record-level [info]. */
-private fun spanlessRecordOf(event: SpanEvent, scopeId: String?, info: Map<String, String>): TraceRecord = when (event) {
+/** Flattens a span-less [event]: null identity, the ambient [scopeId], record-level [attributes]. */
+private fun spanlessRecordOf(event: SpanEvent, scopeId: String?, attributes: Map<String, String>): TraceRecord = when (event) {
     is LogEvent -> LogRecord(null, null, null, null, event.atNanos, scopeId, emptyMap(), emptyList(), event.attributes, event.message, event.sensitive)
     is NamedEvent -> NamedRecord(null, null, null, null, event.atNanos, scopeId, emptyMap(), emptyList(), event.name, event.attributes)
-    is ExceptionEvent -> ExceptionRecord(null, null, null, null, event.atNanos, scopeId, info, emptyList(), event.throwable)
+    is ExceptionEvent -> ExceptionRecord(null, null, null, null, event.atNanos, scopeId, attributes, emptyList(), event.throwable)
 }
 
 /**
@@ -57,10 +58,10 @@ fun emitNamed(name: String, attributes: Map<String, String> = emptyMap()) {
 
 /**
  * Emits [cause] with no owning span, live only, the moment it is called. Mirrors [addException], including
- * [info] on the [ExceptionRecord] (ADR-010).
+ * [attributes] on the [ExceptionRecord] (ADR-010), snapshotted here like every input map (ADR-028).
  *
  * @sample dev.kotrace.samples.ScopeSamples.spanlessEmit
  */
-fun emitException(cause: Throwable, info: Map<String, String> = emptyMap()) {
-    emitSpanless(ExceptionEvent(cause, System.nanoTime()), info)
+fun emitException(cause: Throwable, attributes: Map<String, String> = emptyMap()) {
+    emitSpanless(ExceptionEvent(cause, System.nanoTime()), attributes.toMap())
 }

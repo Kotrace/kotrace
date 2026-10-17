@@ -1,5 +1,5 @@
-// Build-only plugins for kotrace (never published). The root build includes this via
-// `pluginManagement { includeBuild("build-logic") }` and runs its tests from `check`.
+// Build-only plugins for kotrace, never published. The root build includes it from `pluginManagement` and runs its
+// tests from `check`.
 dependencyResolutionManagement {
     repositories {
         google()

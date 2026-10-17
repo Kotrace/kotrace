@@ -4,8 +4,8 @@ package dev.kotrace
 const val TRACEPARENT_HEADER = "traceparent"
 
 /**
- * The W3C `traceparent` value for this span, `version-traceid-spanid-flags`, by which a backend continues the trace
- * with no OpenTelemetry dependency on either side. `flags = 01` marks it sampled.
+ * The W3C `traceparent` value for this span, `version-traceid-spanid-flags`, by which a backend that reads W3C
+ * Trace Context continues the trace. `flags = 01` marks it sampled.
  *
  * Throws [IllegalArgumentException] unless [Span.traceId] is 32 and [Span.spanId] 16 lowercase hex chars, neither
  * all zeros, so a malformed header never reaches the wire. kotrace mints valid ids, but a span inherits its trace

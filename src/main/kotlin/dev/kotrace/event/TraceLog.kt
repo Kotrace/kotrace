@@ -10,8 +10,8 @@ import dev.kotrace.resolvedThreadConfig
  *
  * [message] is built only when an adapter accepts the event (ADR-002). A non-sensitive message is a **static
  * symbol only**, since it can reach a crash report. [sensitive] marks a message that carries user data (a
- * captured body); [dev.kotrace.TracePolicy.acceptsSensitive] decides where it goes, dropped by default. To surface
- * one safe field of a body, log it separately, never by un-marking the body.
+ * captured body); [dev.kotrace.adapter.TracePolicy.acceptsSensitive] decides where it goes, dropped by default. To
+ * surface one safe field of a body, log it separately, never by un-marking the body.
  */
 class LogEvent(
     attributes: Map<String, String>,
@@ -33,7 +33,7 @@ data class LogRecord(
     override val operation: String?,
     override val atNanos: Long,
     override val scopeId: String? = null,
-    override val info: Map<String, String>,
+    override val spanAttributes: Map<String, String>,
     override val links: List<TraceLink>,
     override val attributes: Map<String, String>,
     val message: String,

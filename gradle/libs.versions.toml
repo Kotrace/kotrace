@@ -2,10 +2,10 @@
 # The compiler. What the *published* artifacts require of a consumer is pinned separately, below.
 kotlin = "2.4.10"
 # Consumer baseline (ADR-027): the Kotlin language/API level the published modules compile against, and the
-# stdlib version their POMs declare. A consumer on Kotlin 2.0+ can read this metadata; a newer stdlib wins by
-# normal dependency resolution. Raise it only deliberately — it is a floor imposed on every consumer.
-kotlinBaseline = "2.1"
-kotlinStdlibBaseline = "2.1.0"
+# stdlib version their POMs declare. A consumer on Kotlin 2.1+ can read this metadata; a newer stdlib wins by
+# normal dependency resolution. Raise it only deliberately: it is a floor imposed on every consumer.
+kotlinBaseline = "2.2"
+kotlinStdlibBaseline = "2.2.0"
 dokka = "2.2.0"
 # Published `api` dependencies are declared at the lowest version kotrace supports (ADR-027), and the build
 # compiles and tests against exactly that floor, so it cannot silently start using newer API. Consumers on a
@@ -16,14 +16,17 @@ okhttp = "4.12.0"
 # Test only: the newest OkHttp major, which `:kotrace-okhttp:testOkHttp5` runs the same compiled tests against.
 okhttp5Test = "5.5.0"
 mockk = "1.14.11"
-# AGP 9.1.1 on Gradle 9.3.1 — matched to the Camailux app so the `-Pkotrace.local` composite (which pulls
-# this repo into that build) does not hit "multiple AGP versions in one build". AGP 9 has built-in Kotlin:
-# the Android module applies no kotlin plugin, and `compileSdk` uses the `version = release(N)` DSL.
+# Matched to the Camailux app (on Gradle 9.3.1): its `-Pkotrace.local` composite pulls this repository into that
+# build, which refuses two AGP versions.
 agp = "9.1.1"
-room = "2.8.4"
+# A consumer floor although `compileOnly` (ADR-027): `kotrace-room` is compiled and tested against it. The last
+# release before Room's Kotlin Multiplatform rewrite (2.7), which many apps have not taken.
+room = "2.6.1"
 jmh = "1.37"
 androidCompileSdk = "36"
-androidMinSdk = "28"
+# A consumer floor: an app below it fails at manifest merge. The core and `kotrace-okhttp` run there too, so they
+# call no Java API that Android added later (ADR-027).
+androidMinSdk = "21"
 
 [libraries]
 kotlinx-coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "kotlinxCoroutines" }
@@ -40,6 +43,10 @@ jmh-generator-annprocess = { module = "org.openjdk.jmh:jmh-generator-annprocess"
 kotlin-abi-tools = { module = "org.jetbrains.kotlin:abi-tools", version.ref = "kotlin" }
 kotlin-abi-tools-api = { module = "org.jetbrains.kotlin:abi-tools-api", version.ref = "kotlin" }
 android-gradle-api = { module = "com.android.tools.build:gradle-api", version.ref = "agp" }
+# Build only (build-logic): the plugin APIs `kotrace.conventions` configures. The plugins themselves come from the
+# build that applies it.
+kotlin-gradle-plugin-api = { module = "org.jetbrains.kotlin:kotlin-gradle-plugin-api", version.ref = "kotlin" }
+dokka-gradle-plugin = { module = "org.jetbrains.dokka:dokka-gradle-plugin", version.ref = "dokka" }
 
 [plugins]
 kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }

@@ -1,9 +1,12 @@
 package dev.kotrace.okhttp
 
 import dev.kotrace.Kotrace
-import dev.kotrace.LiveAdapter
 import dev.kotrace.SpanCollector
-import dev.kotrace.TracePolicy
+import dev.kotrace.TraceConfig
+import dev.kotrace.adapter.FaultHook
+import dev.kotrace.adapter.FaultPhase
+import dev.kotrace.adapter.LiveAdapter
+import dev.kotrace.adapter.TracePolicy
 import dev.kotrace.event.TraceRecord
 import dev.kotrace.span
 import io.mockk.every
@@ -18,12 +21,13 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 
 /**
  * The factory half of the OkHttp bridge (ADR-023): on the coroutine's thread, where the trace context still
- * resolves, it captures that context and tags it — with the span's name and attributes — on the outgoing
+ * resolves, it captures that context and tags it (with the span's name and attributes) on the outgoing
  * request. It opens **no** span itself: the interceptor opens one per execution, so an unexecuted call leaves
  * nothing open. (The end-to-end behavior on OkHttp's dispatcher thread is in [OkHttpDispatcherBridgeTest].)
  */
@@ -51,7 +55,7 @@ class TracingCallFactoryTest {
 
         val trace = requireNotNull(sent.captured.tag(HttpTrace::class.java)) { "the request is tagged" }
         assertEquals("http GET", trace.spanName)
-        assertEquals("http", trace.attributes["layer"])
+        assertEquals("http", trace.traits["layer"])
         assertEquals(
             "a call that is created but never executed opens no span",
             listOf("AccountRepository.fetch"),
@@ -71,7 +75,7 @@ class TracingCallFactoryTest {
             }
         }
 
-        // The name becomes `operation` on every record — the non-sensitive crash record and toJson included —
+        // The name becomes `operation` on every record (the non-sensitive crash record and toJson included),
         // with no policy gate over it, so the path (user data) must never reach it (ADR-021).
         val name = sent.captured.tag(HttpTrace::class.java)!!.spanName
         assertEquals("http GET", name)
@@ -106,19 +110,27 @@ class TracingCallFactoryTest {
             }
         }
 
-        assertEquals(emptyMap<String, String>(), sent.captured.tag(HttpTrace::class.java)!!.attributes)
+        assertEquals(emptyMap<String, String>(), sent.captured.tag(HttpTrace::class.java)!!.traits)
     }
 
     @Test
-    fun `a spanName mapper that throws falls back to the default name instead of failing the call`() = runTest {
+    fun `a spanName mapper that throws falls back to the default name and tells the FaultHook`() = runTest {
         val (delegate, sent) = capturingDelegate()
         val calls = TracingCallFactory(delegate, spanName = { error("route table miss") })
+        val faults = mutableListOf<Pair<FaultPhase, Throwable>>()
+        val hook = FaultHook { phase, faultMessage, cause ->
+            assertEquals("http.span_name", faultMessage)
+            faults += phase to cause
+        }
 
-        withContext(SpanCollector()) {
+        Kotrace.installFaultHook(hook)
+        withContext(SpanCollector() + TraceConfig(emptyList())) {
             calls.newCall(Request.Builder().url("https://graph.example.com/accounts").build())
         }
 
         assertEquals("http GET", sent.captured.tag(HttpTrace::class.java)!!.spanName)
+        assertEquals(FaultPhase.HTTP, faults.single().first)
+        assertEquals("route table miss", faults.single().second.message)
     }
 
     @Test
@@ -132,7 +144,7 @@ class TracingCallFactoryTest {
         }
         attributes["layer"] = "mutated" // after newCall, before the call would execute
 
-        assertEquals(mapOf("layer" to "http"), sent.captured.tag(HttpTrace::class.java)!!.attributes)
+        assertEquals(mapOf("layer" to "http"), sent.captured.tag(HttpTrace::class.java)!!.traits)
     }
 
     @Test
@@ -142,6 +154,19 @@ class TracingCallFactoryTest {
         TracingCallFactory(delegate).newCall(Request.Builder().url("https://x.example.com").build())
 
         assertNull(sent.captured.tag(HttpTrace::class.java))
+    }
+
+    @Test
+    fun `with nothing installed, an armed strict check fails a call made outside any span`() {
+        // A flow made only of bridged calls still surfaces a missing install, as an emit would (ADR-011/035).
+        Kotrace.strictWhenNotInstalled()
+        val (delegate, _) = capturingDelegate()
+
+        val thrown = runCatching {
+            TracingCallFactory(delegate).newCall(Request.Builder().url("https://x.example.com").build())
+        }.exceptionOrNull()
+
+        assertTrue(thrown?.message.orEmpty().contains("strict-not-installed"))
     }
 
     @Test

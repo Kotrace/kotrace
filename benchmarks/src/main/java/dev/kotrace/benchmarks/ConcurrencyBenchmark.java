@@ -11,7 +11,7 @@ import java.util.concurrent.TimeUnit;
 @Measurement(iterations = 5, time = 1)
 @Fork(3)
 public class ConcurrencyBenchmark {
-    @Param({"BASELINE", "SHARED", "CHILDREN"})
+    @Param({"BASELINE", "SHARED", "SHARED_CAPPED", "CHILDREN"})
     public String mode;
 
     @Param({"1", "4", "16"})

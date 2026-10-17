@@ -1,5 +1,8 @@
 package dev.kotrace
 
+import dev.kotrace.adapter.LiveAdapter
+import dev.kotrace.adapter.ReportAdapter
+import dev.kotrace.adapter.TracePolicy
 import dev.kotrace.event.ExceptionRecord
 import dev.kotrace.event.TraceRecord
 import kotlinx.coroutines.CancellationException
@@ -16,8 +19,8 @@ import java.util.concurrent.CopyOnWriteArrayList
 
 /**
  * The genuine-cancellation verdict is decided **once**, where the throwable is first seen, and the auto-root
- * reports that same verdict (ADR-022). A Job cancelled after the failure was already recorded — here by a
- * synchronous live adapter, standing in for any other thread — must not turn that failure into CANCELLED,
+ * reports that same verdict (ADR-022). A Job cancelled after the failure was already recorded (here by a
+ * synchronous live adapter, standing in for any other thread) must not turn that failure into CANCELLED,
  * which would leave a CANCELLED trace carrying an ExceptionRecord.
  *
  * That covers the throwable the root itself sees. A nested span's `CancellationException`-typed failure that the
@@ -69,7 +72,9 @@ class CancellationVerdictTest {
             withContext(TraceConfig(adapters({ job }, outcome))) {
                 span(
                     "root",
-                    failureClassifier = { r: Result<Unit> -> r.exceptionOrNull()?.let(ReturnedFailure::CausedBy) },
+                    returnVerdictClassifier = { r: Result<Unit> ->
+                        r.exceptionOrNull()?.let(ReturnVerdict::Failure) ?: ReturnVerdict.Success
+                    },
                 ) { Result.failure<Unit>(CancellationException("returned while still active")) }
             }
         }

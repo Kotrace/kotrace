@@ -8,16 +8,16 @@ import org.junit.Test
 
 /**
  * Proves the [TraceConfig] getter pair, mirroring [SpanBridgeTest]: the suspend [currentConfig] reads the
- * config from the `CoroutineContext` directly (the source of truth), while the non-suspend
- * [currentThreadConfig] reads the [ThreadContextElement] mirror — and both resolve to the same element
+ * configuration from the `CoroutineContext` directly (the source of truth), while the non-suspend
+ * [currentThreadConfig] reads the [ThreadContextElement] mirror, and both resolve to the same element
  * active for the flow. The suspend read is the public surface a consumer's own suspend helper uses; the
  * mirror serves the non-suspend bridge (the OkHttp `Call.Factory`, a Room callback, the log verbs).
  */
 class ConfigBridgeTest {
 
     @Test
-    fun `currentConfig resolves the ambient config and both getters agree`() = runTest {
-        assertNull("no config before any is installed", currentConfig())
+    fun `currentConfig resolves the ambient configuration and both getters agree`() = runTest {
+        assertNull("no configuration before any is installed", currentConfig())
 
         val config = TraceConfig(emptyList())
         withContext(config) {
@@ -29,7 +29,7 @@ class ConfigBridgeTest {
     }
 
     @Test
-    fun `a nested config overrides, and the suspend read sees the innermost, restored on unwind`() = runTest {
+    fun `a nested configuration overrides, and the suspend read sees the innermost, restored on unwind`() = runTest {
         val outer = TraceConfig(emptyList())
         val inner = TraceConfig(emptyList())
         withContext(outer) {

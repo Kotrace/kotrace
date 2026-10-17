@@ -22,11 +22,11 @@ internal object ReadmeSnippets {
             .addInterceptor(TracingInterceptor())
             .build()
 
-        // 2. Wrap the client (a Call.Factory) with the factory — use THIS to make calls.
+        // 2. Wrap the client (a Call.Factory) with the factory; use THIS to make calls.
         val calls: Call.Factory = TracingCallFactory(http)
 
-        // 3. Call inside a span. traceparent goes on the wire; the span emits http.status as info
-        //    (on every record off the span, not a filter key — ADR-001), and a non-2xx flips it to ERROR.
+        // 3. Call inside a span. traceparent goes on the wire; the span emits http.status as an attribute
+        //    (on every record off the span, not a filter key, ADR-001), and a non-2xx flips it to ERROR.
         suspend fun price(): String = span("pricing.fetch") {
             calls.newCall(Request.Builder().url(pricingUrl).build())
                 .execute().use { it.body?.string().orEmpty() }

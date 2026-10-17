@@ -1,13 +1,13 @@
 package dev.kotrace.okhttp
 
 import dev.kotrace.Kotrace
-import dev.kotrace.LiveAdapter
-import dev.kotrace.ReportAdapter
 import dev.kotrace.SpanCollector
 import dev.kotrace.SpanStatus
 import dev.kotrace.TraceConfig
-import dev.kotrace.TracePolicy
 import dev.kotrace.TraceStatus
+import dev.kotrace.adapter.LiveAdapter
+import dev.kotrace.adapter.ReportAdapter
+import dev.kotrace.adapter.TracePolicy
 import dev.kotrace.event.ExceptionRecord
 import dev.kotrace.event.LogRecord
 import dev.kotrace.event.TraceRecord
@@ -43,8 +43,8 @@ import kotlin.coroutines.resumeWithException
 
 /**
  * The OkHttp bridge across the **real** dispatcher-thread boundary (ADR-023): calls are `enqueue`d, so the
- * interceptor runs on OkHttp's thread where no coroutine mirror is live. Proves the flow's captured context —
- * config override included — survives that hop, that instrumentation never alters the call's outcome, and that
+ * interceptor runs on OkHttp's thread where no coroutine mirror is live. Proves the flow's captured context
+ * (configuration override included) survives that hop, that instrumentation never alters the call's outcome, and that
  * each execution (a clone included) owns its own span.
  */
 class OkHttpDispatcherBridgeTest {
@@ -78,8 +78,8 @@ class OkHttpDispatcherBridgeTest {
         .build()
 
     /**
-     * A client whose outermost interceptor counts [done] down once [TracingInterceptor] has finished with a call —
-     * span ended, exception recorded, records fanned out — so a test waits for that instead of sleeping.
+     * A client whose outermost interceptor counts [done] down once [TracingInterceptor] has finished with a call
+     * (span ended, exception recorded, records fanned out), so a test waits for that instead of sleeping.
      */
     private fun signallingClient(done: CountDownLatch) = OkHttpClient.Builder()
         .addInterceptor { chain -> try { chain.proceed(chain.request()) } finally { done.countDown() } }
@@ -91,7 +91,10 @@ class OkHttpDispatcherBridgeTest {
     /** Waits until the call is in flight: the server has its request. */
     private fun awaitInFlight() = assertTrue("the request never arrived", server.takeRequest(10, TimeUnit.SECONDS) != null)
 
-    /** Enqueues on OkHttp's dispatcher and blocks for the outcome — no coroutine resume, so no stacktrace-recovery copy. */
+    /**
+     * Enqueues on OkHttp's dispatcher and blocks for the outcome: no coroutine resume, so no stacktrace-recovery
+     * copy.
+     */
     private fun Call.enqueueAndWait(): Result<Response> {
         val outcome = CompletableFuture<Result<Response>>()
         enqueue(object : Callback {
@@ -104,7 +107,7 @@ class OkHttpDispatcherBridgeTest {
     private fun get(path: String = "/accounts") = Request.Builder().url(server.url(path)).build()
 
     @Test
-    fun `interceptor records reach the flow's config override, not the process-wide one`() = runBlocking {
+    fun `interceptor records reach the flow's configuration override, not the process-wide one`() = runBlocking {
         val global = CollectingLive()
         val flowOverride = CollectingLive()
         Kotrace.install(listOf(global))
@@ -126,20 +129,24 @@ class OkHttpDispatcherBridgeTest {
     }
 
     @Test
-    fun `a telemetry failure never breaks the call or replaces its exception`() = runBlocking {
-        // Strict-uninstalled with no config anywhere: every emit on this flow throws (ADR-011). The flow still
-        // has a collector, so the call is traced — and must behave exactly as it would untraced.
-        Kotrace.strictWhenUninstalled()
+    fun `the strict-not-installed failure is loud, but never replaces the call's own exception`() = runBlocking {
+        // Strict-not-installed with no configuration anywhere: every emit on this flow throws (ADR-011). The flow still
+        // has a collector, so the call is traced. Strict reaches the caller like any span's would (ADR-035), but a call
+        // already failing keeps its own exception, with the strict failure suppressed on it.
+        Kotrace.strictWhenNotInstalled()
         server.enqueue(MockResponse().setBody("ok"))
         val boom = IOException("boom")
         val calls = TracingCallFactory(client())
         val failing = TracingCallFactory(client({ throw boom }))
+        val collector = SpanCollector()
 
-        val (ok, failed) = withContext(Dispatchers.IO + SpanCollector()) {
-            calls.newCall(get()).enqueueAndWait() to failing.newCall(get()).enqueueAndWait()
+        val (ok, failed) = withContext(Dispatchers.IO + collector) {
+            runCatching { calls.newCall(get()).execute().close() } to failing.newCall(get()).enqueueAndWait()
         }
 
-        assertEquals("the successful response is returned untouched", 200, ok.getOrThrow().also { it.close() }.code)
+        val strict = ok.exceptionOrNull()
+        assertTrue("a successful call surfaces the missing install", strict?.message.orEmpty().contains("strict-not-installed"))
+        assertTrue("its span still ended", collector.spans.all { it.endNanos != null })
         assertSame("the application's own exception propagates, not a telemetry one", boom, failed.exceptionOrNull())
         assertTrue(
             "the telemetry failure rides the application throwable as suppressed",
@@ -165,7 +172,7 @@ class OkHttpDispatcherBridgeTest {
         val http = collector.spans.filter { it.name == "http GET" }
         assertEquals("one span per execution", 2, http.size)
         assertEquals(listOf(SpanStatus.ERROR, SpanStatus.OK), http.sortedBy { it.startNanos }.map { it.status })
-        assertEquals(listOf("500", "200"), http.sortedBy { it.startNanos }.map { it.info["http.status"] })
+        assertEquals(listOf("500", "200"), http.sortedBy { it.startNanos }.map { it.attributes["http.status"] })
         val parent = collector.spans.single { it.name == "AccountRepository.fetch" }
         assertTrue("both attempts are children of the calling span", http.all { it.parentId == parent.spanId })
     }
@@ -182,7 +189,7 @@ class OkHttpDispatcherBridgeTest {
 
     @Test
     fun `BODY response snippet reaches the report after the caller has closed the body`() = runBlocking {
-        // The report runs when the span ends — after the caller consumed and closed the body. The snippet must
+        // The report runs when the span ends, after the caller consumed and closed the body. The snippet must
         // already be a String by then, not a peek at a closed source that aborts the whole onReport.
         val report = SensitiveReport()
         server.enqueue(MockResponse().setBody("resp-body"))
@@ -200,7 +207,8 @@ class OkHttpDispatcherBridgeTest {
 
     @Test
     fun `BODY level never waits on an event stream before returning the response`() = runBlocking {
-        // 1 KiB trickling at 64 bytes / 300 ms: reading it takes ~5 s; the response itself is ready at once.
+        // 1 KiB trickling at 64 bytes / 300 milliseconds: reading it takes about 5 seconds; the response itself is
+        // ready at once.
         server.enqueue(
             MockResponse()
                 .setHeader("Content-Type", "text/event-stream")
@@ -216,14 +224,15 @@ class OkHttpDispatcherBridgeTest {
             TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start)
         }
 
-        assertTrue("the response was handed back without draining the stream (took ${tookMs}ms)", tookMs < 2_000)
+        assertTrue("the response was handed back without draining the stream (took ${tookMs} milliseconds)", tookMs < 2_000)
         assertTrue(live.records.filterIsInstance<LogRecord>().any { it.message == "⇠ body (event stream omitted)" })
     }
 
     @Test
     fun `BODY level never waits on an open stream of any content type`() = runBlocking {
-        // NDJSON, not event-stream: no content-type rule can list every stream. 800 bytes at 32 bytes / 300 ms
-        // take ~7 s to read; the response itself is ready at once, and BODY must not read ahead of the caller.
+        // NDJSON, not event-stream: no content-type rule can list every stream. 800 bytes at 32 bytes / 300
+        // milliseconds take about 7 seconds to read; the response itself is ready at once, and BODY must not read ahead
+        // of the caller.
         server.enqueue(
             MockResponse()
                 .setHeader("Content-Type", "application/x-ndjson")
@@ -238,7 +247,7 @@ class OkHttpDispatcherBridgeTest {
             TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start)
         }
 
-        assertTrue("the response was handed back without reading the stream (took ${tookMs}ms)", tookMs < 2_000)
+        assertTrue("the response was handed back without reading the stream (took ${tookMs} milliseconds)", tookMs < 2_000)
     }
 
     @Test
@@ -343,7 +352,7 @@ class OkHttpDispatcherBridgeTest {
         assertTrue("the caller sees OkHttp's timeout, got $thrown", thrown is InterruptedIOException)
         val record = live.records.filterIsInstance<ExceptionRecord>().singleOrNull { it.operation == "http GET" }
         assertTrue("a live crash sink receives it", record != null)
-        assertEquals("and can tell it was the timeout without sensitive events", "call_timeout", record!!.info["http.outcome"])
+        assertEquals("and can tell it was the timeout without sensitive events", "call_timeout", record!!.spanAttributes["http.outcome"])
         assertTrue(live.records.filterIsInstance<LogRecord>().any { it.message == "✗ GET /accounts: call timeout" })
     }
 
@@ -365,8 +374,8 @@ class OkHttpDispatcherBridgeTest {
 
     @Test
     fun `a sink uploading through a traced client does not feed its own uploads back to itself`() = runBlocking {
-        // Offline: every upload fails, and a traced upload would record that failure and fan it out live — from
-        // OkHttp's thread, past the same-thread guard — back into the sink, which would upload again, forever.
+        // Offline: every upload fails, and a traced upload would record that failure and fan it out live (from
+        // OkHttp's thread, past the same-thread guard) back into the sink, which would upload again, forever.
         val deadUrl = server.url("/ingest")
         server.shutdown()
         val uploads = java.util.concurrent.atomic.AtomicInteger()

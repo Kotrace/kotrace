@@ -5,72 +5,93 @@ import dev.kotrace.TraceLink
 import java.util.Locale
 
 /**
- * One flat line lifted off a [dev.kotrace.Span], the unit fanned out to a [dev.kotrace.TraceAdapter]. Unlike a
- * raw [SpanEvent] it carries the identity fields ([traceId] / [spanId] / [parentId] / [operation]), the join keys a
- * backend rebuilds the tree from.
+ * One [SpanEvent] flattened together with its span: the unit a [dev.kotrace.adapter.TraceAdapter] receives, live
+ * through `onLive` or at the end of the trace through `onReport`. An adapter never walks the [Span] tree; each record
+ * carries the identity a backend rebuilds the tree from.
  *
- * One kind per [SpanEvent] kind: a [LogRecord], a [NamedRecord], and an [ExceptionRecord], which the report marks
- * with an [ExceptionOrigin] (ADR-019).
+ * There is one kind per [SpanEvent] kind: a [LogRecord], a [NamedRecord], and an [ExceptionRecord], which a report
+ * marks with an [ExceptionOrigin] (ADR-019). A `when` over them is exhaustive.
+ *
+ * **Identity.** [traceId], [spanId] and [parentId] are the span's W3C ids; [parentId] is null on a root. [operation]
+ * is the span's name. All four are null on a span-less emit ([emitLog], [emitNamed], [emitException], ADR-010), which
+ * correlates through [scopeId] instead.
+ *
+ * **Time.** [atNanos] is when the event happened, from `System.nanoTime()`: it orders the records of one process and
+ * measures the gaps between them, but it is not a wall-clock time and means nothing across processes. A sink that
+ * needs a timestamp stamps its own.
+ *
+ * **Correlation.** [scopeId] is the [dev.kotrace.withScope] id active when the event was emitted, or null (ADR-010):
+ * a key above [traceId] (`scope ⊇ trace ⊇ span`), with no trace semantics. [links] are the span's cross-trace edges
+ * ([dev.kotrace.Span.links], ADR-009), empty when it has none or on a span-less record.
+ *
+ * **The span's payload.** [spanAttributes] are the span's [dev.kotrace.Span.attributes] (`http.status`), never a
+ * filter key (ADR-001/032). A live record holds them as they stood when the event was emitted, so a value stamped
+ * later is missing; a report record reads them when the report is built, after the span ended, so they are final.
+ * The `attributes` of [addException] are merged in, on the live record only; those of [emitException] are a
+ * span-less record's only [spanAttributes]. They are distinct from the event's own [AttributedRecord.attributes].
  */
 sealed interface TraceRecord {
-    /**
-     * The owning span's trace id. Null, like [spanId] and [operation], on a span-less emit
-     * ([emitLog]/[emitNamed]/[emitException], ADR-010), which correlates through [scopeId] instead.
-     */
     val traceId: String?
     val spanId: String?
     val parentId: String?
     val operation: String?
     val atNanos: Long
-
-    /**
-     * The [dev.kotrace.withScope] id active when this record was emitted, or null (ADR-010): a correlation key
-     * above [traceId] (`scope ⊇ trace ⊇ span`), with no trace semantics.
-     */
     val scopeId: String?
-
-    /**
-     * The owning span's [dev.kotrace.Span.info] (`http.status`), never a filter key (ADR-001). Best-effort on a
-     * live record, final on a report record.
-     */
-    val info: Map<String, String>
-
-    /** The owning span's cross-trace [dev.kotrace.Span.links]; empty when it has none. */
+    val spanAttributes: Map<String, String>
     val links: List<TraceLink>
 }
 
-/** A record carrying free-form [attributes]. [ExceptionRecord] is not one: its `Throwable` is its data. */
+/**
+ * A record whose event carries its own [attributes], set by the event verb (`log(attributes) { … }`,
+ * `addNamed(name, attributes)`), beside the span's [spanAttributes]. [ExceptionRecord] is not one: its `Throwable` is
+ * its data.
+ */
 sealed interface AttributedRecord : TraceRecord {
     val attributes: Map<String, String>
 }
 
 /**
- * Flattens [event] into its [TraceRecord], stamped with this span's identity and [Span.scopeId]. [extraInfo]
- * merges over [Span.info]: it is how [addException]'s `info` reaches the record (ADR-010).
+ * Flattens [event] into its [TraceRecord], stamped with this span's identity and [Span.scopeId], and with a copy of
+ * [Span.attributes] taken now. [extraAttributes] merge over that copy: they are how the `attributes` of
+ * [addException] reach a live record (ADR-010). [origin] is set only by the report (ADR-019).
  */
 internal fun Span.recordOf(
     event: SpanEvent,
-    extraInfo: Map<String, String> = emptyMap(),
+    extraAttributes: Map<String, String> = emptyMap(),
     origin: ExceptionOrigin? = null,
 ): TraceRecord {
-    val info = if (extraInfo.isEmpty()) info.toMap() else info.toMap() + extraInfo
+    val spanAttributes = if (extraAttributes.isEmpty()) attributes.toMap() else attributes.toMap() + extraAttributes
     return when (event) {
-        is LogEvent -> LogRecord(traceId, spanId, parentId, name, event.atNanos, scopeId, info, links, event.attributes, event.message, event.sensitive)
-        is NamedEvent -> NamedRecord(traceId, spanId, parentId, name, event.atNanos, scopeId, info, links, event.name, event.attributes)
-        is ExceptionEvent -> ExceptionRecord(traceId, spanId, parentId, name, event.atNanos, scopeId, info, links, event.throwable, origin)
+        is LogEvent -> LogRecord(traceId, spanId, parentId, name, event.atNanos, scopeId, spanAttributes, links, event.attributes, event.message, event.sensitive)
+        is NamedEvent -> NamedRecord(traceId, spanId, parentId, name, event.atNanos, scopeId, spanAttributes, links, event.name, event.attributes)
+        is ExceptionEvent -> ExceptionRecord(traceId, spanId, parentId, name, event.atNanos, scopeId, spanAttributes, links, event.throwable, origin)
     }
 }
 
 /**
- * A one-line JSON rendering for a log pipeline (ELK, Loki), with snake_case keys so `trace_id` and `span_id` are
- * queryable fields.
+ * Renders this record as one line of JSON for a log pipeline (ELK, Loki), with snake_case keys so `trace_id` and
+ * `span_id` are queryable fields. For example, a log line:
  *
- * Wire shape (ADR-004): identity and the per-kind `message` / `name` / `exception` are top-level keys; the
- * `attributes` and `info` maps are **nested** objects, so a consumer's key can never collide with a reserved one.
- * Empty maps and absent optional keys are omitted. This is machine egress, never PII (see [dev.kotrace.Span]): an
- * exception renders its class name only.
+ * ```json
+ * {"trace_id":"4bf9…","span_id":"00f0…","parent_span_id":null,"operation":"checkout","kind":"log",
+ *  "message":"priced","attributes":{"level":"INFO"},"span_attributes":{"http.status":"200"},
+ *  "links":[{"trace_id":"a3ce…","attributes":{"relation":"reports"}}],"scope_id":"session-7"}
+ * ```
  *
- * Hand-rolled rather than `kotlinx.serialization`, so every consumer of this core library is spared the runtime and
+ * **Shape (ADR-004/032).**
+ * - Always present: `trace_id`, `span_id`, `parent_span_id` and `operation`, written as `null` on a span-less record,
+ *   then `kind` (`log`, `event` or `exception`) and that kind's value: `message`, `name`, or `exception`.
+ * - Present only when not empty: the event's `attributes`, the span's `span_attributes`, `links` and `scope_id`, and
+ *   `exception_origin`, written only as `propagated` on a [ExceptionOrigin.PROPAGATED] copy.
+ * - Both attribute maps are **nested** objects, so a consumer's key can never collide with a reserved one.
+ * - [TraceRecord.atNanos] is not rendered: it is no wall-clock time.
+ *
+ * **What it renders.** This is machine egress, so it must never carry user data (see [dev.kotrace.Span]). An
+ * exception renders its class name only, never its message. A [LogRecord] marked `sensitive` renders its message
+ * as is: keeping it out is the adapter's [dev.kotrace.adapter.TracePolicy.acceptsSensitive], which refuses it by
+ * default.
+ *
+ * Hand-rolled rather than `kotlinx.serialization`, so no consumer of this core library pays for the runtime and the
  * plugin; the shape is closed and string-only, and escaping is the one risk ([appendEscaped]).
  */
 fun TraceRecord.toJson(): String = buildString {
@@ -98,7 +119,7 @@ fun TraceRecord.toJson(): String = buildString {
             if (record.origin == ExceptionOrigin.PROPAGATED) { append(','); appendField("exception_origin", "propagated") }
         }
     }
-    appendObject("info", info)
+    appendObject("span_attributes", spanAttributes)
     appendLinks("links", links)
     appendOptionalField("scope_id", scopeId)
     append('}')
@@ -145,6 +166,10 @@ private fun StringBuilder.appendLinks(key: String, links: List<TraceLink>) {
     append(']')
 }
 
+/**
+ * Appends [s] escaped for a JSON string: the quote, the backslash, and every control character, the common ones as
+ * `\n`, `\r`, `\t` and the rest as `\u00XX`. Anything else, non-ASCII included, is written as is, which JSON allows.
+ */
 private fun StringBuilder.appendEscaped(s: String): StringBuilder {
     for (c in s) when (c) {
         '"' -> append("\\\"")

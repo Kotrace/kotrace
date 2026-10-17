@@ -8,7 +8,7 @@ import org.junit.Test
 /**
  * Proves the thread-local bridge: [SpanContext] mirrors the ambient span into the thread-local that
  * [currentSpan] reads, so a non-suspend caller on the coroutine's thread sees the span active for the
- * flow — and the previous value is restored as each [span] unwinds.
+ * flow, and the previous value is restored as each [span] unwinds.
  */
 class SpanBridgeTest {
 

@@ -3,16 +3,16 @@
 
 package dev.kotrace.okhttp
 
-import dev.kotrace.NonSuspendTracingBridge
-import dev.kotrace.ReportAdapter
 import dev.kotrace.Span
 import dev.kotrace.SpanCollector
 import dev.kotrace.SpanContext
 import dev.kotrace.SpanStatus
 import dev.kotrace.TraceConfig
-import dev.kotrace.TraceHandoff
-import dev.kotrace.TracePolicy
 import dev.kotrace.TraceStatus
+import dev.kotrace.adapter.ReportAdapter
+import dev.kotrace.adapter.TracePolicy
+import dev.kotrace.bridge.NonSuspendTracingBridge
+import dev.kotrace.bridge.TraceHandoff
 import dev.kotrace.event.ExceptionEvent
 import dev.kotrace.event.LogEvent
 import dev.kotrace.event.SpanEvent
@@ -43,7 +43,7 @@ import java.util.concurrent.TimeUnit
 
 /**
  * Proves the interceptor opens the HTTP span from the factory's tag, puts a spec-correct `traceparent` for
- * *that* span on the wire, and reflects the response back onto it — driven here against a MockK'd chain. (The
+ * *that* span on the wire, and reflects the response back onto it, driven here against a MockK'd chain. (The
  * real dispatcher-thread behavior is in [OkHttpDispatcherBridgeTest].)
  */
 @OptIn(NonSuspendTracingBridge::class)
@@ -81,7 +81,7 @@ class TracingInterceptorTest {
 
         val span = collector.httpSpan()
         assertEquals("00-${span.traceId}-${span.spanId}-01", sent.header("traceparent"))
-        assertEquals("200", span.info["http.status"])
+        assertEquals("200", span.attributes["http.status"])
         assertEquals(SpanStatus.OK, span.status)
     }
 
@@ -92,7 +92,7 @@ class TracingInterceptorTest {
 
         val span = collector.httpSpan()
         assertEquals(SpanStatus.ERROR, span.status)
-        assertEquals("500", span.info["http.status"])
+        assertEquals("500", span.attributes["http.status"])
     }
 
     @Test
@@ -141,7 +141,7 @@ class TracingInterceptorTest {
 
     @Test
     fun `a JVM-fatal error from a breadcrumb still propagates`() = runTest {
-        val fatal = object : dev.kotrace.LiveAdapter {
+        val fatal = object : dev.kotrace.adapter.LiveAdapter {
             override val policy = object : TracePolicy {
                 override val acceptsSensitive = true
             }
@@ -186,7 +186,7 @@ class TracingInterceptorTest {
         val span = collector.httpSpan()
         assertEquals(SpanStatus.ERROR, span.status)
         assertTrue("a cancellation is not a crash", span.events.none { it is ExceptionEvent })
-        assertEquals("canceled", span.info["http.outcome"])
+        assertEquals("canceled", span.attributes["http.outcome"])
     }
 
     @Test
@@ -196,7 +196,7 @@ class TracingInterceptorTest {
 
         val span = collector.httpSpan()
         assertTrue("a timeout is a failure", span.events.any { it is ExceptionEvent })
-        assertEquals("call_timeout", span.info["http.outcome"])
+        assertEquals("call_timeout", span.attributes["http.outcome"])
     }
 
     /** A no-op report adapter, present only so a `TraceConfig` is in scope; storage is unconditional (no capture gate, ADR-002). */

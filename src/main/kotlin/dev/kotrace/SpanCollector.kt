@@ -2,9 +2,9 @@ package dev.kotrace
 
 import kotlinx.coroutines.ThreadContextElement
 import kotlinx.coroutines.currentCoroutineContext
+import java.util.concurrent.CopyOnWriteArrayList
 import kotlin.coroutines.AbstractCoroutineContextElement
 import kotlin.coroutines.CoroutineContext
-import java.util.concurrent.CopyOnWriteArrayList
 
 private val currentCollectorThreadLocal = ThreadLocal<SpanCollector?>()
 

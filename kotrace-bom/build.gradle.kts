@@ -1,10 +1,12 @@
 plugins {
     `java-platform`
     `maven-publish`
+    id("kotrace.conventions")
 }
 
-// The BOM pins one coherent set of kotrace versions so consumers declare them without a version each.
-// It carries constraints only — every published module, never `:demo` (unpublished) and never itself.
+description = "Bill of materials aligning the versions of every kotrace module."
+
+// Constraints only, one per published module, so a consumer aligns kotrace versions without one per dependency.
 dependencies {
     constraints {
         api(project(":"))
@@ -17,16 +19,6 @@ publishing {
     publications {
         create<MavenPublication>("maven") {
             from(components["javaPlatform"])
-        }
-    }
-    // Same static-Maven-repo target as the core (see root build.gradle.kts / README).
-    val repoDir = providers.gradleProperty("kotrace.maven.repo.dir").orNull
-    if (repoDir != null) {
-        repositories {
-            maven {
-                name = "KotraceMaven"
-                url = uri(File(repoDir).toURI())
-            }
         }
     }
 }

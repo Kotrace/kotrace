@@ -1,10 +1,15 @@
 package dev.kotrace
 
+import dev.kotrace.adapter.ReportAdapter
+import dev.kotrace.adapter.TracePolicy
+import dev.kotrace.bridge.NonSuspendTracingBridge
+import dev.kotrace.bridge.end
+import dev.kotrace.bridge.startSpan
 import dev.kotrace.event.ExceptionRecord
 import dev.kotrace.event.LogRecord
 import dev.kotrace.event.TraceRecord
-import dev.kotrace.currentSpan
 import dev.kotrace.event.log
+import dev.kotrace.report.reportTrace
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.awaitCancellation
@@ -13,15 +18,15 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runTest
-import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withContext
-import java.util.concurrent.atomic.AtomicReference
+import kotlinx.coroutines.withTimeout
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
+import java.util.concurrent.atomic.AtomicReference
 
 /**
  * Auto-root (ADR-013): a `span` opened with neither a current span nor a [SpanCollector] owns the trace and
@@ -44,7 +49,7 @@ class AutoRootSpanTest {
     @After fun reset() = Kotrace.resetForTest()
 
     // Coroutine stacktrace recovery copies a throwable across each `withContext` boundary (Trace.kt:37), so
-    // "rethrown unchanged" (ADR-013) means *not swallowed or replaced by kotrace* — not object identity.
+    // "rethrown unchanged" (ADR-013) means *not swallowed or replaced by kotrace*, not object identity.
     // Assert through the cause chain instead of `===` on the top-level object.
     private fun Throwable.chain(): Sequence<Throwable> = generateSequence(this) { it.cause }
 
@@ -192,7 +197,7 @@ class AutoRootSpanTest {
 
     // --- Config, scope, sequential/parallel ---
 
-    @Test fun `an ambient per-flow config override is used at report`() = runTest {
+    @Test fun `an ambient per-flow configuration override is used at report`() = runTest {
         val global = CollectingReport()
         val override = CollectingReport()
         Kotrace.install(listOf(global))
@@ -235,23 +240,23 @@ class AutoRootSpanTest {
     // --- Strict-mode precedence (ADR-013 / ADR-011) ---
 
     @Test fun `strict-mode preserves the application throwable, does not replace it with the strict failure`() = runTest {
-        Kotrace.strictWhenUninstalled() // armed, nothing installed → resolvedThreadConfig throws while recording + reporting
+        Kotrace.strictWhenNotInstalled() // armed, nothing installed → resolvedThreadConfig throws while recording + reporting
         val app = IllegalStateException("app")
         val thrown = runCatching { span("op") { throw app } }.exceptionOrNull()
         // The guarantee: the strict failure never replaces the application throwable. Without the guard, the
         // strict IllegalStateException thrown from addException/reportTrace would propagate instead, and its
         // chain would NOT contain `app`. (kotrace attaches the strict failure as suppressed; observing that
-        // is coroutine-stacktrace-recovery-dependent — off in release, on under -ea — so it is not asserted.)
+        // is coroutine-stacktrace-recovery-dependent (off in release, on under -ea), so it is not asserted.)
         assertTrue("application throwable wins the propagation", thrown!!.chain().any { it === app })
         assertTrue("propagated failure is app-derived, not the strict failure", thrown.chain().last() === app)
     }
 
     @Test fun `strict-mode failure on a normally-completing block propagates as itself`() = runTest {
-        Kotrace.strictWhenUninstalled()
+        Kotrace.strictWhenNotInstalled()
         val thrown = runCatching { span("op") { 42 } }.exceptionOrNull()
         assertTrue(
             "strict failure propagates when nothing escaped",
-            thrown!!.chain().any { it is IllegalStateException && it.message?.contains("strict-uninstalled") == true },
+            thrown!!.chain().any { it is IllegalStateException && it.message?.contains("strict-not-installed") == true },
         )
     }
 

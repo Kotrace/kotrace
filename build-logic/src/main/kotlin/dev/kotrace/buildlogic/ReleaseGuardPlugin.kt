@@ -15,12 +15,12 @@ import org.gradle.work.DisableCachingByDefault
 import java.io.File
 
 /**
- * The release guard: a published version is immutable. The static Maven repo would accept a re-publish with
+ * The release guard: a published version is immutable. The static Maven repository would accept a re-publish with
  * different bytes, and a consumer compiled against the old jar would then fail at runtime. So every remote publish
  * of every project first runs [CheckReleaseVersion], which checks that
  *  - the working tree is clean, since Gradle builds the working tree, not HEAD;
  *  - no `v<version>` tag points at a commit other than HEAD;
- *  - every artifact of this version already in the Maven repo ([REPO_DIR_PROPERTY]) was published from HEAD, as
+ *  - every artifact of this version already in the Maven repository ([REPO_DIR_PROPERTY]) was published from HEAD, as
  *    its POM records ([COMMIT_POM_PROPERTY]); a tag can be moved, the published POM cannot.
  *
  * A `-SNAPSHOT` is mutable by definition, so it keeps only the clean-tree check.
@@ -69,7 +69,7 @@ class ReleaseGuardPlugin : Plugin<Project> {
     }
 
     companion object {
-        /** The local checkout of the static Maven repo that publishing writes to. */
+        /** The local checkout of the static Maven repository that publishing writes to. */
         const val REPO_DIR_PROPERTY = "kotrace.maven.repo.dir"
 
         /** The POM property recording the commit an artifact was published from. */
@@ -77,8 +77,11 @@ class ReleaseGuardPlugin : Plugin<Project> {
     }
 }
 
-/** See [ReleaseGuardPlugin]. Reads external state (Git, the Maven repo) and produces nothing, so it always runs. */
-@DisableCachingByDefault(because = "checks Git and the Maven repo; produces no output")
+/**
+ * See [ReleaseGuardPlugin]. Reads external state (Git, the Maven repository) and produces nothing, so it always
+ * runs.
+ */
+@DisableCachingByDefault(because = "checks Git and the Maven repository; produces no output")
 abstract class CheckReleaseVersion : DefaultTask() {
     @get:Input abstract val releaseVersion: Property<String>
     @get:Input abstract val groupPath: Property<String>
@@ -101,7 +104,7 @@ abstract class CheckReleaseVersion : DefaultTask() {
         val version = releaseVersion.get()
         val changes = workingTreeChanges.get()
         check(changes.isEmpty()) {
-            "kotrace $version: refusing to publish from a dirty working tree — commit or stash first, so " +
+            "kotrace $version: refusing to publish from a dirty working tree. Commit or stash first, so " +
                 "the artifact is exactly a commit:\n$changes"
         }
         if (version.endsWith("-SNAPSHOT")) return
@@ -109,7 +112,7 @@ abstract class CheckReleaseVersion : DefaultTask() {
         val head = headCommit.get()
         check(tagged.isEmpty() || tagged == head) {
             "kotrace $version is already released (tag v$version at $tagged) and HEAD differs. " +
-                "A released version is immutable — bump `version` in gradle.properties instead."
+                "A released version is immutable: bump `version` in gradle.properties instead."
         }
         val property = Regex.escape(ReleaseGuardPlugin.COMMIT_POM_PROPERTY)
         val recorded = Regex("<$property>([0-9a-f]+)</$property>")
@@ -123,8 +126,8 @@ abstract class CheckReleaseVersion : DefaultTask() {
             }
         }.orEmpty()
         check(foreign.isEmpty()) {
-            "kotrace $version is already in the Maven repo from another commit: $foreign. A published version " +
-                "is immutable — bump `version` in gradle.properties instead."
+            "kotrace $version is already in the Maven repository from another commit: $foreign. A published version " +
+                "is immutable: bump `version` in gradle.properties instead."
         }
     }
 }

@@ -11,8 +11,8 @@ import org.junit.rules.TemporaryFolder
 import java.io.File
 
 /**
- * The release guard end to end: a throwaway Git repo holding a published module and a BOM, publishing into a
- * throwaway Maven directory the way the real build publishes into its static repo checkout.
+ * The release guard end to end: a throwaway Git repository holding a published module and a BOM, publishing into a
+ * throwaway Maven directory the way the real build publishes into its static repository checkout.
  */
 class ReleaseGuardPluginTest {
 
@@ -77,19 +77,19 @@ class ReleaseGuardPluginTest {
     }
 
     @Test
-    fun `another commit cannot overwrite a version already in the repo`() {
+    fun `another commit cannot overwrite a version already in the repository`() {
         publish()
         val published = git("rev-parse", "HEAD")
         commit("change")
 
         val failure = publishAndFail()
 
-        assertTrue(failure.output, failure.output.contains("already in the Maven repo from another commit"))
+        assertTrue(failure.output, failure.output.contains("already in the Maven repository from another commit"))
         assertTrue(failure.output, failure.output.contains("lib (published from $published)"))
     }
 
     @Test
-    fun `a version in the repo with no recorded commit blocks the publish`() {
+    fun `a version in the repository with no recorded commit blocks the publish`() {
         val dir = repo.resolve("dev/example/lib/1.0.0").apply { mkdirs() }
         dir.resolve("lib-1.0.0.pom").writeText("<project></project>")
 
@@ -105,7 +105,7 @@ class ReleaseGuardPluginTest {
         val failure = publishAndFail()
 
         assertTrue(failure.output, failure.output.contains("refusing to publish from a dirty working tree"))
-        assertTrue("nothing reached the repo", repo.listFiles().orEmpty().isEmpty())
+        assertTrue("nothing reached the repository", repo.listFiles().orEmpty().isEmpty())
     }
 
     @Test
@@ -125,7 +125,7 @@ class ReleaseGuardPluginTest {
 
         val failure = publishAndFail(":bom:publish")
 
-        assertTrue(failure.output, failure.output.contains("already in the Maven repo from another commit"))
+        assertTrue(failure.output, failure.output.contains("already in the Maven repository from another commit"))
     }
 
     @Test
@@ -167,7 +167,7 @@ class ReleaseGuardPluginTest {
         git("commit", "-q", "-m", message)
     }
 
-    /** Git with the user's global config neutralised: no signing, no hooks, a fixed identity. */
+    /** Git with the user's global configuration neutralised: no signing, no hooks, a fixed identity. */
     private fun git(vararg args: String): String {
         val command = listOf(
             "git", "-c", "user.name=test", "-c", "user.email=test@example.com", "-c", "commit.gpgsign=false",
