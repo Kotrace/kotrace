@@ -23,6 +23,11 @@ mockk = { module = "io.mockk:mockk", version.ref = "mockk" }
 room-runtime = { module = "androidx.room:room-runtime", version.ref = "room" }
 jmh-core = { module = "org.openjdk.jmh:jmh-core", version.ref = "jmh" }
 jmh-generator-annprocess = { module = "org.openjdk.jmh:jmh-generator-annprocess", version.ref = "jmh" }
+# Build only (build-logic): the ABI dumper KGP's `abiValidation()` runs, at the compiler's version, and AGP's
+# variant API. `kotrace.android-abi` uses them to gate `:kotrace-room`, which `abiValidation()` cannot.
+kotlin-abi-tools = { module = "org.jetbrains.kotlin:abi-tools", version.ref = "kotlin" }
+kotlin-abi-tools-api = { module = "org.jetbrains.kotlin:abi-tools-api", version.ref = "kotlin" }
+android-gradle-api = { module = "com.android.tools.build:gradle-api", version.ref = "agp" }
 
 [plugins]
 kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }

@@ -1,0 +1,23 @@
+public final class dev/kotrace/okhttp/TracingCallFactory : okhttp3/Call$Factory {
+	public fun <init> (Lokhttp3/Call$Factory;Ljava/util/Map;Lkotlin/jvm/functions/Function1;)V
+	public synthetic fun <init> (Lokhttp3/Call$Factory;Ljava/util/Map;Lkotlin/jvm/functions/Function1;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public fun newCall (Lokhttp3/Request;)Lokhttp3/Call;
+}
+
+public final class dev/kotrace/okhttp/TracingInterceptor : okhttp3/Interceptor {
+	public fun <init> ()V
+	public fun <init> (Ldev/kotrace/okhttp/TracingInterceptor$Level;J)V
+	public synthetic fun <init> (Ldev/kotrace/okhttp/TracingInterceptor$Level;JILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public fun intercept (Lokhttp3/Interceptor$Chain;)Lokhttp3/Response;
+}
+
+public final class dev/kotrace/okhttp/TracingInterceptor$Level : java/lang/Enum {
+	public static final field BASIC Ldev/kotrace/okhttp/TracingInterceptor$Level;
+	public static final field BODY Ldev/kotrace/okhttp/TracingInterceptor$Level;
+	public static final field HEADERS Ldev/kotrace/okhttp/TracingInterceptor$Level;
+	public static final field NONE Ldev/kotrace/okhttp/TracingInterceptor$Level;
+	public static fun getEntries ()Lkotlin/enums/EnumEntries;
+	public static fun valueOf (Ljava/lang/String;)Ldev/kotrace/okhttp/TracingInterceptor$Level;
+	public static fun values ()[Ldev/kotrace/okhttp/TracingInterceptor$Level;
+}
+

@@ -1,0 +1,418 @@
+public abstract interface class dev/kotrace/AdapterFaultHook {
+	public abstract fun onAdapterFault (Ldev/kotrace/FaultPhase;Ldev/kotrace/TraceAdapter;Ljava/lang/Throwable;)V
+}
+
+public final class dev/kotrace/FaultPhase : java/lang/Enum {
+	public static final field FAILURE_CLASSIFIER Ldev/kotrace/FaultPhase;
+	public static final field LIVE Ldev/kotrace/FaultPhase;
+	public static final field REPORT Ldev/kotrace/FaultPhase;
+	public static final field RETURNED_OUTCOME Ldev/kotrace/FaultPhase;
+	public static final field SPANLESS_LIVE Ldev/kotrace/FaultPhase;
+	public static fun getEntries ()Lkotlin/enums/EnumEntries;
+	public static fun valueOf (Ljava/lang/String;)Ldev/kotrace/FaultPhase;
+	public static fun values ()[Ldev/kotrace/FaultPhase;
+}
+
+public final class dev/kotrace/Kotrace {
+	public static final field INSTANCE Ldev/kotrace/Kotrace;
+	public final fun install (Ldev/kotrace/AdapterFaultHook;Lkotlin/jvm/functions/Function1;Lkotlin/jvm/functions/Function0;)V
+	public final fun install (Ljava/util/List;Ldev/kotrace/AdapterFaultHook;Lkotlin/jvm/functions/Function1;)V
+	public static synthetic fun install$default (Ldev/kotrace/Kotrace;Ldev/kotrace/AdapterFaultHook;Lkotlin/jvm/functions/Function1;Lkotlin/jvm/functions/Function0;ILjava/lang/Object;)V
+	public static synthetic fun install$default (Ldev/kotrace/Kotrace;Ljava/util/List;Ldev/kotrace/AdapterFaultHook;Lkotlin/jvm/functions/Function1;ILjava/lang/Object;)V
+	public final fun resetForTest ()V
+	public final fun strictWhenUninstalled ()V
+}
+
+public abstract interface class dev/kotrace/LiveAdapter : dev/kotrace/TraceAdapter {
+	public abstract fun onLive (Ldev/kotrace/event/TraceRecord;)V
+}
+
+public abstract interface annotation class dev/kotrace/NonSuspendTracingBridge : java/lang/annotation/Annotation {
+}
+
+public abstract interface class dev/kotrace/ReportAdapter : dev/kotrace/TraceAdapter {
+	public abstract fun onReport (Ldev/kotrace/TraceStatus;Lkotlin/sequences/Sequence;)V
+}
+
+public final class dev/kotrace/ReportKt {
+	public static final fun reportTrace (Ldev/kotrace/SpanCollector;Ldev/kotrace/TraceStatus;Ljava/util/List;)V
+	public static synthetic fun reportTrace$default (Ldev/kotrace/SpanCollector;Ldev/kotrace/TraceStatus;Ljava/util/List;ILjava/lang/Object;)V
+}
+
+public abstract interface class dev/kotrace/ReturnedFailure {
+}
+
+public final class dev/kotrace/ReturnedFailure$CausedBy : dev/kotrace/ReturnedFailure {
+	public fun <init> (Ljava/lang/Throwable;)V
+	public final fun component1 ()Ljava/lang/Throwable;
+	public final fun copy (Ljava/lang/Throwable;)Ldev/kotrace/ReturnedFailure$CausedBy;
+	public static synthetic fun copy$default (Ldev/kotrace/ReturnedFailure$CausedBy;Ljava/lang/Throwable;ILjava/lang/Object;)Ldev/kotrace/ReturnedFailure$CausedBy;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getThrowable ()Ljava/lang/Throwable;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class dev/kotrace/ReturnedFailure$ValueOnly : dev/kotrace/ReturnedFailure {
+	public static final field INSTANCE Ldev/kotrace/ReturnedFailure$ValueOnly;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class dev/kotrace/ScopeContext : kotlin/coroutines/AbstractCoroutineContextElement, kotlinx/coroutines/ThreadContextElement {
+	public static final field Key Ldev/kotrace/ScopeContext$Key;
+	public fun <init> (Ljava/lang/String;)V
+	public final fun getScopeId ()Ljava/lang/String;
+	public synthetic fun restoreThreadContext (Lkotlin/coroutines/CoroutineContext;Ljava/lang/Object;)V
+	public fun restoreThreadContext (Lkotlin/coroutines/CoroutineContext;Ljava/lang/String;)V
+	public synthetic fun updateThreadContext (Lkotlin/coroutines/CoroutineContext;)Ljava/lang/Object;
+	public fun updateThreadContext (Lkotlin/coroutines/CoroutineContext;)Ljava/lang/String;
+}
+
+public final class dev/kotrace/ScopeContext$Key : kotlin/coroutines/CoroutineContext$Key {
+}
+
+public final class dev/kotrace/ScopeContextKt {
+	public static final fun currentScopeId (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static final fun currentThreadScopeId ()Ljava/lang/String;
+}
+
+public final class dev/kotrace/ScopeKt {
+	public static final fun withScope (Ljava/lang/String;Lkotlin/jvm/functions/Function1;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+}
+
+public final class dev/kotrace/Span {
+	public fun <init> (Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;JLjava/util/Map;Ljava/util/List;Ljava/lang/String;)V
+	public synthetic fun <init> (Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;JLjava/util/Map;Ljava/util/List;Ljava/lang/String;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun getAttributes ()Ljava/util/Map;
+	public final fun getEndNanos ()Ljava/lang/Long;
+	public final fun getEvents ()Ljava/util/List;
+	public final fun getInfo ()Ljava/util/Map;
+	public final fun getLinks ()Ljava/util/List;
+	public final fun getName ()Ljava/lang/String;
+	public final fun getParentId ()Ljava/lang/String;
+	public final fun getScopeId ()Ljava/lang/String;
+	public final fun getSpanId ()Ljava/lang/String;
+	public final fun getStartNanos ()J
+	public final fun getStatus ()Ldev/kotrace/SpanStatus;
+	public final fun getTraceId ()Ljava/lang/String;
+	public final fun putInfo (Ljava/lang/String;Ljava/lang/String;)V
+}
+
+public final class dev/kotrace/SpanCollector : kotlin/coroutines/AbstractCoroutineContextElement, kotlinx/coroutines/ThreadContextElement {
+	public static final field Key Ldev/kotrace/SpanCollector$Key;
+	public fun <init> ()V
+	public final fun getSpans ()Ljava/util/List;
+	public fun restoreThreadContext (Lkotlin/coroutines/CoroutineContext;Ldev/kotrace/SpanCollector;)V
+	public synthetic fun restoreThreadContext (Lkotlin/coroutines/CoroutineContext;Ljava/lang/Object;)V
+	public fun updateThreadContext (Lkotlin/coroutines/CoroutineContext;)Ldev/kotrace/SpanCollector;
+	public synthetic fun updateThreadContext (Lkotlin/coroutines/CoroutineContext;)Ljava/lang/Object;
+}
+
+public final class dev/kotrace/SpanCollector$Key : kotlin/coroutines/CoroutineContext$Key {
+}
+
+public final class dev/kotrace/SpanCollectorKt {
+	public static final fun currentCollector (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static final fun currentThreadCollector ()Ldev/kotrace/SpanCollector;
+}
+
+public final class dev/kotrace/SpanContext : kotlin/coroutines/AbstractCoroutineContextElement, kotlinx/coroutines/ThreadContextElement {
+	public static final field Key Ldev/kotrace/SpanContext$Key;
+	public fun <init> (Ldev/kotrace/Span;)V
+	public final fun getSpan ()Ldev/kotrace/Span;
+	public fun restoreThreadContext (Lkotlin/coroutines/CoroutineContext;Ldev/kotrace/Span;)V
+	public synthetic fun restoreThreadContext (Lkotlin/coroutines/CoroutineContext;Ljava/lang/Object;)V
+	public fun updateThreadContext (Lkotlin/coroutines/CoroutineContext;)Ldev/kotrace/Span;
+	public synthetic fun updateThreadContext (Lkotlin/coroutines/CoroutineContext;)Ljava/lang/Object;
+}
+
+public final class dev/kotrace/SpanContext$Key : kotlin/coroutines/CoroutineContext$Key {
+}
+
+public final class dev/kotrace/SpanContextKt {
+	public static final fun currentSpan (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static final fun currentThreadSpan ()Ldev/kotrace/Span;
+}
+
+public final class dev/kotrace/SpanStatus : java/lang/Enum {
+	public static final field ERROR Ldev/kotrace/SpanStatus;
+	public static final field OK Ldev/kotrace/SpanStatus;
+	public static fun getEntries ()Lkotlin/enums/EnumEntries;
+	public static fun valueOf (Ljava/lang/String;)Ldev/kotrace/SpanStatus;
+	public static fun values ()[Ldev/kotrace/SpanStatus;
+}
+
+public abstract interface class dev/kotrace/TraceAdapter {
+	public abstract fun getPolicy ()Ldev/kotrace/TracePolicy;
+}
+
+public final class dev/kotrace/TraceConfig : kotlin/coroutines/AbstractCoroutineContextElement, kotlinx/coroutines/ThreadContextElement {
+	public static final field Key Ldev/kotrace/TraceConfig$Key;
+	public fun <init> (Ljava/util/List;Ldev/kotrace/AdapterFaultHook;)V
+	public synthetic fun <init> (Ljava/util/List;Ldev/kotrace/AdapterFaultHook;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun getAdapters ()Ljava/util/List;
+	public final fun getFaultHook ()Ldev/kotrace/AdapterFaultHook;
+	public final fun getLiveAdapters ()Ljava/util/List;
+	public final fun getReportAdapters ()Ljava/util/List;
+	public fun restoreThreadContext (Lkotlin/coroutines/CoroutineContext;Ldev/kotrace/TraceConfig;)V
+	public synthetic fun restoreThreadContext (Lkotlin/coroutines/CoroutineContext;Ljava/lang/Object;)V
+	public fun updateThreadContext (Lkotlin/coroutines/CoroutineContext;)Ldev/kotrace/TraceConfig;
+	public synthetic fun updateThreadContext (Lkotlin/coroutines/CoroutineContext;)Ljava/lang/Object;
+}
+
+public final class dev/kotrace/TraceConfig$Key : kotlin/coroutines/CoroutineContext$Key {
+}
+
+public final class dev/kotrace/TraceConfigKt {
+	public static final fun currentConfig (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static final fun currentThreadConfig ()Ldev/kotrace/TraceConfig;
+}
+
+public final class dev/kotrace/TraceFormatKt {
+	public static final fun renderTree (Ljava/util/List;)Ljava/lang/String;
+}
+
+public final class dev/kotrace/TraceKt {
+	public static final fun end (Ldev/kotrace/Span;Ldev/kotrace/SpanStatus;Ljava/lang/Throwable;)V
+	public static synthetic fun end$default (Ldev/kotrace/Span;Ldev/kotrace/SpanStatus;Ljava/lang/Throwable;ILjava/lang/Object;)V
+	public static final fun span (Ljava/lang/String;Ljava/util/Map;Ljava/util/List;Lkotlin/jvm/functions/Function1;Lkotlin/jvm/functions/Function1;Lkotlin/jvm/functions/Function1;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static synthetic fun span$default (Ljava/lang/String;Ljava/util/Map;Ljava/util/List;Lkotlin/jvm/functions/Function1;Lkotlin/jvm/functions/Function1;Lkotlin/jvm/functions/Function1;Lkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
+	public static final fun startSpan (Ljava/lang/String;Ljava/util/Map;Ljava/util/List;)Ldev/kotrace/Span;
+	public static synthetic fun startSpan$default (Ljava/lang/String;Ljava/util/Map;Ljava/util/List;ILjava/lang/Object;)Ldev/kotrace/Span;
+}
+
+public final class dev/kotrace/TraceLink {
+	public fun <init> (Ljava/lang/String;Ljava/util/Map;)V
+	public synthetic fun <init> (Ljava/lang/String;Ljava/util/Map;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1 ()Ljava/lang/String;
+	public final fun component2 ()Ljava/util/Map;
+	public final fun copy (Ljava/lang/String;Ljava/util/Map;)Ldev/kotrace/TraceLink;
+	public static synthetic fun copy$default (Ldev/kotrace/TraceLink;Ljava/lang/String;Ljava/util/Map;ILjava/lang/Object;)Ldev/kotrace/TraceLink;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getAttributes ()Ljava/util/Map;
+	public final fun getTraceId ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class dev/kotrace/TraceOutcome {
+	public fun <init> (Ldev/kotrace/TraceStatus;Ljava/util/List;)V
+	public synthetic fun <init> (Ldev/kotrace/TraceStatus;Ljava/util/List;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1 ()Ldev/kotrace/TraceStatus;
+	public final fun component2 ()Ljava/util/List;
+	public final fun copy (Ldev/kotrace/TraceStatus;Ljava/util/List;)Ldev/kotrace/TraceOutcome;
+	public static synthetic fun copy$default (Ldev/kotrace/TraceOutcome;Ldev/kotrace/TraceStatus;Ljava/util/List;ILjava/lang/Object;)Ldev/kotrace/TraceOutcome;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getAttached ()Ljava/util/List;
+	public final fun getStatus ()Ldev/kotrace/TraceStatus;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public abstract interface class dev/kotrace/TracePolicy {
+	public fun acceptsEvent (Ldev/kotrace/event/SpanEvent;)Z
+	public fun acceptsSpan (Ldev/kotrace/Span;)Z
+	public fun getAcceptsPropagatedException ()Z
+	public fun getAcceptsSensitive ()Z
+}
+
+public final class dev/kotrace/TracePolicy$DefaultImpls {
+	public static fun acceptsEvent (Ldev/kotrace/TracePolicy;Ldev/kotrace/event/SpanEvent;)Z
+	public static fun acceptsSpan (Ldev/kotrace/TracePolicy;Ldev/kotrace/Span;)Z
+	public static fun getAcceptsPropagatedException (Ldev/kotrace/TracePolicy;)Z
+	public static fun getAcceptsSensitive (Ldev/kotrace/TracePolicy;)Z
+}
+
+public final class dev/kotrace/TraceStatus : java/lang/Enum {
+	public static final field CANCELLED Ldev/kotrace/TraceStatus;
+	public static final field ERROR Ldev/kotrace/TraceStatus;
+	public static final field OK Ldev/kotrace/TraceStatus;
+	public static fun getEntries ()Lkotlin/enums/EnumEntries;
+	public static fun valueOf (Ljava/lang/String;)Ldev/kotrace/TraceStatus;
+	public static fun values ()[Ldev/kotrace/TraceStatus;
+}
+
+public final class dev/kotrace/TraceparentKt {
+	public static final field TRACEPARENT_HEADER Ljava/lang/String;
+	public static final fun toTraceparent (Ldev/kotrace/Span;Z)Ljava/lang/String;
+	public static synthetic fun toTraceparent$default (Ldev/kotrace/Span;ZILjava/lang/Object;)Ljava/lang/String;
+}
+
+public abstract interface annotation class dev/kotrace/UnredactedTraceRead : java/lang/annotation/Annotation {
+}
+
+public abstract interface class dev/kotrace/event/AttributedEvent : dev/kotrace/event/SpanEvent {
+	public abstract fun getAttributes ()Ljava/util/Map;
+}
+
+public abstract interface class dev/kotrace/event/AttributedRecord : dev/kotrace/event/TraceRecord {
+	public abstract fun getAttributes ()Ljava/util/Map;
+}
+
+public final class dev/kotrace/event/ExceptionEvent : dev/kotrace/event/SpanEvent {
+	public fun getAtNanos ()J
+	public final fun getThrowable ()Ljava/lang/Throwable;
+}
+
+public final class dev/kotrace/event/ExceptionOrigin : java/lang/Enum {
+	public static final field BIRTHPLACE Ldev/kotrace/event/ExceptionOrigin;
+	public static final field PROPAGATED Ldev/kotrace/event/ExceptionOrigin;
+	public static fun getEntries ()Lkotlin/enums/EnumEntries;
+	public static fun valueOf (Ljava/lang/String;)Ldev/kotrace/event/ExceptionOrigin;
+	public static fun values ()[Ldev/kotrace/event/ExceptionOrigin;
+}
+
+public final class dev/kotrace/event/ExceptionRecord : dev/kotrace/event/TraceRecord {
+	public fun <init> (Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;JLjava/lang/String;Ljava/util/Map;Ljava/util/List;Ljava/lang/Throwable;Ldev/kotrace/event/ExceptionOrigin;)V
+	public synthetic fun <init> (Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;JLjava/lang/String;Ljava/util/Map;Ljava/util/List;Ljava/lang/Throwable;Ldev/kotrace/event/ExceptionOrigin;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1 ()Ljava/lang/String;
+	public final fun component10 ()Ldev/kotrace/event/ExceptionOrigin;
+	public final fun component2 ()Ljava/lang/String;
+	public final fun component3 ()Ljava/lang/String;
+	public final fun component4 ()Ljava/lang/String;
+	public final fun component5 ()J
+	public final fun component6 ()Ljava/lang/String;
+	public final fun component7 ()Ljava/util/Map;
+	public final fun component8 ()Ljava/util/List;
+	public final fun component9 ()Ljava/lang/Throwable;
+	public final fun copy (Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;JLjava/lang/String;Ljava/util/Map;Ljava/util/List;Ljava/lang/Throwable;Ldev/kotrace/event/ExceptionOrigin;)Ldev/kotrace/event/ExceptionRecord;
+	public static synthetic fun copy$default (Ldev/kotrace/event/ExceptionRecord;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;JLjava/lang/String;Ljava/util/Map;Ljava/util/List;Ljava/lang/Throwable;Ldev/kotrace/event/ExceptionOrigin;ILjava/lang/Object;)Ldev/kotrace/event/ExceptionRecord;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getAtNanos ()J
+	public fun getInfo ()Ljava/util/Map;
+	public fun getLinks ()Ljava/util/List;
+	public fun getOperation ()Ljava/lang/String;
+	public final fun getOrigin ()Ldev/kotrace/event/ExceptionOrigin;
+	public fun getParentId ()Ljava/lang/String;
+	public fun getScopeId ()Ljava/lang/String;
+	public fun getSpanId ()Ljava/lang/String;
+	public final fun getThrowable ()Ljava/lang/Throwable;
+	public fun getTraceId ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class dev/kotrace/event/LogEvent : dev/kotrace/event/AttributedEvent {
+	public fun <init> (Ljava/util/Map;Lkotlin/jvm/functions/Function0;JZ)V
+	public synthetic fun <init> (Ljava/util/Map;Lkotlin/jvm/functions/Function0;JZILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public fun getAtNanos ()J
+	public fun getAttributes ()Ljava/util/Map;
+	public final fun getMessage ()Ljava/lang/String;
+	public final fun getSensitive ()Z
+}
+
+public final class dev/kotrace/event/LogRecord : dev/kotrace/event/AttributedRecord {
+	public fun <init> (Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;JLjava/lang/String;Ljava/util/Map;Ljava/util/List;Ljava/util/Map;Ljava/lang/String;Z)V
+	public synthetic fun <init> (Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;JLjava/lang/String;Ljava/util/Map;Ljava/util/List;Ljava/util/Map;Ljava/lang/String;ZILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1 ()Ljava/lang/String;
+	public final fun component10 ()Ljava/lang/String;
+	public final fun component11 ()Z
+	public final fun component2 ()Ljava/lang/String;
+	public final fun component3 ()Ljava/lang/String;
+	public final fun component4 ()Ljava/lang/String;
+	public final fun component5 ()J
+	public final fun component6 ()Ljava/lang/String;
+	public final fun component7 ()Ljava/util/Map;
+	public final fun component8 ()Ljava/util/List;
+	public final fun component9 ()Ljava/util/Map;
+	public final fun copy (Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;JLjava/lang/String;Ljava/util/Map;Ljava/util/List;Ljava/util/Map;Ljava/lang/String;Z)Ldev/kotrace/event/LogRecord;
+	public static synthetic fun copy$default (Ldev/kotrace/event/LogRecord;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;JLjava/lang/String;Ljava/util/Map;Ljava/util/List;Ljava/util/Map;Ljava/lang/String;ZILjava/lang/Object;)Ldev/kotrace/event/LogRecord;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getAtNanos ()J
+	public fun getAttributes ()Ljava/util/Map;
+	public fun getInfo ()Ljava/util/Map;
+	public fun getLinks ()Ljava/util/List;
+	public final fun getMessage ()Ljava/lang/String;
+	public fun getOperation ()Ljava/lang/String;
+	public fun getParentId ()Ljava/lang/String;
+	public fun getScopeId ()Ljava/lang/String;
+	public final fun getSensitive ()Z
+	public fun getSpanId ()Ljava/lang/String;
+	public fun getTraceId ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class dev/kotrace/event/NamedEvent : dev/kotrace/event/AttributedEvent {
+	public fun <init> (Ljava/lang/String;Ljava/util/Map;J)V
+	public fun getAtNanos ()J
+	public fun getAttributes ()Ljava/util/Map;
+	public final fun getName ()Ljava/lang/String;
+}
+
+public final class dev/kotrace/event/NamedRecord : dev/kotrace/event/AttributedRecord {
+	public fun <init> (Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;JLjava/lang/String;Ljava/util/Map;Ljava/util/List;Ljava/lang/String;Ljava/util/Map;)V
+	public synthetic fun <init> (Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;JLjava/lang/String;Ljava/util/Map;Ljava/util/List;Ljava/lang/String;Ljava/util/Map;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1 ()Ljava/lang/String;
+	public final fun component10 ()Ljava/util/Map;
+	public final fun component2 ()Ljava/lang/String;
+	public final fun component3 ()Ljava/lang/String;
+	public final fun component4 ()Ljava/lang/String;
+	public final fun component5 ()J
+	public final fun component6 ()Ljava/lang/String;
+	public final fun component7 ()Ljava/util/Map;
+	public final fun component8 ()Ljava/util/List;
+	public final fun component9 ()Ljava/lang/String;
+	public final fun copy (Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;JLjava/lang/String;Ljava/util/Map;Ljava/util/List;Ljava/lang/String;Ljava/util/Map;)Ldev/kotrace/event/NamedRecord;
+	public static synthetic fun copy$default (Ldev/kotrace/event/NamedRecord;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;JLjava/lang/String;Ljava/util/Map;Ljava/util/List;Ljava/lang/String;Ljava/util/Map;ILjava/lang/Object;)Ldev/kotrace/event/NamedRecord;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getAtNanos ()J
+	public fun getAttributes ()Ljava/util/Map;
+	public fun getInfo ()Ljava/util/Map;
+	public fun getLinks ()Ljava/util/List;
+	public final fun getName ()Ljava/lang/String;
+	public fun getOperation ()Ljava/lang/String;
+	public fun getParentId ()Ljava/lang/String;
+	public fun getScopeId ()Ljava/lang/String;
+	public fun getSpanId ()Ljava/lang/String;
+	public fun getTraceId ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public abstract interface class dev/kotrace/event/SpanEvent {
+	public abstract fun getAtNanos ()J
+}
+
+public final class dev/kotrace/event/SpanlessEmitKt {
+	public static final fun emitException (Ljava/lang/Throwable;Ljava/util/Map;)V
+	public static synthetic fun emitException$default (Ljava/lang/Throwable;Ljava/util/Map;ILjava/lang/Object;)V
+	public static final fun emitLog (Ljava/util/Map;ZLkotlin/jvm/functions/Function0;)V
+	public static synthetic fun emitLog$default (Ljava/util/Map;ZLkotlin/jvm/functions/Function0;ILjava/lang/Object;)V
+	public static final fun emitNamed (Ljava/lang/String;Ljava/util/Map;)V
+	public static synthetic fun emitNamed$default (Ljava/lang/String;Ljava/util/Map;ILjava/lang/Object;)V
+}
+
+public final class dev/kotrace/event/TraceExceptionKt {
+	public static final fun addException (Ldev/kotrace/Span;Ljava/lang/Throwable;Ljava/util/Map;)V
+	public static synthetic fun addException$default (Ldev/kotrace/Span;Ljava/lang/Throwable;Ljava/util/Map;ILjava/lang/Object;)V
+	public static final fun getException (Ldev/kotrace/Span;)Ljava/lang/Throwable;
+}
+
+public final class dev/kotrace/event/TraceLogKt {
+	public static final fun log (Ldev/kotrace/Span;Ljava/util/Map;ZLkotlin/jvm/functions/Function0;)V
+	public static synthetic fun log$default (Ldev/kotrace/Span;Ljava/util/Map;ZLkotlin/jvm/functions/Function0;ILjava/lang/Object;)V
+}
+
+public final class dev/kotrace/event/TraceNamedKt {
+	public static final fun addNamed (Ldev/kotrace/Span;Ljava/lang/String;Ljava/util/Map;)V
+	public static synthetic fun addNamed$default (Ldev/kotrace/Span;Ljava/lang/String;Ljava/util/Map;ILjava/lang/Object;)V
+}
+
+public abstract interface class dev/kotrace/event/TraceRecord {
+	public abstract fun getAtNanos ()J
+	public abstract fun getInfo ()Ljava/util/Map;
+	public abstract fun getLinks ()Ljava/util/List;
+	public abstract fun getOperation ()Ljava/lang/String;
+	public abstract fun getParentId ()Ljava/lang/String;
+	public abstract fun getScopeId ()Ljava/lang/String;
+	public abstract fun getSpanId ()Ljava/lang/String;
+	public abstract fun getTraceId ()Ljava/lang/String;
+}
+
+public final class dev/kotrace/event/TraceRecordKt {
+	public static final fun toJson (Ldev/kotrace/event/TraceRecord;)Ljava/lang/String;
+}
+

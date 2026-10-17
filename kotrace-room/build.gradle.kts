@@ -2,6 +2,8 @@ plugins {
     // AGP 9 provides built-in Kotlin — no separate kotlin plugin (applying it is a hard error).
     alias(libs.plugins.android.library)
     `maven-publish`
+    // The ABI gate the JVM modules get from `abiValidation()`, which dumps nothing on AGP's built-in Kotlin.
+    id("kotrace.android-abi")
 }
 
 android {

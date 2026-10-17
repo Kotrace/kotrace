@@ -11,6 +11,9 @@ java {
 }
 
 kotlin {
+    // Same binary-compatibility gate as the core (see root build.gradle.kts).
+    @OptIn(org.jetbrains.kotlin.gradle.dsl.abi.ExperimentalAbiValidation::class)
+    abiValidation()
     compilerOptions {
         jvmTarget = org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_11
     }

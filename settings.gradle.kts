@@ -1,4 +1,7 @@
 pluginManagement {
+    // Build-only plugins (the release guard); never published. Named apart from `build-logic`, which an app
+    // pulling kotrace into its own composite build may already include.
+    includeBuild("build-logic") { name = "kotrace-build-logic" }
     repositories {
         google()
         mavenCentral()

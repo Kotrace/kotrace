@@ -139,15 +139,19 @@ fun TraceRecord.toJson(): String = buildString {
     append('}')
 }
 
+/**
+ * Renders `"key":value`. The key is escaped too, not only the value: `attributes` / `info` / link keys are
+ * consumer-chosen strings, and an unescaped quote or newline there would break the line or inject a field.
+ */
 private fun StringBuilder.appendField(key: String, value: String?) {
-    append('"').append(key).append("\":")
+    append('"').appendEscaped(key).append("\":")
     if (value == null) append("null") else append('"').appendEscaped(value).append('"')
 }
 
 /** Renders `,"key":"value"` only when [value] is non-null (leads with the comma, so the caller need not). */
 private fun StringBuilder.appendOptionalField(key: String, value: String?) {
     if (value == null) return
-    append(',').append('"').append(key).append("\":\"").appendEscaped(value).append('"')
+    append(',').append('"').appendEscaped(key).append("\":\"").appendEscaped(value).append('"')
 }
 
 /** Renders [map] as a nested `"key":{…}` object. Empty maps emit nothing (leaner line, stable enough — a

@@ -82,19 +82,19 @@ contract, so an OTel upgrade later is additive.
 maven { url = uri("https://maven.kotrace.dev") }
 
 // build.gradle.kts
-implementation("dev.kotrace:kotrace:0.4.0")
+implementation("dev.kotrace:kotrace:0.5.0")
 
 // OkHttp integration only — the traceparent-on-the-wire glue. Pulls the core transitively.
-implementation("dev.kotrace:kotrace-okhttp:0.4.0")
+implementation("dev.kotrace:kotrace-okhttp:0.5.0")
 
 // Room integration only (Android) — logs each query's SQL onto the active span. Pulls the core.
-implementation("dev.kotrace:kotrace-room:0.4.0")
+implementation("dev.kotrace:kotrace-room:0.5.0")
 ```
 
 Or align every module through the BOM — declare its version once, drop the version off each dependency:
 
 ```kotlin
-implementation(platform("dev.kotrace:kotrace-bom:0.4.0"))
+implementation(platform("dev.kotrace:kotrace-bom:0.5.0"))
 implementation("dev.kotrace:kotrace")
 implementation("dev.kotrace:kotrace-okhttp")
 ```
@@ -208,6 +208,15 @@ suspend fun price(): String = span("http.GET /pricing") {
 
 Order between the factory and interceptor does not matter (tag is placed before dispatch, read during
 the chain). A call made with no active span passes through untagged and unmodified.
+
+**Span name.** The HTTP span is named `http <METHOD>` — never the URL path, which can carry user data and
+would otherwise ride `operation` onto every record, crash reports and `toJson` included (ADR-021). The path
+stays on the interceptor's `sensitive` breadcrumbs. To tell endpoints apart, map requests to a sanitized
+route template yourself:
+
+```kotlin
+val calls = TracingCallFactory(http, spanName = { req -> "http ${req.method} ${routeTemplateOf(req)}" })  // e.g. /users/{id}
+```
 
 See `demo/…/Main.kt` for a full end-to-end run.
 
@@ -328,11 +337,22 @@ Source: `demo/src/main/kotlin/dev/kotrace/demo/Main.kt`.
    ```properties
    kotrace.maven.repo.dir=/absolute/path/to/kotrace-maven-checkout
    ```
-3. Bump `version` in `build.gradle.kts`, then:
+3. Bump `version` in `gradle.properties` (the one place every module's coordinates come from). A
+   binary-incompatible change needs a new version — pre-1.0, bump the minor. `./gradlew check` runs
+   `checkKotlinAbi` against the committed `api/` dumps of every published module, so an ABI change fails the
+   build until you review it and run `./gradlew updateKotlinAbi`.
+4. Commit, then tag that commit `v<version>` **before** publishing.
+5. Publish:
    ```bash
    ./gradlew publishAllPublicationsToKotraceMavenRepository
    ```
-4. Commit + push the Maven repo. GitHub Pages serves the new files.
+   Publishing refuses a dirty working tree (the artifact must be exactly a commit), a version whose
+   `v<version>` tag is on a different commit, and a version already in the Maven repo from a different commit
+   (each POM records its commit as `kotrace.git.commit`) — a published version is immutable; bump instead of
+   overwriting it. A `-SNAPSHOT` version is mutable, so it needs only the clean tree: skip step 4 and
+   re-publish it from any commit. The guard is `build-logic`'s `kotrace.release-guard` plugin, and `check` runs
+   its tests against throwaway Git and Maven repos.
+6. Commit + push the Maven repo. GitHub Pages serves the new files.
 
 ## Where to go when stuck
 

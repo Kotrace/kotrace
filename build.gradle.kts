@@ -6,6 +6,7 @@ plugins {
     alias(libs.plugins.dokka)
     `java-library`
     `maven-publish`
+    id("kotrace.release-guard")
 }
 
 java {
@@ -15,6 +16,11 @@ java {
 }
 
 kotlin {
+    // Binary-compatibility gate: `check` runs `checkKotlinAbi` against the committed `api/` dump, so a public
+    // ABI change fails the build until it is reviewed and re-dumped with `updateKotlinAbi` — and a break
+    // means a version bump (see README § Publishing).
+    @OptIn(org.jetbrains.kotlin.gradle.dsl.abi.ExperimentalAbiValidation::class)
+    abiValidation()
     compilerOptions {
         jvmTarget = org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_11
     }
@@ -62,3 +68,8 @@ publishing {
         }
     }
 }
+
+// Release guard (build-logic's `kotrace.release-guard`, README § Publishing): every remote publish, of every
+// module and the BOM, first checks a clean tree, the `v<version>` tag and the Maven repo, and each POM records
+// the commit it was built from. Its TestKit tests run from `check`.
+tasks.check { dependsOn(gradle.includedBuild("kotrace-build-logic").task(":check")) }

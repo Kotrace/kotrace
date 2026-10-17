@@ -236,12 +236,12 @@ class LogTest {
         val collector = SpanCollector()
         withContext(collector) {
             span("parent") {
-                startSpan("http POST /token", mapOf("layer" to "http")).end(SpanStatus.OK)
+                startSpan("http POST", mapOf("layer" to "http")).end(SpanStatus.OK)
             }
         }
 
         val parent = collector.spans.first { it.name == "parent" }
-        val child = collector.spans.first { it.name == "http POST /token" }
+        val child = collector.spans.first { it.name == "http POST" }
         assertEquals("child hangs off the active span", parent.spanId, child.parentId)
         assertEquals("same trace", parent.traceId, child.traceId)
         assertEquals("http", child.attributes["layer"])
@@ -448,6 +448,30 @@ class LogTest {
                 "\"operation\":\"repo\",\"kind\":\"log\",\"message\":\"m\"," +
                 "\"attributes\":{\"operation\":\"attr-op\",\"shared\":\"attr-kept\"}," +
                 "\"info\":{\"shared\":\"info-kept\",\"trace_id\":\"info-tid\"}}",
+            record.toJson(),
+        )
+    }
+
+    @Test
+    fun `toJson escapes map keys, so a consumer key can never break the line or inject a field`() {
+        val record = LogRecord(
+            traceId = "abc",
+            spanId = "def",
+            parentId = null,
+            operation = "repo",
+            atNanos = 0,
+            // consumer-chosen keys carrying a quote, a backslash, a newline and a control char
+            info = mapOf("k\":\"injected" to "v"),
+            links = listOf(TraceLink("t", mapOf("a\\b" to "x"))),
+            attributes = mapOf("line\nbreak" to "1", "ctl\u0001" to "2"),
+            message = "m",
+        )
+        assertEquals(
+            "{\"trace_id\":\"abc\",\"span_id\":\"def\",\"parent_span_id\":null," +
+                "\"operation\":\"repo\",\"kind\":\"log\",\"message\":\"m\"," +
+                "\"attributes\":{\"line\\nbreak\":\"1\",\"ctl\\u0001\":\"2\"}," +
+                "\"info\":{\"k\\\":\\\"injected\":\"v\"}," +
+                "\"links\":[{\"trace_id\":\"t\",\"attributes\":{\"a\\\\b\":\"x\"}}]}",
             record.toJson(),
         )
     }

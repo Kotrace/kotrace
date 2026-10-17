@@ -15,6 +15,7 @@ This repository is a Kotlin/JVM tracing library. Use this file as the repo-local
 - `kotrace-okhttp`: OkHttp integration. Keep HTTP dependencies out of core.
 - `kotrace-room`: Android Room integration. Keep Android dependencies out of core and OkHttp.
 - `kotrace-bom`: Maven BOM.
+- `build-logic`: build-only Gradle plugins, never published: the release guard (`kotrace.release-guard`) and its TestKit tests, which the root `check` runs, and the Android ABI gate (`kotrace.android-abi`).
 - `demo`: runnable showcase only; do not treat it as a published artifact.
 - `decisions/` and `ARCHITECTURE.md`: source of truth for design rationale. Read the relevant ADR before changing behavior it covers.
 
@@ -24,6 +25,8 @@ This repository is a Kotlin/JVM tracing library. Use this file as the repo-local
 - Run focused tests with Gradle where possible, for example `./gradlew test` for core/unit tests.
 - Run `./gradlew build` before finishing broad or cross-module changes.
 - Run `./gradlew dokkaGenerate` when touching public KDoc or samples, because Dokka warnings are configured to fail.
+- `check` runs `checkKotlinAbi` for every published module against the committed `api/*.api` dumps. A deliberate public API change needs `./gradlew updateKotlinAbi` plus the dump in the same commit; a binary break needs a version bump in `gradle.properties` (publishing refuses a version already tagged or published from another commit). The core and `kotrace-okhttp` use KGP's `abiValidation()`; `kotrace-room` uses `kotrace.android-abi`, because `abiValidation()` dumps nothing on AGP 9's built-in Kotlin.
+- `check` also runs the `build-logic` tests, which start throwaway Gradle builds and need `git` on the PATH.
 - No secrets or environment variables are needed for normal build/test.
 
 ## Coding Constraints
