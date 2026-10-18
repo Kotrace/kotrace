@@ -179,6 +179,17 @@ class TracingQueryCallbackTest {
         forwarded.onQuery("SELECT 1", emptyList()) // Room's dispatch would drop it too; a throw would crash the app
     }
 
+    @Test
+    fun `on an inline delegate executor, the app's own RejectedExecutionException still propagates`() {
+        val own = java.util.concurrent.RejectedExecutionException("the app's own submit failed")
+        val forwarded = androidx.room.RoomDatabase.QueryCallback { _, _ -> throw own }
+            .dispatchedTo { it.run() }
+
+        val thrown = runCatching { forwarded.onQuery("SELECT 1", emptyList()) }.exceptionOrNull()
+
+        assertSame("only a task that never started counts as refused", own, thrown)
+    }
+
     /** A builder that records what `tracing()` installs; `setQueryCallback` is all it touches. */
     private fun builderCapturing(
         callback: CapturingSlot<RoomDatabase.QueryCallback>,

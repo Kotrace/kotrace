@@ -109,16 +109,22 @@ fun <T : RoomDatabase> RoomDatabase.Builder<T>.tracing(
  *   a throw would land in Room's callback scope, where it can crash the app and silence every later query.
  *
  * A throw from this callback itself happens on [executor]'s thread and is left to that executor, as it would be
- * under Room.
+ * under Room. On an executor that runs it inline, that throw propagates, even a [RejectedExecutionException]: only a
+ * task that never started counts as refused.
  */
 internal fun RoomDatabase.QueryCallback.dispatchedTo(executor: Executor): RoomDatabase.QueryCallback {
     val delegate = this
     return RoomDatabase.QueryCallback { sql, args ->
         val snapshot = args.toList()
+        var started = false
         try {
-            executor.execute { delegate.onQuery(sql, snapshot) }
-        } catch (_: RejectedExecutionException) {
-            // Dropped, like a rejected dispatch in Room's own callback scope.
+            executor.execute {
+                started = true
+                delegate.onQuery(sql, snapshot)
+            }
+        } catch (rejected: RejectedExecutionException) {
+            // Dropped, like a rejected dispatch in Room's own callback scope; once started, the throw is the app's.
+            if (started) throw rejected
         }
     }
 }

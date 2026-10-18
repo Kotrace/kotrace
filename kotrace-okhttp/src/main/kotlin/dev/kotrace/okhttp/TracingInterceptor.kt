@@ -145,6 +145,10 @@ class TracingInterceptor(
                 if (level >= Level.HEADERS) span.log(sensitive = true) { "⇠ $code headers${headers.render()}" }
             }
             return if (level >= Level.BODY) response.withBodyCapture(request, span, trace) else response
+        } catch (t: Throwable) {
+            // The caller never gets this response, so nothing else would close it and release its connection.
+            runCatching { response.body?.close() }.exceptionOrNull()?.takeIf { it !== t }?.let(t::addSuppressed)
+            throw t
         } finally {
             span.end(if (response.isSuccessful) SpanStatus.OK else SpanStatus.ERROR)
         }

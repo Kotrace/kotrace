@@ -50,8 +50,10 @@ class SpanEventsContractTest {
         span.appendEvent(event(1))
 
         // A consumer sees the timeline but cannot append (the only writer is a verb, via emit → appendEvent): Kotlin
-        // refuses to treat the buffer as a MutableList, and the view cast back to one throws on a write.
-        assertFalse(span.eventBuffer is MutableList<*>)
+        // refuses to treat the buffer as a MutableList, and the view cast back to one throws on a write. Held as Any,
+        // so the check runs on the buffer's class at run time rather than being decided by the compiler.
+        val buffer: Any = span.eventBuffer
+        assertFalse(buffer is MutableList<*>)
         @Suppress("UNCHECKED_CAST")
         val forced = span.events as MutableList<SpanEvent>
         assertThrows(UnsupportedOperationException::class.java) { forced += event(2) }

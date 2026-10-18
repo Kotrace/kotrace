@@ -24,8 +24,11 @@ import okhttp3.Callback
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
+import okhttp3.ResponseBody.Companion.asResponseBody
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
+import okio.ForwardingSource
+import okio.buffer
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertSame
@@ -136,7 +139,19 @@ class OkHttpDispatcherBridgeTest {
         Kotrace.strictWhenNotInstalled()
         server.enqueue(MockResponse().setBody("ok"))
         val boom = IOException("boom")
-        val calls = TracingCallFactory(client())
+        var bodyClosed = false
+        val closeSpy = okhttp3.Interceptor { chain ->
+            val response = chain.proceed(chain.request())
+            val body = checkNotNull(response.body)
+            val spied = object : ForwardingSource(body.source()) {
+                override fun close() {
+                    bodyClosed = true
+                    super.close()
+                }
+            }
+            response.newBuilder().body(spied.buffer().asResponseBody(body.contentType(), body.contentLength())).build()
+        }
+        val calls = TracingCallFactory(client(closeSpy))
         val failing = TracingCallFactory(client({ throw boom }))
         val collector = SpanCollector()
 
@@ -147,6 +162,7 @@ class OkHttpDispatcherBridgeTest {
         val strict = ok.exceptionOrNull()
         assertTrue("a successful call surfaces the missing install", strict?.message.orEmpty().contains("strict-not-installed"))
         assertTrue("its span still ended", collector.spans.all { it.endNanos != null })
+        assertTrue("the response the caller never got is closed, releasing its connection", bodyClosed)
         assertSame("the application's own exception propagates, not a telemetry one", boom, failed.exceptionOrNull())
         assertTrue(
             "the telemetry failure rides the application throwable as suppressed",

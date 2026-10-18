@@ -30,11 +30,15 @@ import okhttp3.Request
 import okhttp3.RequestBody
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
+import okhttp3.ResponseBody
 import okhttp3.ResponseBody.Companion.toResponseBody
+import okio.Buffer
 import okio.BufferedSink
+import okio.BufferedSource
 import okio.Timeout
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -154,6 +158,62 @@ class TracingInterceptorTest {
         val thrown = runCatching { run(request, code = 200) }.exceptionOrNull()
 
         assertTrue("the fatal error is not contained", thrown is NoClassDefFoundError)
+    }
+
+    /**
+     * A JVM-fatal [gone] from the response breadcrumb propagates past a response the caller never gets; its body's
+     * `close()` throws [closeFailure]. Returns what the call threw and whether the body was closed.
+     */
+    private suspend fun failingAfterResponse(gone: Throwable, closeFailure: Throwable): Pair<Throwable?, Boolean> {
+        val fatal = object : dev.kotrace.adapter.LiveAdapter {
+            override val policy = object : TracePolicy {
+                override val acceptsSensitive = true
+            }
+            override fun onLive(record: TraceRecord): Unit = throw gone
+        }
+        val handoff = withContext(SpanCollector() + TraceConfig(listOf(fatal))) { TraceHandoff.captureOrNull()!! }
+        val request = Request.Builder().url("https://graph.example.com/accounts")
+            .tag(HttpTrace::class.java, HttpTrace(handoff, "http GET", emptyMap())).build()
+        var closed = false
+        val body = object : ResponseBody() {
+            override fun contentType(): MediaType? = null
+            override fun contentLength() = 0L
+            override fun source(): BufferedSource = Buffer()
+            override fun close() {
+                closed = true
+                throw closeFailure
+            }
+        }
+        val chain = mockk<Interceptor.Chain> {
+            every { request() } returns request
+            every { proceed(any()) } answers {
+                Response.Builder().request(firstArg()).protocol(Protocol.HTTP_1_1).code(200).message("ok").body(body).build()
+            }
+        }
+        return runCatching { TracingInterceptor().intercept(chain) }.exceptionOrNull() to closed
+    }
+
+    @Test
+    fun `a response the caller never gets is closed, its close failure suppressed on the propagating one`() = runTest {
+        val gone = NoClassDefFoundError("gone")
+        val closeFailure = IOException("close failed")
+
+        val (thrown, closed) = failingAfterResponse(gone, closeFailure)
+
+        assertTrue("the body is closed, releasing its connection", closed)
+        assertSame(gone, thrown)
+        assertTrue(gone.suppressed.contains(closeFailure))
+    }
+
+    @Test
+    fun `a close failure that is the propagating failure itself never replaces it`() = runTest {
+        // Suppressing an exception on itself throws IllegalArgumentException instead.
+        val gone = NoClassDefFoundError("gone")
+
+        val (thrown, closed) = failingAfterResponse(gone, closeFailure = gone)
+
+        assertTrue(closed)
+        assertSame(gone, thrown)
     }
 
     @Test
