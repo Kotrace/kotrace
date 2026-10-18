@@ -79,8 +79,11 @@ against Android's API levels.
   `--min-api 21`, checked on the dexed core jar. Room's lint does not see the core's sources even with
   `checkDependencies`, so `kotrace.conventions` gives each JVM module a `checkAndroidApi` task, run by `check`:
   it looks every class, method and field reference in the jar up in `api-versions.xml` of the compile SDK, and
-  fails on one newer than `androidMinSdk` or absent from Android. Lambda and string-template bootstraps
-  (`java/lang/invoke`) and the backported `hashCode` calls pass.
+  fails on one newer than `androidMinSdk` or absent from Android. An inherited member counts the level of each
+  superclass or interface link it comes through (`URLClassLoader` implements `Closeable` only from API 24), and
+  one referenced through the jar's own subclass is resolved to the platform type that declares it. Lambda and
+  string-template bootstraps (`java/lang/invoke`) and the backported `hashCode` calls pass; any other call into
+  `java/lang/invoke` is checked.
 - **Room and Android floors are declared, and lowered.** `kotrace-room` required `minSdk` 28 for no technical
   reason (Room 2.8.4 itself requires 23); it now requires **21**. It is compiled and tested against Room
   **2.6.1**, the last release before Room's Kotlin Multiplatform rewrite (2.7), which many apps have not taken;
