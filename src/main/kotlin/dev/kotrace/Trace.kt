@@ -86,7 +86,7 @@ suspend fun <T> span(
             traits,
             links,
             attributes,
-            context[ScopeContext]?.scopeId,
+            resolveScopeId(context[ScopeContext]?.scopeId, FaultPhase.SPAN_OPEN),
             returnedOutcome,
             returnVerdictClassifier,
             block,
@@ -100,7 +100,7 @@ suspend fun <T> span(
         traits = traits,
         links = links,
         attributes = attributes,
-        scopeId = context[ScopeContext]?.scopeId,
+        scopeId = resolveScopeId(context[ScopeContext]?.scopeId, FaultPhase.SPAN_OPEN),
         returnVerdictClassifier = returnVerdictClassifier,
         block = block,
     )

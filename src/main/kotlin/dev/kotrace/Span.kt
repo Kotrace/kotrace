@@ -30,8 +30,9 @@ enum class SpanStatus { OK, ERROR }
  *
  * [links] are the span's cross-trace edges ([TraceLink]), set at construction; [parentId] is the in-tree edge.
  *
- * [scopeId] is the [dev.kotrace.withScope] id active when the span opened, or null (ADR-010). Every record lifted
- * off the span carries it, so work inside a scope correlates above its [traceId]. It is never a filter dimension.
+ * [scopeId] is the [dev.kotrace.withScope] id active when the span opened, else the installed fallback's
+ * (`Kotrace.install(fallbackScopeId = …)`, ADR-038), else null (ADR-010). Every record lifted off the span carries
+ * it, so work inside a scope correlates above its [traceId]. It is never a filter dimension.
  *
  * [events] is copy-on-write, since parallel children and off-coroutine bridges (OkHttp, Room) append concurrently,
  * and bounded at [maxEvents]: past that the oldest breadcrumbs are discarded ([droppedEvents]), an exception only

@@ -70,7 +70,7 @@ interchange.
 |---|---|
 | **tracing** | the concern / this library, never a runtime object. |
 | **trace** | **one call tree** = one `trace_id`, per flow. The verb that opens a **span** within it is `span(name){}`, named for the node it opens, not the tree (ADR-003). |
-| **scope** | a **live-only correlation umbrella above a trace** (`scope ⊇ trace ⊇ span`, ADR-010): a nullable `scope_id`, set by `withScope(scopeId){}`. **Not a span**: it opens no reportable tree and has no duration, outcome, `status`, or report path; it is a plain correlation key, never a filter dimension. Groups many traces **and** their orphan emits under one session/journey key. |
+| **scope** | a **live-only correlation umbrella above a trace** (`scope ⊇ trace ⊇ span`, ADR-010): a nullable `scope_id`, set by `withScope(scopeId){}`. **Not a span**: it opens no reportable tree and has no duration, outcome, `status`, or report path; it is a plain correlation key, never a filter dimension. Groups many traces **and** their orphan emits under one session/journey key. Outside any `withScope`, a record takes the process-wide **fallback scope** installed with `Kotrace.install(fallbackScopeId = …)`, if any (ADR-038); an ambient scope always wins. |
 | **span** | **one node** (`Span`): a name, a status, `traits`, `attributes`, `events` (the birthplace `ExceptionEvent`, if any, lives among them; there is no `error` field), a parent. Entity, not value (§2). |
 | **link** | a **cross-trace causal edge** (`TraceLink` on `Span.links`): a reference to another *trace* by `trace_id` only (no `span_id`; ADR-009), the OpenTelemetry *span link* shape. Distinct from `parentId` (the **in-tree** edge). Birth-set like `attributes`; surfaces on the wire as a `links` array on every record off the span. Never interchange with **parent**. |
 | **operation** | the owning **`Span.name`** at egress: its label as the flat **join key** on every `TraceRecord` and `toJson` column. `name` = the in-memory field; `operation` = that value as the wire/backend-join key (OpenTelemetry-aligned). A **wire contract** (§2), and distinct from `NamedRecord.name` (the *event*'s name). |
@@ -78,7 +78,7 @@ interchange.
 | **log** | a **breadcrumb** event (`Span.log` → `LogEvent` → `LogRecord`): a line bound to a span. |
 | **event** (named) | a **named / analytics** occurrence (`Span.addNamed` → `NamedEvent` → `NamedRecord`, OpenTelemetry `addEvent` shape). |
 | **exception** | the **birthplace crash**: an `ExceptionEvent` on `Span.events` (read via the `Span.exception` extension, §8), surfaced at egress as `ExceptionRecord`. It is subject only to `TracePolicy.acceptsEvent` (which defaults to keeping it), so a breadcrumb filter never drops the crash unless a policy explicitly covers exceptions; it does **not** bypass every gate. |
-| **span-less emit** | `emitLog` / `emitNamed` / `emitException` (ADR-010): the **orphan** counterparts of the span-scoped `log` / `addNamed` / `addException`, for an occurrence outside any span (an app-lifecycle or push callback, a non-coroutine entry). Fanned **live-only** through the resolved configuration (context override, else the process-wide `Kotrace` configuration ↓), gated by policy; a record with null identity, carrying a `scope_id` if a `withScope` is active. `emitException(cause, attributes)` (and `addException(cause, attributes)`) populate record-level `ExceptionRecord.spanAttributes` while the event stays object-only (ADR-005). |
+| **span-less emit** | `emitLog` / `emitNamed` / `emitException` (ADR-010): the **orphan** counterparts of the span-scoped `log` / `addNamed` / `addException`, for an occurrence outside any span (an app-lifecycle or push callback, a non-coroutine entry). Fanned **live-only** through the resolved configuration (context override, else the process-wide `Kotrace` configuration ↓), gated by policy; a record with null identity, carrying the active `withScope`'s `scope_id`, else the installed fallback's (ADR-038). `emitException(cause, attributes)` (and `addException(cause, attributes)`) populate record-level `ExceptionRecord.spanAttributes` while the event stays object-only (ADR-005). |
 | **report** | the **tail** fan-out at trace end (`ReportAdapter.onReport(status)`): buffered tree, breadcrumbs + crash, gated by status. |
 | **live** | the **per-event** fan-out as it happens (`LiveAdapter.onLive`): immediate, ungated by trace status. |
 | **status** | `SpanStatus` = one node's outcome; `TraceStatus` = the whole trace's verdict (`OK`/`ERROR`/`CANCELLED`). Separate on purpose (§2). |
@@ -159,14 +159,18 @@ consumer never depends on kotrace's internal node shape.
 
 **`scope_id`, above `trace_id`** (ADR-010). A nullable correlation key, one level up (`scope ⊇ trace ⊇
 span`): a span opened inside a `withScope` stamps it alongside `trace_id`; a span-less emit inside one
-carries it alone. `toJson` emits `"scope_id"` **only when non-null**, so a record outside any scope has no such
-key (parallel to ADR-004 nesting). It is **never** read by a
+carries it alone. Outside any `withScope`, both take the process-wide fallback installed with
+`Kotrace.install(fallbackScopeId = …)` (ADR-038): one internal resolver gives every site (a span opening, a
+span-less emit, `startSpan`, `TraceHandoff`) the ambient id, else the fallback's value, else null. The provider is
+read at each resolution and only when no ambient scope exists; a throw from it yields null and reaches the
+`FaultHook` (`scope.fallback`), so the record is still delivered. `toJson` emits `"scope_id"` **only when
+non-null**, so a record with no scope has no such key (parallel to ADR-004 nesting). It is **never** read by a
 `TracePolicy`, the report path, or any status/duration/outcome logic: a plain key, kept a distinct field
 so that distinction is structural, not conventional.
 
 **Nullable identity** (ADR-010). `traceId` / `spanId` / `operation` are nullable because a **span-less
 emit** (`emitLog` / `emitNamed` / `emitException`) has no span and thus no trace, so its record carries null
-identity and (if inside a scope) a `scope_id`. A record lifted off a real `Span` always has them set.
+identity and (if a scope or the fallback applies) a `scope_id`. A record lifted off a real `Span` always has them set.
 
 **`operation` versus `name` : the egress rename** (defined in §1 Vocabulary). `operation` is the owning
 `Span.name`, carried on every record as the flat join key; it is a `toJson` column, so it is a **wire
@@ -210,7 +214,7 @@ callback) read them without a `coroutineContext` handle.
 | `SpanContext` | the active span | `currentThreadSpan()` (suspend: `currentSpan()`) | who is a new span's **parent** |
 | `SpanCollector` | every span in one trace | `currentThreadCollector()` | which tree is **collected** |
 | `TraceConfig` | the consumer's adapters + policies | `currentThreadConfig()` (suspend: `currentConfig()`) | how the trace **fans out** |
-| `ScopeContext` | the ambient `scope_id` (ADR-010) | `currentThreadScopeId()` (suspend: `currentScopeId()`) | the correlation umbrella above `trace_id` |
+| `ScopeContext` | the ambient `scope_id` (ADR-010) | `currentThreadScopeId()` (suspend: `currentScopeId()`), ambient only | the correlation umbrella above `trace_id`; without one, a record takes the installed fallback (ADR-038) |
 
 These are **four separate boundaries**, decoupled on purpose: a span can have a `traceId` (identity) but no
 collector (untraced-but-identified); the configuration is orthogonal to both. Why a `ThreadContextElement` and not

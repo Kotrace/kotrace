@@ -20,8 +20,9 @@ import java.util.Locale
  * measures the gaps between them, but it is not a wall-clock time and means nothing across processes. A sink that
  * needs a timestamp stamps its own.
  *
- * **Correlation.** [scopeId] is the [dev.kotrace.withScope] id active when the event was emitted, or null (ADR-010):
- * a key above [traceId] (`scope ⊇ trace ⊇ span`), with no trace semantics. [links] are the span's cross-trace edges
+ * **Correlation.** [scopeId] is the [dev.kotrace.withScope] id active when the event was emitted, else the installed
+ * fallback's (`Kotrace.install(fallbackScopeId = …)`, ADR-038), else null (ADR-010): a key above [traceId]
+ * (`scope ⊇ trace ⊇ span`), with no trace semantics. A span's records carry the scope resolved when it opened. [links] are the span's cross-trace edges
  * ([dev.kotrace.Span.links], ADR-009), empty when it has none or on a span-less record.
  *
  * **The span's payload.** [spanAttributes] are the span's [dev.kotrace.Span.attributes] (`http.status`), never a

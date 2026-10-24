@@ -37,6 +37,8 @@ internal object ReadmeSnippets {
         override fun onLive(record: TraceRecord) = Unit
     }
     private object BuildConfig { const val DEBUG = true }
+    private class SessionStore { fun currentSessionId(): String? = null }
+    private val sessionStore = SessionStore()
     private val reporter = Any()
     private val analytics = Any()
     private val logcat = Any()
@@ -74,17 +76,18 @@ internal object ReadmeSnippets {
     fun spanlessAndScope() {
         // README snippet: spanless-scope
         // 1. Once at startup (or Kotrace.install { diGraph.adapters() } to resolve lazily under dependency injection).
-        Kotrace.install(listOf(myLiveAdapter))
+        //    The optional fallbackScopeId scopes every record emitted outside any withScope (ADR-038).
+        Kotrace.install(listOf(myLiveAdapter), fallbackScopeId = { sessionStore.currentSessionId() })
 
-        // 2. Orphan emit: no coroutine, no span needed. Fans live to the installed adapters.
+        // 2. Orphan emit: no coroutine, no span needed. Fans live to the installed adapters, under the fallback scope_id.
         fun onPushReceived(cause: Throwable) {
             emitNamed("push_received", mapOf("channel" to "promo"))
             emitException(cause, mapOf("report" to "explicit"))   // rides ExceptionRecord.spanAttributes
         }
 
-        // 3. A scope: everything inside carries scope_id = "session-42"; a span additionally carries its trace_id.
-        suspend fun handleSession() = withScope("session-42") {
-            emitNamed("session_started")                 // scope_id only
+        // 3. A scope: everything inside carries scope_id = "journey-42" instead; a span additionally carries its trace_id.
+        suspend fun handleJourney() = withScope("journey-42") {
+            emitNamed("journey_started")                 // scope_id only
             span("checkout") { /* … */ }                 // trace_id + scope_id
         }
         // end README snippet

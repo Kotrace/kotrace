@@ -4,11 +4,13 @@ import dev.kotrace.Kotrace
 import dev.kotrace.Span
 import dev.kotrace.SpanCollector
 import dev.kotrace.TraceConfig
+import dev.kotrace.adapter.FaultPhase
 import dev.kotrace.currentThreadCollector
 import dev.kotrace.currentThreadConfig
 import dev.kotrace.currentThreadScopeId
 import dev.kotrace.currentThreadSpan
 import dev.kotrace.internal.liveFanOutRunning
+import dev.kotrace.resolveScopeId
 import dev.kotrace.resolvedThreadConfig
 import dev.kotrace.withMirroredConfig
 import dev.kotrace.withScope
@@ -22,7 +24,8 @@ import dev.kotrace.withScope
  * What it captures:
  * - [parent] is the span current at capture, the parent of spans opened from here; null roots a new trace.
  * - [collector] is the collector current at capture, so spans opened from here reach the flow's report.
- * - [scopeId] is the [withScope] id current at capture.
+ * - [scopeId] is the scope resolved at capture: the [withScope] id current then, else the installed fallback's
+ *   (ADR-038), else null.
  *
  * How a bridge uses it:
  * - [parent], [collector] and [scopeId] go to [dev.kotrace.bridge.startSpan], which opens a span **per execution**
@@ -62,7 +65,7 @@ class TraceHandoff private constructor(
             if (parent == null && collector == null && resolvedThreadConfig()?.liveAdapters.isNullOrEmpty()) {
                 return null
             }
-            return TraceHandoff(parent, collector, config, currentThreadScopeId())
+            return TraceHandoff(parent, collector, config, resolveScopeId(currentThreadScopeId(), FaultPhase.SPAN_OPEN))
         }
     }
 }

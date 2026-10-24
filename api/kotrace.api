@@ -1,9 +1,9 @@
 public final class dev/kotrace/Kotrace {
 	public static final field INSTANCE Ldev/kotrace/Kotrace;
-	public final fun install (Ljava/util/List;Lkotlin/jvm/functions/Function1;I)V
-	public final fun install (Lkotlin/jvm/functions/Function1;ILkotlin/jvm/functions/Function0;)V
-	public static synthetic fun install$default (Ldev/kotrace/Kotrace;Ljava/util/List;Lkotlin/jvm/functions/Function1;IILjava/lang/Object;)V
-	public static synthetic fun install$default (Ldev/kotrace/Kotrace;Lkotlin/jvm/functions/Function1;ILkotlin/jvm/functions/Function0;ILjava/lang/Object;)V
+	public final fun install (Ljava/util/List;Lkotlin/jvm/functions/Function1;ILkotlin/jvm/functions/Function0;)V
+	public final fun install (Lkotlin/jvm/functions/Function1;ILkotlin/jvm/functions/Function0;Lkotlin/jvm/functions/Function0;)V
+	public static synthetic fun install$default (Ldev/kotrace/Kotrace;Ljava/util/List;Lkotlin/jvm/functions/Function1;ILkotlin/jvm/functions/Function0;ILjava/lang/Object;)V
+	public static synthetic fun install$default (Ldev/kotrace/Kotrace;Lkotlin/jvm/functions/Function1;ILkotlin/jvm/functions/Function0;Lkotlin/jvm/functions/Function0;ILjava/lang/Object;)V
 	public final fun installFaultHook (Ldev/kotrace/adapter/FaultHook;)V
 	public final fun resetForTest ()V
 	public final fun strictWhenNotInstalled ()V

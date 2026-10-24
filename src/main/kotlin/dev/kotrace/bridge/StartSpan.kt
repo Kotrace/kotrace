@@ -4,12 +4,14 @@ import dev.kotrace.Span
 import dev.kotrace.SpanCollector
 import dev.kotrace.SpanStatus
 import dev.kotrace.TraceLink
+import dev.kotrace.adapter.FaultPhase
 import dev.kotrace.currentThreadCollector
 import dev.kotrace.currentThreadScopeId
 import dev.kotrace.currentThreadSpan
 import dev.kotrace.event.recordPropagatedException
 import dev.kotrace.internal.alsoSuppress
 import dev.kotrace.internal.createSpan
+import dev.kotrace.resolveScopeId
 import dev.kotrace.span
 
 /**
@@ -20,6 +22,11 @@ import dev.kotrace.span
  *
  * [traits] and [attributes] mean what they do on [span]: fixed filter dimensions, and the seed of
  * [Span.attributes] that every record carries.
+ *
+ * [scopeId] defaults to this thread's [dev.kotrace.withScope] id, else the fallback installed with
+ * `Kotrace.install(fallbackScopeId = …)` (ADR-038). An explicit argument is taken as given: a null one opens the span
+ * with no scope, without consulting the fallback. A [TraceHandoff]'s [TraceHandoff.scopeId] is already resolved at
+ * capture, so passing it on keeps the scope the flow had there.
  *
  * Opt-in ([NonSuspendTracingBridge]): unlike [span] it does not install the span into the coroutine context, so a
  * nested suspend [span] misparents. Use it only where no coroutine frame exists.
@@ -32,7 +39,7 @@ fun startSpan(
     attributes: Map<String, String> = emptyMap(),
     parent: Span? = currentThreadSpan(),
     collector: SpanCollector? = currentThreadCollector(),
-    scopeId: String? = currentThreadScopeId(),
+    scopeId: String? = resolveScopeId(currentThreadScopeId(), FaultPhase.SPAN_OPEN),
 ): Span {
     val opened = createSpan(parent, name, traits, links, attributes, scopeId)
     collector?.add(opened)

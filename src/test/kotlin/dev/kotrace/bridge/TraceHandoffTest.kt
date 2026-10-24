@@ -103,4 +103,26 @@ class TraceHandoffTest {
 
         assertEquals("x", (global.records.single() as dev.kotrace.event.LogRecord).message)
     }
+
+    @Test fun `a handoff captured outside any scope carries the fallback scope to another thread`() = runTest {
+        var session = "session-1"
+        Kotrace.install(listOf(CollectingLive()), fallbackScopeId = { session })
+        val handoff = withContext(SpanCollector()) { TraceHandoff.captureOrNull()!! }
+        session = "session-2"
+
+        val bridged = onPlainThread { handoff.openSpan("bridge").also { it.end() } }
+
+        assertEquals("resolved once, at capture", "session-1", handoff.scopeId)
+        assertEquals("session-1", bridged.scopeId)
+    }
+
+    @Test fun `startSpan defaults to the fallback scope, and an explicit null opens with none`() {
+        Kotrace.install(emptyList(), fallbackScopeId = { "session-1" })
+
+        val defaulted = onPlainThread { startSpan("defaulted").also { it.end() } }
+        val unscoped = onPlainThread { startSpan("unscoped", scopeId = null).also { it.end() } }
+
+        assertEquals("session-1", defaulted.scopeId)
+        assertNull("an explicit argument is taken as given", unscoped.scopeId)
+    }
 }

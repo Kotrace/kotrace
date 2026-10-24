@@ -35,14 +35,15 @@ import org.jetbrains.annotations.TestOnly
 object Kotrace {
 
     /**
-     * The configuration, the [ReturnVerdictClassifier] and the span cap, published together so they are never seen
-     * torn (ADR-010/018/033). The configuration resolves once, on the first [defaultConfig] read; the classifier
-     * and the cap are read directly, without forcing it.
+     * The configuration, the [ReturnVerdictClassifier], the span cap and the fallback scope provider, published
+     * together so they are never seen torn (ADR-010/018/033/038). The configuration resolves once, on the first
+     * [defaultConfig] read; the others are read directly, without forcing it.
      */
     private class Installed(
         val config: Lazy<TraceConfig>,
         val returnVerdictClassifier: ReturnVerdictClassifier<Any?>?,
         val maxEventsPerSpan: Int,
+        val fallbackScopeId: (() -> String?)?,
     )
 
     private val installed = AtomicReference<Installed?>(null)
@@ -76,21 +77,32 @@ object Kotrace {
     internal fun faultHook(): FaultHook? = faultHook.get()
 
     /**
-     * Installs the process-wide [adapters], with an optional [returnVerdictClassifier] (ADR-018/020) and
-     * [maxEventsPerSpan] ([TraceConfig.maxEventsPerSpan], ADR-033). Call once at startup; a second call throws
-     * [IllegalStateException]. An empty list installs a no-op configuration. The list is copied now. The fault hook is
-     * installed apart, with [installFaultHook].
+     * Installs the process-wide [adapters], with an optional [returnVerdictClassifier] (ADR-018/020),
+     * [maxEventsPerSpan] ([TraceConfig.maxEventsPerSpan], ADR-033) and [fallbackScopeId] (ADR-038). Call once at
+     * startup; a second call throws [IllegalStateException]. An empty list installs a no-op configuration. The list is
+     * copied now. The fault hook is installed apart, with [installFaultHook].
      *
      * The default choice: the adapters exist before this call, so a fault building them throws at the caller, and
      * the first emit has no adapter to build.
+     *
+     * **The fallback scope (ADR-038).** [fallbackScopeId] supplies the scope of every record emitted outside any
+     * [withScope]: a span opened there, its children, a span-less emit, a [dev.kotrace.bridge.startSpan]. An ambient
+     * [withScope] always wins, so a journey scope still overrides a session one. It is read at each resolution, on
+     * the emitting thread, so a consumer can rotate the id without re-installing; keep it cheap and non-blocking.
+     * Returning null leaves the record without a scope. A throw does too: the record is still delivered and the
+     * [FaultHook] hears of it (`scope.fallback`), never the caller (ADR-034). A per-flow [TraceConfig] override keeps
+     * the installed fallback, since correlation is not a sink choice.
+     *
+     * @sample dev.kotrace.samples.ScopeSamples.fallbackScopeUsage
      */
     fun install(
         adapters: List<TraceAdapter>,
         returnVerdictClassifier: ReturnVerdictClassifier<Any?>? = null,
         maxEventsPerSpan: Int = Span.MAX_EVENTS,
+        fallbackScopeId: (() -> String?)? = null,
     ) {
         val snapshot = adapters.toList()
-        install(returnVerdictClassifier, maxEventsPerSpan) { snapshot }
+        install(returnVerdictClassifier, maxEventsPerSpan, fallbackScopeId) { snapshot }
     }
 
     /**
@@ -106,10 +118,14 @@ object Kotrace {
      * - The first emit pays for building the adapters, on whatever thread it runs.
      * - An emit made on the provider's thread while it runs reaches no adapter, rather than re-entering it
      *   (ADR-025). Another thread emitting meanwhile waits, so the provider must not block on a thread that emits.
+     *
+     * [fallbackScopeId] is the process-wide fallback scope, as on the adapter-list overload (ADR-038). It is set at
+     * this call, not when [provider] resolves: records emitted before the first fan-out carry it too.
      */
     fun install(
         returnVerdictClassifier: ReturnVerdictClassifier<Any?>? = null,
         maxEventsPerSpan: Int = Span.MAX_EVENTS,
+        fallbackScopeId: (() -> String?)? = null,
         provider: () -> List<TraceAdapter>,
     ) {
         // Checked now, not when the provider resolves: a bad cap is a startup error, not a first-emit one.
@@ -125,7 +141,7 @@ object Kotrace {
             }
             TraceConfig(adapters.toList(), maxEventsPerSpan)
         }
-        if (!installed.compareAndSet(null, Installed(config, returnVerdictClassifier, maxEventsPerSpan))) {
+        if (!installed.compareAndSet(null, Installed(config, returnVerdictClassifier, maxEventsPerSpan, fallbackScopeId))) {
             error("Kotrace configuration already installed; it is install-once (ADR-010)")
         }
     }
@@ -147,6 +163,12 @@ object Kotrace {
     internal fun maxEventsPerSpan(): Int? = installed.get()?.maxEventsPerSpan
 
     /**
+     * The installed fallback scope provider, or null if none (ADR-038). Read without forcing the configuration
+     * provider; [resolveScopeId] is its one caller.
+     */
+    internal fun fallbackScopeId(): (() -> String?)? = installed.get()?.fallbackScopeId
+
+    /**
      * Arms the **strict-not-installed** check (ADR-011): from now on, a fan-out that resolves no configuration (no
      * per-flow override, nothing installed) throws [IllegalStateException] instead of doing nothing. It makes a missing
      * or late [install] loud at the first emit.
@@ -160,7 +182,10 @@ object Kotrace {
 
     internal fun isStrictWhenNotInstalled(): Boolean = strict.get()
 
-    /** Clears the install-once latches (configuration and fault hook) and the strict one, so each test starts fresh ([KotraceTestApi]). */
+    /**
+     * Clears the install-once latches (configuration, with its fallback scope, and fault hook) and the strict one, so
+     * each test starts fresh ([KotraceTestApi]).
+     */
     @TestOnly
     @KotraceTestApi
     fun resetForTest() {

@@ -37,8 +37,8 @@ contract, so an OpenTelemetry upgrade later is additive.
   The searchable counterpart to `renderTree`.
 - `Kotrace.install(adapters)` / `Kotrace.install { … }`: the **process-wide fan-out configuration** (ADR-010),
   installed once at startup (read-only after; a second installation throws; the provider overload resolves lazily
-  on first fan-out, dependency-injection-friendly), with the process-wide `returnVerdictClassifier` and the
-  per-span event cap (`maxEventsPerSpan`, ADR-033). Every path reads the `TraceConfig` on its context first and
+  on first fan-out, dependency-injection-friendly), with the process-wide `returnVerdictClassifier`, the
+  per-span event cap (`maxEventsPerSpan`, ADR-033) and the fallback scope (`fallbackScopeId`, ADR-038). Every path reads the `TraceConfig` on its context first and
   falls back to the installed one, so a per-flow `TraceConfig` **overrides** the global for that flow, while
   span-less emits and non-suspend entrypoints (which carry no context) still reach the adapters. Report needs a
   `SpanCollector`: a top-level suspend `span { }` **auto-roots** one and reports at its outcome (ADR-013), so
@@ -70,7 +70,7 @@ contract, so an OpenTelemetry upgrade later is additive.
 - `emitLog { … }` / `emitNamed(name)` / `emitException(cause, attributes)`: **span-less emit verbs** (ADR-010),
   the orphan counterparts of the `Span.*` verbs, for an occurrence outside any span (app lifecycle, a push
   callback, any non-coroutine entry). **Live-only**, fanned through the resolved configuration and gated by policy;
-  the record has null identity and carries a `scope_id` when a scope is active. `emitException(cause, attributes)`
+  the record has null identity and carries the active scope's `scope_id`, else the installed fallback's. `emitException(cause, attributes)`
   (and `addException(cause, attributes)`) carry record-level `ExceptionRecord.spanAttributes` while the exception event
   stays object-only (ADR-005), so an explicit report reaches live adapters unconditionally.
 - `withScope(scopeId) { … }` / `scope_id`: a **correlation umbrella above `trace_id`** (`scope ⊇ trace ⊇
@@ -79,6 +79,12 @@ contract, so an OpenTelemetry upgrade later is additive.
   session/journey key. **Not a span**: no reportable tree, no duration/outcome; `toJson` emits `scope_id`
   only when present. Read it with `currentScopeId()` (suspend) / `currentThreadScopeId()`
   (the `ThreadLocal` mirror, for non-suspend emits).
+  - **The fallback scope** (ADR-038): `Kotrace.install(…, fallbackScopeId = { sessionId })` gives every record
+    emitted outside any `withScope` a `scope_id`, including a span opened there and a synchronous emit from
+    non-suspend code, so no record is unjoinable. An ambient `withScope` always wins. The provider is read at each
+    record (rotate the session without re-installing), so keep it cheap; a throwing one leaves that record unscoped
+    and reaches the `FaultHook` (`scope.fallback`). `currentScopeId()` / `currentThreadScopeId()` read the ambient
+    scope only.
 - `TraceRecord.toJson()`: a one-line, snake_case JSON rendering (no serialization dependency, values
   escaped) for a JSON log pipeline (ELK, Loki) to ingest `trace_id`/`span_id` as queryable fields.
 - `TraceLink`: a birth-set, cross-trace edge: `span(name, links = listOf(TraceLink(otherTraceId)))` points
@@ -133,6 +139,14 @@ support. A newer version in your build wins through normal dependency resolution
 | Room (`kotrace-room`) | 2.6.1 (`compileOnly`: your own version is used) |
 | Android `minSdk` | 21 (`kotrace-room` declares it; the core and `kotrace-okhttp` call no newer Android API) |
 | Java (JVM modules) | 11, bytecode and API |
+
+**Upgrading from 0.5.** 0.6.0 is binary-breaking for callers of `Kotrace.install`: recompile against it.
+
+- **Binary.** Both `Kotrace.install` overloads gained `fallbackScopeId` (ADR-038), so their 0.5.0 JVM signatures
+  are gone. The parameter is defaulted, so source compiles unchanged.
+- **Behavior.** Nothing changes until you pass a `fallbackScopeId`. With one, a record outside any `withScope`
+  carries its `scope_id`, and `startSpan`'s default `scopeId` resolves it too; an explicit `scopeId = null` still
+  opens a span with no scope.
 
 **Upgrading from 0.4.** 0.5.0 is a breaking release: recompile against it.
 
@@ -380,7 +394,8 @@ trace sink's own uploads" under Using with OkHttp.)
 An emit outside any span (an app-lifecycle hook, a push-notification callback, any non-coroutine entry)
 has no span to attach to and no `TraceConfig` in context. Install the process-wide configuration once, then emit
 from anywhere; `withScope` adds a correlation umbrella above `trace_id` so orphan emits and whole groups of
-operations correlate under one session/journey key (ADR-010).
+operations correlate under one session/journey key (ADR-010). A `fallbackScopeId` installed with the configuration
+scopes whatever runs outside any `withScope` (ADR-038).
 
 <!-- snippet: spanless-scope -->
 ```kotlin
@@ -390,17 +405,18 @@ import dev.kotrace.event.emitException
 import dev.kotrace.event.emitNamed
 
 // 1. Once at startup (or Kotrace.install { diGraph.adapters() } to resolve lazily under dependency injection).
-Kotrace.install(listOf(myLiveAdapter))
+//    The optional fallbackScopeId scopes every record emitted outside any withScope (ADR-038).
+Kotrace.install(listOf(myLiveAdapter), fallbackScopeId = { sessionStore.currentSessionId() })
 
-// 2. Orphan emit: no coroutine, no span needed. Fans live to the installed adapters.
+// 2. Orphan emit: no coroutine, no span needed. Fans live to the installed adapters, under the fallback scope_id.
 fun onPushReceived(cause: Throwable) {
     emitNamed("push_received", mapOf("channel" to "promo"))
     emitException(cause, mapOf("report" to "explicit"))   // rides ExceptionRecord.spanAttributes
 }
 
-// 3. A scope: everything inside carries scope_id = "session-42"; a span additionally carries its trace_id.
-suspend fun handleSession() = withScope("session-42") {
-    emitNamed("session_started")                 // scope_id only
+// 3. A scope: everything inside carries scope_id = "journey-42" instead; a span additionally carries its trace_id.
+suspend fun handleJourney() = withScope("journey-42") {
+    emitNamed("journey_started")                 // scope_id only
     span("checkout") { /* … */ }                 // trace_id + scope_id
 }
 ```
