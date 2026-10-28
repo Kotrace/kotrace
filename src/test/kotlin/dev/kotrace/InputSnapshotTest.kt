@@ -16,6 +16,11 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertThrows
 import org.junit.Test
 
+/** Accepts every attribute, for tests that read attributes off records (ADR-039). */
+private val acceptingAttributes = object : TracePolicy {
+    override fun acceptsAttribute(key: String, value: String) = true
+}
+
 /**
  * A caller's map is snapshotted where it enters kotrace (ADR-028), like [Span.traits] always was
  * (ADR-001): mutating it afterwards changes nothing kotrace reports, so the live and report paths always see
@@ -23,8 +28,9 @@ import org.junit.Test
  */
 class InputSnapshotTest {
 
+    /** Accepts every attribute, since these tests read the snapshotted maps off records (ADR-039). */
     private class CollectingReport : ReportAdapter {
-        override val policy = object : TracePolicy {}
+        override val policy = acceptingAttributes
         val records = mutableListOf<TraceRecord>()
         override fun onReport(status: TraceStatus, records: Sequence<TraceRecord>) {
             this.records += records
@@ -99,7 +105,7 @@ class InputSnapshotTest {
 
     @Test fun `a span-less exception's attributes are snapshotted at the verb`() = runTest {
         val live = object : LiveAdapter {
-            override val policy = object : TracePolicy {}
+            override val policy = acceptingAttributes
             val records = mutableListOf<TraceRecord>()
             override fun onLive(record: TraceRecord) {
                 records += record // retained past the call, as a queueing sink would

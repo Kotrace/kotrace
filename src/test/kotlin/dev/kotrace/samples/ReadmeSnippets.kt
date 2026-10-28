@@ -1,6 +1,7 @@
 package dev.kotrace.samples
 
 import dev.kotrace.Kotrace
+import dev.kotrace.Span
 import dev.kotrace.SpanCollector
 import dev.kotrace.TraceStatus
 import dev.kotrace.UnredactedTraceRead
@@ -23,17 +24,26 @@ import kotlinx.coroutines.withContext
 @Suppress("unused", "UNUSED_VARIABLE", "UnusedVariable")
 internal object ReadmeSnippets {
 
-    // Stand-ins for the consumer-side adapters and build configuration the snippets refer to.
+    // Stand-ins for the consumer-side adapters and build configuration the snippets refer to. Each declares the
+    // attributes it accepts (ADR-039), as a real adapter must.
     private class CrashAdapter(reporter: Any) : ReportAdapter {
-        override val policy = object : TracePolicy {}
+        override val policy = object : TracePolicy {
+            override fun acceptsAttribute(key: String, value: String) = key == "report"
+        }
         override fun onReport(status: TraceStatus, records: Sequence<TraceRecord>) = Unit
     }
     private class AnalyticsAdapter(analytics: Any) : LiveAdapter {
-        override val policy = object : TracePolicy {}
+        override val policy = object : TracePolicy {
+            override fun acceptsAttribute(key: String, value: String) = key == "channel"
+        }
         override fun onLive(record: TraceRecord) = Unit
     }
     private class LiveLogAdapter(logcat: Any) : LiveAdapter {
-        override val policy = object : TracePolicy {}
+        // A debug watch on the developer's own device: everything, since nothing it prints leaves that device.
+        override val policy = object : TracePolicy {
+            override val acceptsSensitive = true
+            override fun acceptsAttribute(key: String, value: String) = true
+        }
         override fun onLive(record: TraceRecord) = Unit
     }
     private object BuildConfig { const val DEBUG = true }
@@ -52,6 +62,22 @@ internal object ReadmeSnippets {
                 add(AnalyticsAdapter(analytics))
                 if (BuildConfig.DEBUG) add(LiveLogAdapter(logcat)) // conditional, reads like addInterceptor
             }
+        }
+        // end README snippet
+    }
+
+    fun adapterPolicy() {
+        // README snippet: adapter-policy
+        // Ships off the device: a vetted vocabulary, kotrace's own keys admitted by name like any other.
+        val crashPolicy = object : TracePolicy {
+            private val shipped = setOf("feature", "result", Span.EVENTS_DROPPED_ATTRIBUTE)
+            override fun acceptsAttribute(key: String, value: String) = key in shipped
+        }
+
+        // A debug watch on the developer's own device: every attribute, and sensitive messages too.
+        val logcatPolicy = object : TracePolicy {
+            override val acceptsSensitive = true
+            override fun acceptsAttribute(key: String, value: String) = true
         }
         // end README snippet
     }

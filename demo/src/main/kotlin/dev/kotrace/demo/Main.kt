@@ -3,6 +3,7 @@ package dev.kotrace.demo
 import com.sun.net.httpserver.HttpServer
 import dev.kotrace.Kotrace
 import dev.kotrace.ReturnVerdict
+import dev.kotrace.Span
 import dev.kotrace.SpanCollector
 import dev.kotrace.TRACEPARENT_HEADER
 import dev.kotrace.TraceLink
@@ -22,6 +23,7 @@ import dev.kotrace.event.TraceRecord
 import dev.kotrace.event.emitNamed
 import dev.kotrace.event.log
 import dev.kotrace.event.toJson
+import dev.kotrace.okhttp.HttpSpan
 import dev.kotrace.okhttp.TracingCallFactory
 import dev.kotrace.okhttp.TracingInterceptor
 import dev.kotrace.report.renderTree
@@ -51,11 +53,11 @@ import java.util.concurrent.atomic.AtomicReference
  * emit, suspend and non-suspend all reach the same adapters with no per-trace `TraceConfig` seeding. Only the
  * per-flow [SpanCollector] rides the `CoroutineContext`. The four roles:
  * - [LiveWatch]: a [LiveAdapter] that prints every record the instant it is logged (the on-device debug
- *   watch). Its [TracePolicy] wants DEBUG and opts into `sensitive` payloads, because nothing it prints
- *   leaves the device.
+ *   watch). Its [TracePolicy] wants DEBUG and opts into `sensitive` payloads and every attribute, because
+ *   nothing it prints leaves the device.
  * - [FailureExport]: a [ReportAdapter] that, only on a failed trace, prints the searchable fan-out (one
- *   JSON line per record). Its policy keeps INFO+ and refuses `sensitive` records (fail-closed): the
- *   subset safe to leave the device.
+ *   JSON line per record). Its policy keeps INFO+, refuses `sensitive` records (fail-closed) and admits only the
+ *   attribute keys it names (ADR-039): the subset safe to leave the device.
  * - [FaultyLive]: a deliberately broken [LiveAdapter] (ADR-014) that throws exactly when it matters most.
  * - [FaultWatch]: the process-wide [FaultHook] (ADR-037) that observes the faults kotrace contains, installed once
  *   with [Kotrace.installFaultHook] before anything else.
@@ -103,7 +105,9 @@ import java.util.concurrent.atomic.AtomicReference
  * The http span shows the **two span channels** (ADR-001): its `layer=http` is a **trait** (birth-set, the only
  * thing an `acceptsSpan` gate may read), while `http.status`, known only once the response returns, is a span
  * **attribute**: it rides every record off that span (nested in the JSON, `"span_attributes":{"http.status":"200"}`)
- * but is never a filter key. Traits filter; attributes are payload.
+ * but is never a filter key. Traits filter; attributes are payload. Each adapter receives only the attributes its
+ * policy admits (ADR-039): the watch takes all of them, the export names `http.status` ([HttpSpan.STATUS]) among
+ * its few.
  *
  * Finally the tour shows **cross-trace correlation** (ADR-009): after checkout fails, a separate
  * "user reports the failure" flow opens its own trace carrying a [TraceLink] back to the checkout's
@@ -117,17 +121,28 @@ import java.util.concurrent.atomic.AtomicReference
 private fun lvl(level: String) = mapOf("level" to level)
 private val INFO_PLUS = setOf("INFO", "WARN", "ERROR")
 
-/** The on-device debug watch: wants every level and every `sensitive` payload; its output never leaves the device. */
+/**
+ * The on-device debug watch: wants every level, every `sensitive` payload and every attribute; its output never
+ * leaves the device.
+ */
 private object WatchPolicy : TracePolicy {
     override fun acceptsEvent(event: SpanEvent): Boolean = true
     override val acceptsSensitive: Boolean = true
+    override fun acceptsAttribute(key: String, value: String): Boolean = true
 }
 
-/** The failure export: INFO+ only, no `sensitive` payloads (the fail-closed defaults, spelled out for the tour). */
+/**
+ * The failure export: INFO+ only, no `sensitive` payloads (the fail-closed defaults, spelled out for the tour), and
+ * only the attribute keys it names (ADR-039), kotrace's own among them.
+ */
 private object ExportPolicy : TracePolicy {
+    private val exportedAttributes = setOf(
+        "level", "flow", HttpSpan.STATUS, HttpSpan.OUTCOME, Span.EVENTS_DROPPED_ATTRIBUTE,
+    )
     override fun acceptsEvent(event: SpanEvent): Boolean =
         (event as? AttributedEvent)?.attributes?.get("level")?.let { it in INFO_PLUS } ?: true
     override val acceptsSensitive: Boolean = false
+    override fun acceptsAttribute(key: String, value: String): Boolean = key in exportedAttributes
 }
 
 /** Live sink: prints each record as its event is appended: the per-event debug path. */
@@ -320,7 +335,7 @@ private suspend fun checkout(
     // above), and TracingInterceptor opens one http span per execution and finishes it: status, timing, the
     // traceparent on the wire, and the body events (ADR-023). The response code is stamped as a span attribute
     // (putAttribute "http.status"), so every record off this span carries "span_attributes":{"http.status":"200"}
-    // in its JSON: emitted payload, not a filter key (ADR-001/032).
+    // in its JSON to an adapter that admits HttpSpan.STATUS: emitted payload, not a filter key (ADR-001/032/039).
     calls.newCall(Request.Builder().url(pricingUrl).build()).execute().use { it.body?.string() }
 
     // Parallel fan-out: two child spans opened concurrently. The collector's CopyOnWriteArrayList makes

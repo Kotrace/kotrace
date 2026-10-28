@@ -67,6 +67,8 @@ class OkHttpDispatcherBridgeTest {
     private class CollectingLive : LiveAdapter {
         override val policy = object : TracePolicy {
             override val acceptsSensitive get() = true
+            // The module's own keys, admitted by name like any other attribute (ADR-039).
+            override fun acceptsAttribute(key: String, value: String) = key == HttpSpan.STATUS || key == HttpSpan.OUTCOME
         }
         val records = CopyOnWriteArrayList<TraceRecord>()
         override fun onLive(record: TraceRecord) {
@@ -368,7 +370,7 @@ class OkHttpDispatcherBridgeTest {
         assertTrue("the caller sees OkHttp's timeout, got $thrown", thrown is InterruptedIOException)
         val record = live.records.filterIsInstance<ExceptionRecord>().singleOrNull { it.operation == "http GET" }
         assertTrue("a live crash sink receives it", record != null)
-        assertEquals("and can tell it was the timeout without sensitive events", "call_timeout", record!!.spanAttributes["http.outcome"])
+        assertEquals("and can tell it was the timeout without sensitive events", "call_timeout", record!!.spanAttributes[HttpSpan.OUTCOME])
         assertTrue(live.records.filterIsInstance<LogRecord>().any { it.message == "✗ GET /accounts: call timeout" })
     }
 

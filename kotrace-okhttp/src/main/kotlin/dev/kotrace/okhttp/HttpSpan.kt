@@ -3,17 +3,20 @@ package dev.kotrace.okhttp
 import dev.kotrace.bridge.NonSuspendTracingBridge
 import dev.kotrace.bridge.TraceHandoff
 
-/** The span attribute keys this module writes on completion: emitted attributes, never traits (ADR-001). */
-internal object HttpSpan {
-    const val STATUS = "http.status"
-
-    /**
-     * Why a call with no response ended when OkHttp canceled it: [CALL_TIMEOUT] (a failure, recorded) or
-     * [CANCELED] (by its caller, not recorded). A symbol, so a sink without sensitive events can tell them apart.
-     */
-    const val OUTCOME = "http.outcome"
-    const val CALL_TIMEOUT = "call_timeout"
-    const val CANCELED = "canceled"
+/**
+ * The span attribute keys this module writes on the HTTP span: emitted attributes, never traits (ADR-001). Public so
+ * an adapter's [dev.kotrace.adapter.TracePolicy.acceptsAttribute] can admit them by name, since an adapter receives
+ * no attribute it has not accepted, kotrace's own included (ADR-039).
+ *
+ * - [STATUS] is the response code (`"200"`), stamped once the response returns.
+ * - [OUTCOME] says why a call with no response ended when OkHttp canceled it: [CALL_TIMEOUT] (a failure, recorded)
+ *   or [CANCELED] (by its caller, not recorded). A symbol, so a sink without sensitive events can tell them apart.
+ */
+object HttpSpan {
+    const val STATUS: String = "http.status"
+    const val OUTCOME: String = "http.outcome"
+    const val CALL_TIMEOUT: String = "call_timeout"
+    const val CANCELED: String = "canceled"
 }
 
 /**

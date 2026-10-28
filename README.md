@@ -10,7 +10,7 @@ contract, so an OpenTelemetry upgrade later is additive.
 - `Span` / `SpanStatus`: one unit of work and its outcome. A span carries two string maps (ADR-001/032):
   `traits`, its fixed filter dimensions, set when it opens and read only by `TracePolicy.acceptsSpan`; and
   `attributes`, values a sink should see (`span(…, attributes = …)` when it opens, `putAttribute` later), which
-  ride every record as `spanAttributes` and are never a filter key.
+  ride every record as `spanAttributes`, to each adapter whose policy accepts them, and are never a filter key.
 - `span(name) { … }`: opens a child of the ambient span, closes it on return, marks it `ERROR` and
   rethrows on failure. Instrumentation only: it observes and rethrows, never swallows. A failure carried as a
   returned value counts too: `returnVerdictClassifier` marks the span (ADR-020) and `returnedOutcome` sets the
@@ -35,6 +35,28 @@ contract, so an OpenTelemetry upgrade later is additive.
   the caller wraps around a top-level span cancels it, so the trace is `CANCELLED` with no exception record
   (ADR-022).
   The searchable counterpart to `renderTree`.
+- `TracePolicy.acceptsAttribute(key, value)`: **an adapter receives no attribute it has not accepted** (ADR-039).
+  It defaults to `false`, like `acceptsSensitive`, so an adapter that declares nothing gets records with empty
+  attribute maps. It filters the span's attributes, the event's own and each link's on every record handed to that
+  adapter, live and report; the span keeps them all, so two adapters on one flow see different views. kotrace's own
+  keys (`Span.EVENTS_DROPPED_ATTRIBUTE`, `kotrace-okhttp`'s `HttpSpan.STATUS` / `HttpSpan.OUTCOME`) are public
+  constants, admitted by name like any other. The predicate runs per attribute per adapter, often on the logging
+  thread: keep it cheap. A throwing one rejects that attribute and reaches the `FaultHook` (`live.attribute`,
+  `spanless.attribute`, `report.attribute`).
+  <!-- snippet: adapter-policy -->
+  ```kotlin
+  // Ships off the device: a vetted vocabulary, kotrace's own keys admitted by name like any other.
+  val crashPolicy = object : TracePolicy {
+      private val shipped = setOf("feature", "result", Span.EVENTS_DROPPED_ATTRIBUTE)
+      override fun acceptsAttribute(key: String, value: String) = key in shipped
+  }
+
+  // A debug watch on the developer's own device: every attribute, and sensitive messages too.
+  val logcatPolicy = object : TracePolicy {
+      override val acceptsSensitive = true
+      override fun acceptsAttribute(key: String, value: String) = true
+  }
+  ```
 - `Kotrace.install(adapters)` / `Kotrace.install { … }`: the **process-wide fan-out configuration** (ADR-010),
   installed once at startup (read-only after; a second installation throws; the provider overload resolves lazily
   on first fan-out, dependency-injection-friendly), with the process-wide `returnVerdictClassifier`, the
@@ -72,7 +94,8 @@ contract, so an OpenTelemetry upgrade later is additive.
   callback, any non-coroutine entry). **Live-only**, fanned through the resolved configuration and gated by policy;
   the record has null identity and carries the active scope's `scope_id`, else the installed fallback's. `emitException(cause, attributes)`
   (and `addException(cause, attributes)`) carry record-level `ExceptionRecord.spanAttributes` while the exception event
-  stays object-only (ADR-005), so an explicit report reaches live adapters unconditionally.
+  stays object-only (ADR-005), so an explicit report reaches live adapters unconditionally (its attributes only those
+  each adapter accepts).
 - `withScope(scopeId) { … }` / `scope_id`: a **correlation umbrella above `trace_id`** (`scope ⊇ trace ⊇
   span`, ADR-010). A live-only ambient key: a span or emit inside a scope stamps `scope_id` onto its records
   (a span alongside `trace_id`, an orphan emit alone), grouping many traces + their orphans under one
@@ -91,7 +114,8 @@ contract, so an OpenTelemetry upgrade later is additive.
   the span at another *trace* by its `trace_id` (the OpenTelemetry span-link shape), joining two separate trees where
   `Span.parentId` (an in-tree edge) cannot. Trace-level, `trace_id` only, no `span_id` (ADR-009). It rides
   every record off the linking span and surfaces in `toJson` as a nested `links` array; an unlinked span's
-  records carry none. `attributes` are static symbols only, same PII rule as spans.
+  records carry none. `attributes` are static symbols only, same PII rule as spans, and reach an adapter only if
+  its `acceptsAttribute` admits them.
 - `Span.toTraceparent()` / `TRACEPARENT_HEADER`: the W3C wire header.
 - `List<Span>.renderTree()`: an indented debug rendering, span logs interleaved. An **unredacted** human
   read (renders `sensitive` messages and raw exception text), so it is gated by `@UnredactedTraceRead`: a
@@ -140,13 +164,26 @@ support. A newer version in your build wins through normal dependency resolution
 | Android `minSdk` | 21 (`kotrace-room` declares it; the core and `kotrace-okhttp` call no newer Android API) |
 | Java (JVM modules) | 11, bytecode and API |
 
-**Upgrading from 0.5.** 0.6.0 is binary-breaking for callers of `Kotrace.install`: recompile against it.
+**Upgrading from 0.5.** 0.6.0 is binary-breaking for callers of `Kotrace.install`: recompile against it. It also
+changes what every adapter receives: declare the attributes each one accepts.
 
 - **Binary.** Both `Kotrace.install` overloads gained `fallbackScopeId` (ADR-038), so their 0.5.0 JVM signatures
-  are gone. The parameter is defaulted, so source compiles unchanged.
-- **Behavior.** Nothing changes until you pass a `fallbackScopeId`. With one, a record outside any `withScope`
-  carries its `scope_id`, and `startSpan`'s default `scopeId` resolves it too; an explicit `scopeId = null` still
-  opens a span with no scope.
+  are gone. The parameter is defaulted, so source compiles unchanged. `TracePolicy.acceptsAttribute` is a defaulted
+  member and `kotrace-okhttp`'s `HttpSpan` was internal, so both are additive.
+- **Behavior.**
+  - An adapter receives no attribute it has not accepted (ADR-039). `TracePolicy.acceptsAttribute(key, value)`
+    defaults to `false`, so an adapter whose policy does not override it now gets every record, live and report,
+    with empty `spanAttributes`, empty event `attributes` and links without attributes, and its `toJson` lines lose
+    `"attributes"` and `"span_attributes"`. Records are still delivered as before: only their attributes are
+    filtered. kotrace's own keys get no pass, so `http.status` and `kotrace.events_dropped` disappear too until a
+    policy admits them.
+  - Nothing changes until you pass a `fallbackScopeId`. With one, a record outside any `withScope` carries its
+    `scope_id`, and `startSpan`'s default `scopeId` resolves it too; an explicit `scopeId = null` still opens a span
+    with no scope.
+- **Migrate.** In each adapter's policy, admit the keys that adapter may ship, by name for kotrace's own
+  (`Span.EVENTS_DROPPED_ATTRIBUTE`, `kotrace-okhttp`'s now public `HttpSpan.STATUS` and `HttpSpan.OUTCOME`), or
+  write `override fun acceptsAttribute(key: String, value: String) = true` for a debug adapter whose output stays on
+  the device. `acceptsEvent` is unaffected: a `level` threshold still reads the event's own attributes.
 
 **Upgrading from 0.4.** 0.5.0 is a breaking release: recompile against it.
 
@@ -318,10 +355,21 @@ val http = OkHttpClient.Builder()
 val calls: Call.Factory = TracingCallFactory(http)
 
 // 3. Call inside a span. traceparent goes on the wire; the span emits http.status as an attribute
-//    (on every record off the span, not a filter key, ADR-001), and a non-2xx flips it to ERROR.
+//    (to each adapter that accepts HttpSpan.STATUS, never a filter key), and a non-2xx flips it to ERROR.
 suspend fun price(): String = span("pricing.fetch") {
     calls.newCall(Request.Builder().url(pricingUrl).build())
         .execute().use { it.body?.string().orEmpty() }
+}
+```
+
+**Attributes.** The HTTP span carries `http.status` (`HttpSpan.STATUS`) once the response returns, and
+`http.outcome` (`HttpSpan.OUTCOME`: `call_timeout` or `canceled`) when OkHttp canceled a call with no response.
+An adapter receives them only if its policy admits them (ADR-039):
+
+<!-- snippet: okhttp-attributes -->
+```kotlin
+val crashPolicy = object : TracePolicy {
+    override fun acceptsAttribute(key: String, value: String) = key == HttpSpan.STATUS || key == HttpSpan.OUTCOME
 }
 ```
 
@@ -380,7 +428,9 @@ The SQL text is logged, never the bound values, which can carry user data. The l
 SQL (symbols, `?` placeholders) holds no user data, but a `@RawQuery` or `SimpleSQLiteQuery` built by string
 concatenation inlines its values into the text, so a report adapter receives the line only if its policy accepts
 sensitive events. kotrace has no severity taxonomy, so the level is just a `"level"` attribute you pass; SQL
-is high-volume, so tag it at a level your capture policy drops by default (for example, `DEBUG`).
+is high-volume, so tag it at a level your capture policy drops by default (for example, `DEBUG`). Like any
+attribute, an adapter receives `level` on the record only if its `acceptsAttribute` admits it (ADR-039); its
+`acceptsEvent` still reads it on the event either way.
 
 Room keeps a single query callback, so `.tracing()` replaces one you set with `setQueryCallback`. Pass yours as
 `.tracing(attrs, delegate = myCallback, delegateExecutor = myExecutor)` to keep it. `.tracing()` does not work

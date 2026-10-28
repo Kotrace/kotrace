@@ -2,6 +2,8 @@
 
 - **Date:** 2026-09-25
 - **Status:** Accepted
+- **Amended:** 2026-10-27: [ADR-039](adr-039-adapter-accepts-attribute.md) gates attributes too. The context below
+  notes that only `LogEvent.message` had a gate; an adapter now also receives no attribute it has not accepted.
 - **Affects:** `dev.kotrace.okhttp.TracingCallFactory`: the default span name drops the path
   (`http GET /users/alice@example.com` → `http GET`), and the constructor gains an optional
   `spanName: (Request) -> String` so a caller can supply a sanitized route template. **Wire change:** the

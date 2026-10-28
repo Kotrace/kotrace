@@ -15,6 +15,11 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
+/** Accepts every attribute, for tests that read attributes off records (ADR-039). */
+private val acceptingAttributes = object : TracePolicy {
+    override fun acceptsAttribute(key: String, value: String) = true
+}
+
 /**
  * The `attributes` a span opens with (ADR-032) seed [Span.attributes]: every record of the span carries them as
  * `spanAttributes` from its first event, a later [Span.putAttribute] adds to them, and the caller's map is
@@ -23,7 +28,8 @@ import org.junit.Test
 @OptIn(NonSuspendTracingBridge::class)
 class SpanAttributesTest {
 
-    private class CollectingLive(override val policy: TracePolicy = object : TracePolicy {}) : LiveAdapter {
+    /** Accepts every attribute, since these tests read the span's attributes off its records (ADR-039). */
+    private class CollectingLive(override val policy: TracePolicy = acceptingAttributes) : LiveAdapter {
         val records = mutableListOf<TraceRecord>()
         override fun onLive(record: TraceRecord) {
             records += record

@@ -119,7 +119,8 @@ A span carries **two** string→string channels, split by role (ADR-001, names f
 - **`attributes`**: the payload a sink sees, a mutable channel seeded when the span opens
   (`span(…, attributes = …)`) and written later via `putAttribute`, often with a late value (`http.status`, known
   only once the response returns). It rides onto every `TraceRecord` as
-  `spanAttributes` but is **never** a filter key.
+  `spanAttributes`, each attribute only to an adapter whose `acceptsAttribute` admits it (§4), but is **never** a
+  filter key: it decides what a record shows, never whether it is delivered.
 
 The split is a correctness invariant, not tidiness: a value known only late (a result) cannot be a filter
 input, because at live emit time its presence varies with event order, and a policy filtering on it would race. So
@@ -322,6 +323,8 @@ interface TracePolicy {
   acceptsSensitive: Boolean             // receive sensitive records? default false (fail-closed)
   acceptsPropagatedException: Boolean   // receive PROPAGATED climb copies, or birthplaces only? default false
                                         //   report-only, ADR-019
+  acceptsAttribute(key, value): Boolean // receive this attribute? default false (fail-closed), live and report;
+                                        //   filters a record's attribute maps, never its delivery, ADR-039
 }
 ```
 
@@ -335,6 +338,19 @@ interface TracePolicy {
   entries; each adapter gets a lazy view filtered by *its* policy. A `LogRecord` passes `acceptsSpan(span)` ∧
   `acceptsEvent(event)` ∧ (`!sensitive` ∨ `acceptsSensitive`). `NamedRecord`s are **not** in the report path:
   analytics is a live concern (below).
+- **An adapter receives no attribute it has not accepted** (ADR-039). Each record handed to an adapter, live or
+  report, span-less included, keeps in `spanAttributes`, the event's `attributes` and each link's `attributes` only
+  what `acceptsAttribute(key, value)` admits; by default nothing. kotrace never interprets a key: the predicate is
+  the consumer's (an allowlist, a value shape, `true` for a debug watch), and kotrace's own keys
+  (`Span.EVENTS_DROPPED_ATTRIBUTE`, `HttpSpan.STATUS` / `OUTCOME`) are public constants admitted like any other.
+  The span keeps every attribute, so adapters on one flow see different views of the same event. The live record
+  is built once and shared; an adapter gets a copy only when its policy rejects one of the record's attributes, so
+  an adapter accepting everything, or a record with none, costs no copy. The predicate runs per attribute per
+  adapter, on the logging thread for a live record: it must stay cheap. A rejection is policy, not a fault; a
+  throwing predicate rejects that attribute, the record is still delivered, and the `FaultHook` hears of it
+  (`live.attribute`, `spanless.attribute`, `report.attribute`). `acceptsEvent` still reads the event's own
+  attributes (a `level` threshold), unfiltered: the gate decides delivery, `acceptsAttribute` only what the
+  delivered record shows.
 - **Birthplace versus propagated is a per-adapter view, not a global truncation** (ADR-019). The walk keeps a
   climbing exception's ancestor copies and stamps each `ExceptionRecord` `BIRTHPLACE` (deepest span carrying the
   lineage, ADR-015) or `PROPAGATED` (an ancestor copy). The view drops `PROPAGATED` unless the adapter opts in
@@ -428,7 +444,8 @@ shared SDK. `TraceRecord.toJson()` renders a one-line snake_case record for a JS
 to ingest `trace_id`/`span_id` as queryable fields, with the event's `attributes` and the span's
 `span_attributes` nested under their own objects (ADR-004/032) and any cross-trace **`links`** as a nested
 `[{"trace_id":…,"attributes":{…}}]` array (ADR-009, omitted when empty): the machine, PII-safe counterpart to
-the unredacted, `@UnredactedTraceRead`-gated `renderTree` (ADR-008).
+the unredacted, `@UnredactedTraceRead`-gated `renderTree` (ADR-008). A delivered record's JSON holds only the
+attributes its adapter accepted (ADR-039).
 
 ---
 
@@ -484,8 +501,8 @@ verdict. A non-throwable structured error stays a `Span.log` breadcrumb (§ carr
 
 ## 9. Versus OpenTelemetry
 
-kotrace is roughly a **subset of OpenTelemetry gauged for one purpose**, plus one thing OpenTelemetry lacks (a `sensitive`
-PII gate in the model). Same words, different scope.
+kotrace is roughly a **subset of OpenTelemetry gauged for one purpose**, plus one thing OpenTelemetry lacks (a PII
+gate in the model, per adapter). Same words, different scope.
 
 | Concept | OpenTelemetry | kotrace |
 |---|---|---|
@@ -495,7 +512,7 @@ PII gate in the model). Same words, different scope.
 | "Event" (named) | a `LogRecord` with `event.name` (event ⊂ log) | `NamedEvent` (a kind of `SpanEvent`) |
 | Exception | a Span Event (`recordException`, serialized attrs) | an `ExceptionEvent` on `Span.events` (live `Throwable`, §8) |
 | Sampling | **head** sampler at the root (blind to outcome) | **tail**: buffer, decide at end |
-| PII | scrubbed by a collector processor, outside the app | a `sensitive` flag **in the model**, fail-closed at fan-out |
+| PII | scrubbed by a collector processor, outside the app | **in the model**, per adapter, fail-closed at fan-out: a `sensitive` flag on a log message, and an attribute allowlist (`acceptsAttribute`, ADR-039) |
 | Cross-process | full context + resource + links | `traceparent` only |
 
 OpenTelemetry **separates** Span Events from the Logs signal because logs pre-exist everywhere, happen with or without

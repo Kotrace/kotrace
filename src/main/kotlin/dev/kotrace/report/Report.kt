@@ -9,6 +9,7 @@ import dev.kotrace.adapter.FaultPhase
 import dev.kotrace.adapter.ReportAdapter
 import dev.kotrace.adapter.TracePolicy
 import dev.kotrace.adapter.accepts
+import dev.kotrace.adapter.attributeView
 import dev.kotrace.bridge.runIsolated
 import dev.kotrace.event.ExceptionEvent
 import dev.kotrace.event.ExceptionOrigin
@@ -115,7 +116,8 @@ internal fun SpanEvent.reportable(): Boolean = when (this) {
 
 /**
  * This adapter's lazy view of the walked [entries], filtered by the same [accepts] predicate the live path uses.
- * A [dev.kotrace.event.TraceRecord] is built only for an entry that survives.
+ * A [dev.kotrace.event.TraceRecord] is built only for an entry that survives, holding only the attributes
+ * [TracePolicy.acceptsAttribute] admits (ADR-039).
  */
 private fun ReportAdapter.viewOf(entries: () -> List<WalkEntry>): Sequence<TraceRecord> {
     // Read on consumption, so a throwing getter cannot abort before the adapter's status gate ran (ADR-019).
@@ -125,4 +127,5 @@ private fun ReportAdapter.viewOf(entries: () -> List<WalkEntry>): Sequence<Trace
         .filter { keepPropagated || it.origin != ExceptionOrigin.PROPAGATED }
         .filter { policy.accepts(it.span, it.event) }
         .map { it.span.recordOf(it.event, origin = it.origin) }
+        .map { policy.attributeView(it, FaultPhase.REPORT, "report.attribute") }
 }

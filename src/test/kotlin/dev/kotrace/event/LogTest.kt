@@ -50,6 +50,8 @@ class LogTest {
         override fun acceptsEvent(event: SpanEvent) =
             (event as? AttributedEvent)?.attributes?.get("level")?.let { it in wantLevels } ?: true
         override val acceptsSensitive = sensitive
+        // Every attribute, since these tests read them off records; AttributePolicyTest covers the gate itself.
+        override fun acceptsAttribute(key: String, value: String) = true
     }
 
     private inner class CollectingReport(override val policy: TracePolicy = testPolicy()) : ReportAdapter {

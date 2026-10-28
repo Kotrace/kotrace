@@ -34,7 +34,12 @@ import org.junit.Test
 @OptIn(NonSuspendTracingBridge::class)
 class SpanlessScopeTest {
 
-    private class CollectingLive(override val policy: TracePolicy = object : TracePolicy {}) : LiveAdapter {
+    /** Accepts every attribute by default, since several tests read record attributes (ADR-039). */
+    private class CollectingLive(
+        override val policy: TracePolicy = object : TracePolicy {
+            override fun acceptsAttribute(key: String, value: String) = true
+        },
+    ) : LiveAdapter {
         val records = mutableListOf<TraceRecord>()
         override fun onLive(record: TraceRecord) { records += record }
     }

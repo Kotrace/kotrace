@@ -1,3 +1,11 @@
+public final class dev/kotrace/okhttp/HttpSpan {
+	public static final field CALL_TIMEOUT Ljava/lang/String;
+	public static final field CANCELED Ljava/lang/String;
+	public static final field INSTANCE Ldev/kotrace/okhttp/HttpSpan;
+	public static final field OUTCOME Ljava/lang/String;
+	public static final field STATUS Ljava/lang/String;
+}
+
 public final class dev/kotrace/okhttp/TracingCallFactory : okhttp3/Call$Factory {
 	public fun <init> (Lokhttp3/Call$Factory;Ljava/util/Map;Lkotlin/jvm/functions/Function1;)V
 	public synthetic fun <init> (Lokhttp3/Call$Factory;Ljava/util/Map;Lkotlin/jvm/functions/Function1;ILkotlin/jvm/internal/DefaultConstructorMarker;)V

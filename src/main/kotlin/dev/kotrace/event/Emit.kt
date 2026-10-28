@@ -4,6 +4,7 @@ import dev.kotrace.Span
 import dev.kotrace.TraceConfig
 import dev.kotrace.adapter.FaultPhase
 import dev.kotrace.adapter.accepts
+import dev.kotrace.adapter.attributeView
 import dev.kotrace.bridge.runIsolated
 import dev.kotrace.internal.liveFanOut
 
@@ -11,7 +12,8 @@ import dev.kotrace.internal.liveFanOut
  * Appends [event] to the span, then offers it to each [dev.kotrace.adapter.LiveAdapter] whose policy [accepts] it. The
  * append is **unconditional** (ADR-002): policies filter only at fan-out, so a crash is never filtered out at
  * capture, and only the [Span.maxEvents] cap evicts (ADR-029). The record is built only once an adapter accepts
- * the event, so a rejected log never builds its message.
+ * the event, so a rejected log never builds its message. It is built once and shared; an adapter whose
+ * [dev.kotrace.adapter.TracePolicy.acceptsAttribute] rejects one of its attributes receives its own copy (ADR-039).
  */
 internal fun Span.emit(event: SpanEvent, config: TraceConfig?, extraAttributes: Map<String, String> = emptyMap()) {
     appendEvent(event)
@@ -31,7 +33,9 @@ internal fun Span.emit(event: SpanEvent, config: TraceConfig?, extraAttributes: 
             recordOf(event, extraAttributes)
         } ?: return
         accepting.forEach { adapter ->
-            runIsolated(FaultPhase.LIVE, "live.deliver", recover = {}) { adapter.onLive(record) }
+            runIsolated(FaultPhase.LIVE, "live.deliver", recover = {}) {
+                adapter.onLive(adapter.policy.attributeView(record, FaultPhase.LIVE, "live.attribute"))
+            }
         }
     }
 }

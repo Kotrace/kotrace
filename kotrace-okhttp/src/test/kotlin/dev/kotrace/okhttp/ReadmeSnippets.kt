@@ -1,5 +1,6 @@
 package dev.kotrace.okhttp
 
+import dev.kotrace.adapter.TracePolicy
 import dev.kotrace.span
 import okhttp3.Call
 import okhttp3.OkHttpClient
@@ -26,10 +27,18 @@ internal object ReadmeSnippets {
         val calls: Call.Factory = TracingCallFactory(http)
 
         // 3. Call inside a span. traceparent goes on the wire; the span emits http.status as an attribute
-        //    (on every record off the span, not a filter key, ADR-001), and a non-2xx flips it to ERROR.
+        //    (to each adapter that accepts HttpSpan.STATUS, never a filter key), and a non-2xx flips it to ERROR.
         suspend fun price(): String = span("pricing.fetch") {
             calls.newCall(Request.Builder().url(pricingUrl).build())
                 .execute().use { it.body?.string().orEmpty() }
+        }
+        // end README snippet
+    }
+
+    fun attributes() {
+        // README snippet: okhttp-attributes
+        val crashPolicy = object : TracePolicy {
+            override fun acceptsAttribute(key: String, value: String) = key == HttpSpan.STATUS || key == HttpSpan.OUTCOME
         }
         // end README snippet
     }

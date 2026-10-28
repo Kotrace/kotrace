@@ -70,8 +70,10 @@ class Span(
     /**
      * The span's **attributes**: values a sink should see, often known only after the span opens (`http.status` once
      * the response returns). They ride every emitted [dev.kotrace.event.TraceRecord] as
-     * [dev.kotrace.event.TraceRecord.spanAttributes], but no [TracePolicy] reads them, so a gate never depends on a
-     * value whose presence varies with timing (ADR-001); filter on [traits] instead. Static symbols only;
+     * [dev.kotrace.event.TraceRecord.spanAttributes], each one only to an adapter whose
+     * [TracePolicy.acceptsAttribute] admits it (ADR-039). No [TracePolicy] gate decides a record's delivery on them,
+     * so a gate never depends on a value whose presence varies with timing (ADR-001); filter on [traits] instead. The
+     * span itself keeps every attribute, whatever an adapter admits. Static symbols only;
      * thread-safe. A live read-only view: it reflects every later [putAttribute], and rejects a write even cast
      * back to [MutableMap].
      */
@@ -164,7 +166,8 @@ class Span(
 
         /**
          * The [attributes] key carrying [droppedEvents]. Read live when a record is built, so a report can show a
-         * count slightly newer than its frozen timeline (ADR-029).
+         * count slightly newer than its frozen timeline (ADR-029). An adapter receives it only when its
+         * [TracePolicy.acceptsAttribute] admits this key (ADR-039).
          */
         const val EVENTS_DROPPED_ATTRIBUTE: String = "kotrace.events_dropped"
     }

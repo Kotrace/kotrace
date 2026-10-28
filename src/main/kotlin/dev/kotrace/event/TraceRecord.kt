@@ -30,6 +30,11 @@ import java.util.Locale
  * later is missing; a report record reads them when the report is built, after the span ended, so they are final.
  * The `attributes` of [addException] are merged in, on the live record only; those of [emitException] are a
  * span-less record's only [spanAttributes]. They are distinct from the event's own [AttributedRecord.attributes].
+ *
+ * **What an adapter sees.** A record handed to an adapter carries only the attributes its
+ * [dev.kotrace.adapter.TracePolicy.acceptsAttribute] admits, in [spanAttributes], [AttributedRecord.attributes] and
+ * each link's [TraceLink.attributes]; none by default (ADR-039). Two adapters on one flow can thus receive the
+ * same event with different attributes.
  */
 sealed interface TraceRecord {
     val traceId: String?
@@ -90,7 +95,8 @@ internal fun Span.recordOf(
  * **What it renders.** This is machine egress, so it must never carry user data (see [dev.kotrace.Span]). An
  * exception renders its class name only, never its message. A [LogRecord] marked `sensitive` renders its message
  * as is: keeping it out is the adapter's [dev.kotrace.adapter.TracePolicy.acceptsSensitive], which refuses it by
- * default.
+ * default. Likewise it renders every attribute the record holds, which on a delivered record are only those the
+ * adapter's [dev.kotrace.adapter.TracePolicy.acceptsAttribute] admitted (ADR-039).
  *
  * Hand-rolled rather than `kotlinx.serialization`, so no consumer of this core library pays for the runtime and the
  * plugin; the shape is closed and string-only, and escaping is the one risk ([appendEscaped]).

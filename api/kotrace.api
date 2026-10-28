@@ -231,6 +231,7 @@ public abstract interface class dev/kotrace/adapter/TraceAdapter {
 }
 
 public abstract interface class dev/kotrace/adapter/TracePolicy {
+	public fun acceptsAttribute (Ljava/lang/String;Ljava/lang/String;)Z
 	public fun acceptsEvent (Ldev/kotrace/event/SpanEvent;)Z
 	public fun acceptsSpan (Ldev/kotrace/Span;)Z
 	public fun getAcceptsPropagatedException ()Z
@@ -238,6 +239,7 @@ public abstract interface class dev/kotrace/adapter/TracePolicy {
 }
 
 public final class dev/kotrace/adapter/TracePolicy$DefaultImpls {
+	public static fun acceptsAttribute (Ldev/kotrace/adapter/TracePolicy;Ljava/lang/String;Ljava/lang/String;)Z
 	public static fun acceptsEvent (Ldev/kotrace/adapter/TracePolicy;Ldev/kotrace/event/SpanEvent;)Z
 	public static fun acceptsSpan (Ldev/kotrace/adapter/TracePolicy;Ldev/kotrace/Span;)Z
 	public static fun getAcceptsPropagatedException (Ldev/kotrace/adapter/TracePolicy;)Z

@@ -35,7 +35,10 @@ import kotlin.coroutines.EmptyCoroutineContext
 private const val TRACE_ID = "00000000000000000000000000000001"
 private const val SPAN_ID = "0000000000000001"
 
-private object AcceptAllPolicy : TracePolicy
+/** Accepts every non-sensitive event and every attribute, so a record reaches the sink uncopied (ADR-039). */
+private object AcceptAllPolicy : TracePolicy {
+    override fun acceptsAttribute(key: String, value: String): Boolean = true
+}
 
 private object RejectAllEventsPolicy : TracePolicy {
     override fun acceptsEvent(event: dev.kotrace.event.SpanEvent): Boolean = false

@@ -1,15 +1,21 @@
 package dev.kotrace.adapter
 
 import dev.kotrace.Span
+import dev.kotrace.TraceLink
+import dev.kotrace.bridge.runIsolated
 import dev.kotrace.event.ExceptionEvent
+import dev.kotrace.event.ExceptionRecord
 import dev.kotrace.event.LogEvent
+import dev.kotrace.event.LogRecord
 import dev.kotrace.event.NamedEvent
+import dev.kotrace.event.NamedRecord
 import dev.kotrace.event.SpanEvent
+import dev.kotrace.event.TraceRecord
 
 /**
  * An adapter's fan-out **decisions**, separate from where it routes a record: gates applied alike on the live and
- * report paths (see [accepts]). The defaults pass spans and events and withhold sensitive records, so a bare
- * policy is a working, fail-closed one.
+ * report paths (see [accepts]). The defaults pass spans and events and withhold sensitive records and every
+ * attribute, so a bare policy is a working, fail-closed one.
  */
 interface TracePolicy {
     /**
@@ -37,6 +43,27 @@ interface TracePolicy {
      * sets `true` and reads [dev.kotrace.event.ExceptionRecord.origin]. Report only: the live path is per-event.
      */
     val acceptsPropagatedException: Boolean get() = false
+
+    /**
+     * Whether this adapter receives the attribute [key] = [value] (ADR-039). `false` by default, like
+     * [acceptsSensitive]: an adapter that declares nothing receives no attribute, so admitting a key is an explicit
+     * act. kotrace never interprets a key; the predicate is the adapter's own, an allowlist, a value shape, or `true`
+     * for a debug adapter on a device the developer holds. kotrace's own keys get no pass:
+     * [dev.kotrace.Span.EVENTS_DROPPED_ATTRIBUTE] and an integration's keys are admitted by name like any other.
+     *
+     * It filters every attribute map of a record handed to this adapter, live and report alike:
+     * [TraceRecord.spanAttributes], the event's own [dev.kotrace.event.AttributedRecord.attributes] and each
+     * [TraceLink.attributes]. It never decides whether a record is delivered, and the span keeps every attribute, so
+     * a permissive adapter on the same flow still sees them. A rejection is policy, not a fault; a throw rejects that
+     * one attribute and reaches the [FaultHook].
+     *
+     * It runs once per attribute per adapter, on the logging thread for a live record: keep it cheap and
+     * non-blocking, with no regular expression that can backtrack catastrophically.
+     *
+     * @sample dev.kotrace.samples.PolicySamples.allowlist
+     * @sample dev.kotrace.samples.PolicySamples.acceptEverything
+     */
+    fun acceptsAttribute(key: String, value: String): Boolean = false
 }
 
 /**
@@ -54,4 +81,58 @@ internal fun TracePolicy.accepts(event: SpanEvent): Boolean = when (event) {
     is LogEvent -> acceptsEvent(event) && (!event.sensitive || acceptsSensitive)
     is NamedEvent -> acceptsEvent(event)
     is ExceptionEvent -> acceptsEvent(event)
+}
+
+/**
+ * [record] as this adapter may see it (ADR-039): each attribute map keeps only what [TracePolicy.acceptsAttribute]
+ * admits. The same record when nothing is rejected, so an adapter accepting everything, or a record with no
+ * attribute, costs no copy. A throwing predicate rejects that attribute and is told to the [FaultHook] as [phase],
+ * with [faultMessage].
+ */
+internal fun TracePolicy.attributeView(record: TraceRecord, phase: FaultPhase, faultMessage: String): TraceRecord {
+    val spanAttributes = acceptedOf(record.spanAttributes, phase, faultMessage)
+    val links = acceptedOf(record.links, phase, faultMessage)
+    val unchanged = spanAttributes === record.spanAttributes && links === record.links
+    return when (record) {
+        is LogRecord -> {
+            val attributes = acceptedOf(record.attributes, phase, faultMessage)
+            if (unchanged && attributes === record.attributes) record
+            else record.copy(spanAttributes = spanAttributes, links = links, attributes = attributes)
+        }
+        is NamedRecord -> {
+            val attributes = acceptedOf(record.attributes, phase, faultMessage)
+            if (unchanged && attributes === record.attributes) record
+            else record.copy(spanAttributes = spanAttributes, links = links, attributes = attributes)
+        }
+        is ExceptionRecord -> if (unchanged) record else record.copy(spanAttributes = spanAttributes, links = links)
+    }
+}
+
+/** [attributes] without what this policy rejects: the same map when it rejects nothing, else a copy. */
+private fun TracePolicy.acceptedOf(
+    attributes: Map<String, String>,
+    phase: FaultPhase,
+    faultMessage: String,
+): Map<String, String> {
+    if (attributes.isEmpty()) return attributes
+    var kept: MutableMap<String, String>? = null
+    for ((key, value) in attributes) {
+        if (runIsolated(phase, faultMessage, recover = { false }) { acceptsAttribute(key, value) }) continue
+        val copy = kept ?: LinkedHashMap(attributes).also { kept = it }
+        copy.remove(key)
+    }
+    return kept ?: attributes
+}
+
+/** [links] with each link's attributes filtered by [acceptedOf]: the same list when no link changes. */
+private fun TracePolicy.acceptedOf(links: List<TraceLink>, phase: FaultPhase, faultMessage: String): List<TraceLink> {
+    if (links.isEmpty()) return links
+    var kept: MutableList<TraceLink>? = null
+    links.forEachIndexed { index, link ->
+        val attributes = acceptedOf(link.attributes, phase, faultMessage)
+        if (attributes === link.attributes) return@forEachIndexed
+        val copy = kept ?: ArrayList(links).also { kept = it }
+        copy[index] = link.copy(attributes = attributes)
+    }
+    return kept ?: links
 }

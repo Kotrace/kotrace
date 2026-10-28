@@ -49,7 +49,10 @@ class EventCapTest {
     @Test fun `a reported record says its span dropped events`() = runTest {
         val collected = mutableListOf<TraceRecord>()
         val report = object : ReportAdapter {
-            override val policy = object : TracePolicy {}
+            // kotrace's own key gets no pass (ADR-039): an adapter that wants the drop count admits it by name.
+            override val policy = object : TracePolicy {
+                override fun acceptsAttribute(key: String, value: String) = key == Span.EVENTS_DROPPED_ATTRIBUTE
+            }
             override fun onReport(status: TraceStatus, records: Sequence<TraceRecord>) {
                 collected += records
             }
