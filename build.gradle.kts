@@ -33,6 +33,11 @@ dokka {
     }
 }
 
+tasks.test {
+    // ReadmeSnippetsTest and OutcomeMatrixTest read these documents, so an edit to one alone must rerun the tests.
+    inputs.files("README.md", fileTree("docs"))
+}
+
 dependencies {
     // Coroutine types are on the public API: `SpanContext` is a `ThreadContextElement`, `span` is suspend.
     api(libs.kotlinx.coroutines.core)

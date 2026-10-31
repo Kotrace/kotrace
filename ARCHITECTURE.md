@@ -323,6 +323,8 @@ interface TracePolicy {
   acceptsSensitive: Boolean             // receive sensitive records? default false (fail-closed)
   acceptsPropagatedException: Boolean   // receive PROPAGATED climb copies, or birthplaces only? default false
                                         //   report-only, ADR-019
+  acceptsExplicitException: Boolean     // receive EXPLICIT (addException) records? default true; false claims
+                                        //   the adapter shipped them live. Report-only, ADR-040
   acceptsAttribute(key, value): Boolean // receive this attribute? default false (fail-closed), live and report;
                                         //   filters a record's attribute maps, never its delivery, ADR-039
 }
@@ -356,8 +358,10 @@ interface TracePolicy {
   lineage, ADR-015) or `PROPAGATED` (an ancestor copy). The view drops `PROPAGATED` unless the adapter opts in
   via `acceptsPropagatedException`, applied **before** `acceptsEvent`, so a default (crash) adapter is never
   invoked on a dropped copy and sees birthplaces only. An opt-in (log/trace-viz) adapter receives the full
-  marked climb off the *same* walk. `toJson` writes `"exception_origin":"propagated"` only on a `PROPAGATED`
-  record, so a birthplace record carries no origin key. A live `ExceptionRecord` is unclassified
+  marked climb off the *same* walk. An `addException` record is stamped `EXPLICIT` instead, never a birthplace,
+  and an adapter that ships those live drops them from its view with `acceptsExplicitException = false`, applied
+  before `acceptsEvent` too (ADR-040). `toJson` writes `"exception_origin"` as `propagated` or `explicit`, so a
+  birthplace record carries no origin key. A live `ExceptionRecord` is unclassified
   (`origin = null`): the tree is incomplete when it is emitted.
 
 ### Live versus report: two timings, one mechanism
@@ -374,6 +378,35 @@ the tree, deepest first, ungated by trace status), and at report, where the defa
 gated on failure, an `acceptsPropagatedException` adapter seeing the whole marked climb (ADR-019). Live is
 awareness; report is the crash verdict (§8). Building the live record is skipped
 entirely when no live adapter is registered, so a production report-only trace pays nothing per event.
+
+One trace, end to end. A child fails and the failure escapes the root:
+
+```mermaid
+sequenceDiagram
+    participant Code as Traced code
+    participant Root as span("root")
+    participant Child as span("child")
+    participant Live as LiveAdapter
+    participant Report as ReportAdapter
+    Code->>Root: span("root") { … }
+    Note over Root: no span and no collector in context:<br/>auto-root, installs a SpanCollector (ADR-013)
+    Root->>Child: span("child") { … }
+    Child->>Live: onLive(LogRecord) for each log { }
+    Child->>Live: onLive(NamedRecord) for each addNamed
+    Note over Child: block throws: span ERROR, ExceptionEvent recorded
+    Child->>Live: onLive(ExceptionRecord, origin = null)
+    Child-->>Root: rethrows unchanged
+    Root->>Live: onLive(ExceptionRecord, origin = null), the climb copy
+    Note over Root: verdict: thrown → ERROR (CANCELLED if the root's own<br/>coroutine was cancelled); returned → returnedOutcome,<br/>else the classifier, else OK (ADR-016/018/022)
+    Note over Root: one walk stamps each exception BIRTHPLACE,<br/>PROPAGATED or EXPLICIT (ADR-015/019/040)
+    Root->>Report: onReport(ERROR, records), filtered per adapter policy
+    Root-->>Code: rethrows unchanged
+```
+
+The live calls happen while the code runs, on its thread; the report happens once, when the root ends. A child is
+never a report boundary, so nothing about the outcome (`returnedOutcome`, attached throwables) is read below the
+auto-root. What each scenario delivers is tabulated in [docs/outcome-matrix.md](docs/outcome-matrix.md), generated
+from this code.
 
 ### Tail, not head
 
@@ -494,7 +527,7 @@ read time, not from overwriting a field:
 
 Consequence: a **handled** exception (caught at the repository, returned as a value) both surfaces **live**
 as it climbs (a WARN-level awareness line in a debug watch) and rides the trace-end report as an
-`ExceptionRecord`, deduped to its birthplace and gated on trace status. Live is awareness; report is the
+`ExceptionRecord`, deduped to its birthplace, which a crash sink gates on trace status itself. Live is awareness; report is the
 verdict. A non-throwable structured error stays a `Span.log` breadcrumb (§ carrier exception).
 
 ---
@@ -528,31 +561,92 @@ exception must serialize into event attributes; kotrace reports on-device to a c
 
 ## 10. Consumer boundary (how a host wires it)
 
-kotrace's whole consumer surface is: the `span` verb and the event verbs (`log`/`addNamed`/`addException`, and
-the span-less `emit*`), `withScope`, the `TraceAdapter`/`TracePolicy` interfaces, `Kotrace.install` /
-`TraceConfig`, `Kotrace.installFaultHook`, and `reportTrace`. **The common host writes only `span { }`**: a top-level one
-auto-roots and reports at its outcome (ADR-013), so the report boundary needs no explicit `reportTrace`. A
-**failure-as-value** host (one whose domain failures are *returned*, not thrown) installs a process-wide
+**The surface.** The `span` verb and the event verbs (`log` / `addNamed` / `addException`, and the span-less
+`emit*`), `withScope`, the `TraceAdapter` / `TracePolicy` interfaces, `Kotrace.install` / `TraceConfig`,
+`Kotrace.installFaultHook`, and `reportTrace`. [docs/writing-adapters.md](docs/writing-adapters.md) is the
+adapter author's guide to the second half.
+
+**The common host writes only `span { }`.** A top-level one auto-roots and reports at its outcome (ADR-013), so the
+report boundary needs no explicit `reportTrace`. `reportTrace`, and a hand-seeded `SpanCollector`, stay for
+genuinely bespoke boundaries.
+
+**A failure-as-value host** (one whose domain failures are *returned*, not thrown) installs a process-wide
 `returnVerdictClassifier` (ADR-018/020). On **every** span it maps a returned value to a `ReturnVerdict`:
-`Success`, `Failure(throwable)` (span `ERROR` + canonical exception lineage), or `Failure(null)` (span `ERROR`,
-no synthetic event/record). At the auto-root a classified failure supplies the default trace verdict by
-precedence: a failure whose throwable is a `CancellationException` → `CANCELLED` only
-when the root's coroutine is itself cancelled (the same test as a thrown escaping one, ADR-022; a returned
-timeout is `ERROR`), any other classification → `ERROR`, else `OK`. **Cancellation versus failure (ADR-022):** a
-`CancellationException` means *cancellation* only while the running coroutine is no longer active; one seen while
-it is still active (an inner `withTimeout` expiring, a cancelled `Deferred` awaited) is a *failure*. A genuinely
-cancelled span is marked `ERROR` but records no exception event, so a failing sibling's cancelled neighbours
-never reach a crash sink as `JobCancellationException` birthplaces. It is overridable per-call
-(`span(returnVerdictClassifier = …) { }`), including a local opt-out `{ ReturnVerdict.Success }`. `span(returnedOutcome = …) { }`
-(ADR-016) remains for *overriding* that verdict at the auto-root
-(remap a status, force `OK`, or ride trace-level orphan failures up as `attached`, ADR-012): an explicit
-`returnedOutcome` wins over the classifier default. A value-only failure is status-only: without another event,
-the adapter sees `onReport(ERROR, emptySequence())`; D01 covers future span-granular machine export, while
-backlog D03 retains the separate safe-symbolic-reason gap. Still a single `span { }`-shaped boundary. `reportTrace`
-(and a hand-seeded `SpanCollector`) stays for genuinely bespoke boundaries. A host implements adapters that bridge `TraceRecord` → its own sinks and never
-touches the `Span` tree; an optional, process-wide `FaultHook` (`Kotrace.installFaultHook`, ADR-037) observes any
-fault contained during fan-out (ADR-014), and any fault of kotrace's own while opening a span or reporting, which never changes the traced
-outcome (ADR-034). The reference consumer (Camailux) keeps *all* kotrace naming inside one module: a
-`CrashAdapter` (records → crash reporter), an `AnalyticsAdapter` (`NamedRecord` → analytics), a debug
-`LiveLogAdapter`, assembled behind a small facade; everything else in the app names only vendor-neutral
-interfaces. That is the intended shape: **kotrace is an implementation detail behind the adapter seam.**
+
+- `Success`;
+- `Failure(throwable)`: span `ERROR` plus the canonical exception lineage;
+- `Failure(null)`: span `ERROR`, no synthetic event or record. Without another event the adapter sees
+  `onReport(ERROR, emptySequence())`; backlog D01 covers span-granular export and D03 a safe symbolic reason.
+
+It is overridable per call (`span(returnVerdictClassifier = …) { }`), including a local opt-out
+`{ ReturnVerdict.Success }`.
+
+**The auto-root's verdict.** A **thrown** escape is decided first, and nothing else is consulted: `CANCELLED` when
+it is a `CancellationException` and the root's coroutine is itself cancelled, otherwise `ERROR` (ADR-022). The
+report is delivered and the throwable rethrown; `returnedOutcome` is never invoked. A **normal return** is decided
+by precedence:
+
+1. an explicit `span(returnedOutcome = …) { }` (ADR-016) wins, over the classifier too: it remaps a status, forces
+   `OK`, or rides trace-level orphan failures up as `attached` (ADR-012);
+2. else a classified failure: `CANCELLED` when its throwable is a `CancellationException` and the root's coroutine
+   is itself cancelled (the same test as a thrown one, ADR-022; a returned timeout is `ERROR`), otherwise `ERROR`;
+3. else `OK`.
+
+**Cancellation versus failure (ADR-022).** A `CancellationException` means *cancellation* only while the running
+coroutine is no longer active; one seen while it is still active (an inner `withTimeout` expiring, a cancelled
+`Deferred` awaited) is a *failure*. A genuinely cancelled span is marked `ERROR` but records no exception, so a
+failing sibling's cancelled neighbours never reach a crash sink as `JobCancellationException` birthplaces.
+
+**Faults.** An optional, process-wide `FaultHook` (`Kotrace.installFaultHook`, ADR-037) observes any fault
+contained during fan-out (ADR-014), and any fault of kotrace's own while opening a span or reporting, which never
+changes the traced outcome (ADR-034).
+
+**The intended shape: kotrace is an implementation detail behind the adapter seam.** A host implements adapters
+that bridge `TraceRecord` → its own sinks and never touches the `Span` tree. The reference consumer (Camailux) keeps
+*all* kotrace naming inside one module: a `CrashAdapter` (records → crash reporter), an `AnalyticsAdapter`
+(`NamedRecord` → analytics), a debug `LiveLogAdapter`, assembled behind a small facade; everything else in the app
+names only vendor-neutral interfaces.
+
+---
+
+## 11. Invariants and known limitations
+
+The rules below hold everywhere; the decisions that set them are cited. When one surprises a consumer, the
+[troubleshooting](docs/troubleshooting.md) page lists it by symptom.
+
+**Invariants.** Each is pinned by tests.
+
+- **Tracing never changes the traced code's result.** `span { }` returns or throws exactly what its block would
+  untraced, a fault of kotrace's own included; only an armed `strictWhenNotInstalled` throws on purpose
+  (ADR-011/034).
+- **An adapter's fault stays with that adapter.** It never reaches the traced code or another adapter; it reaches
+  the process-wide `FaultHook` (ADR-014/037). A JVM-fatal error always propagates.
+- **One report per auto-root, covering every root of its collector** (ADR-013/026).
+- **Delivery is synchronous.** `onLive` runs on the logging thread, `onReport` on the trace-ending thread; an emit
+  from inside a live fan-out is stored, not fanned out again (ADR-025).
+- **Fail-closed by default.** An adapter receives no sensitive log and no attribute it has not accepted
+  (ADR-039).
+- **`acceptsSpan` reads `traits` only**, which are fixed when the span opens, so a filter never races a late
+  `putAttribute` (ADR-001/032).
+- **Memory is bounded per span.** A span keeps at most `maxEventsPerSpan` events, dropping the oldest named event first, else the oldest log, an exception only when nothing else is left
+  (ADR-029/033).
+- **A genuine cancellation records no exception** (ADR-022). A `CancellationException` thrown through a coroutine
+  that is still active (an inner `withTimeout`, an awaited `Deferred` cancelled elsewhere) is a failure and is
+  recorded, and `addException` records whatever it is given.
+
+**Known limitations.** Each is deliberate or logged as debt.
+
+| Limitation | Consequence | Source |
+|---|---|---|
+| `returnedOutcome` runs only at an auto-root | a nested `span`'s status and attached throwables are dropped; a wrapper that may nest must carry them itself | ADR-016/017 |
+| A live record has no `origin` | a live sink cannot tell `addException` from a thrown failure without its own marker attribute | ADR-019/040 |
+| `acceptsExplicitException = false` drops **every** `EXPLICIT` record from that adapter's report | an `addException` call the adapter did not ship live (one without its marker) is lost to it; only a single facade that marks every call makes the setting safe | ADR-040 |
+| `addException(e)` and a thrown `e` are separate lineages | reporting and rethrowing the same throwable gives two records | ADR-041 (rejected) |
+| Links belong to the span that declares them | children, the parent and span-less records carry none | ADR-009, ADR-042 (rejected) |
+| A live record snapshots the span's attributes | a value `putAttribute` stamps later reaches the report only | ADR-001/032 |
+| The report is delivered for every status | each sink gates on `status` itself | ADR-013 |
+| A returned failure is classified only when bound to `T` | a result discarded in a `Unit` position is never a failure | ADR-018/020 |
+| No persistence | an in-flight trace is lost on process death | backlog D02 |
+| Adapters see records, never spans | no span timing or span-ended signal; no faithful OTLP span export | backlog D01 |
+| A value-only failure has no record | `Failure(null)` reports `ERROR` with nothing to group on | backlog D03 |
+

@@ -3,6 +3,31 @@
 Architecture Decision Records for kotrace. One file per ADR in `decisions/`. Read this index first;
 open only the ADR you need.
 
+## By concept
+
+Many ADRs amend earlier ones, so the current rule for a concept is the **last** ADR of its chain, read together
+with the section of [ARCHITECTURE.md](ARCHITECTURE.md) that states it. Read the earlier ADRs for context, not for the
+rule. Behavior is tabulated in [docs/outcome-matrix.md](docs/outcome-matrix.md), which the tests generate.
+
+| Concept | Chain, oldest → current | Current rule |
+|---|---|---|
+| The `span` verb and the trace boundary | 003 → 013 → 017 (016's shape superseded) → 026 | ARCHITECTURE §10 |
+| Returned failures and the trace verdict | 016 → 018 → 020, with 022 for cancellation | ARCHITECTURE §10 |
+| Birthplace, dedup and exception origin | 005 → 015 → 019 → 040 (041 rejected), with 012 for attached orphans | ARCHITECTURE § Birthplace, §4 |
+| Cancellation versus failure | 013 → 022 | ARCHITECTURE §10 |
+| A span's two maps (`traits`, `attributes`) and their JSON | 001 → 004 → 032 | ARCHITECTURE §2 |
+| Fan-out and the policy gates | 002 → 019 → 039 → 040, with 008 for unredacted reads | ARCHITECTURE §4, [writing-adapters.md](docs/writing-adapters.md) |
+| Fault isolation and the `FaultHook` | 014 → 034 → 035 → 036 → 037 | ARCHITECTURE §10 |
+| Reentrancy from a sink | 025 | ARCHITECTURE §11, `LiveAdapter.onLive` KDoc |
+| Event cap and hot-path cost | 029 → 033 | ARCHITECTURE §2 |
+| Cross-trace links | 009 (042 rejected) | ARCHITECTURE § Vocabulary, `TraceLink` KDoc |
+| Span-less emits and scopes | 010 → 038 | README § Span-less emits & scopes |
+| Install and configuration | 011, 033, 037, 038 | README § Where to start |
+| OkHttp and Room integrations | 021 → 023 → 024 → 035 | ARCHITECTURE §7 |
+| API, packaging and documentation | 007 → 030, 027, 028, 031 | AGENTS.md, README § Coordinates |
+
+## Index
+
 | # | Title | Status | Date |
 |---|---|---|---|
 | [001](decisions/adr-001-span-filter-attrs-vs-emitted-info.md) | A span's fixed filter dimensions (`traits`) versus the payload it emits (`attributes`) | Accepted | 2026-08-18 |

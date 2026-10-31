@@ -164,85 +164,8 @@ support. A newer version in your build wins through normal dependency resolution
 | Android `minSdk` | 21 (`kotrace-room` declares it; the core and `kotrace-okhttp` call no newer Android API) |
 | Java (JVM modules) | 11, bytecode and API |
 
-**Upgrading from 0.5.** 0.6.0 is binary-breaking for callers of `Kotrace.install`: recompile against it. It also
-changes what every adapter receives: declare the attributes each one accepts.
-
-- **Binary.** Both `Kotrace.install` overloads gained `fallbackScopeId` (ADR-038), so their 0.5.0 JVM signatures
-  are gone. The parameter is defaulted, so source compiles unchanged. `TracePolicy.acceptsAttribute` is a defaulted
-  member and `kotrace-okhttp`'s `HttpSpan` was internal, so both are additive.
-- **Behavior.**
-  - An adapter receives no attribute it has not accepted (ADR-039). `TracePolicy.acceptsAttribute(key, value)`
-    defaults to `false`, so an adapter whose policy does not override it now gets every record, live and report,
-    with empty `spanAttributes`, empty event `attributes` and links without attributes, and its `toJson` lines lose
-    `"attributes"` and `"span_attributes"`. Records are still delivered as before: only their attributes are
-    filtered. kotrace's own keys get no pass, so `http.status` and `kotrace.events_dropped` disappear too until a
-    policy admits them.
-  - Nothing changes until you pass a `fallbackScopeId`. With one, a record outside any `withScope` carries its
-    `scope_id`, and `startSpan`'s default `scopeId` resolves it too; an explicit `scopeId = null` still opens a span
-    with no scope.
-- **Migrate.** In each adapter's policy, admit the keys that adapter may ship, by name for kotrace's own
-  (`Span.EVENTS_DROPPED_ATTRIBUTE`, `kotrace-okhttp`'s now public `HttpSpan.STATUS` and `HttpSpan.OUTCOME`), or
-  write `override fun acceptsAttribute(key: String, value: String) = true` for a debug adapter whose output stays on
-  the device. `acceptsEvent` is unaffected: a `level` threshold still reads the event's own attributes.
-
-An `addException` report record now has `ExceptionOrigin.EXPLICIT` (ADR-040), and `toJson` writes
-`"exception_origin":"explicit"` for it. Thrown and returned failure climbs and attached orphans keep their origins.
-The new `TracePolicy.acceptsExplicitException` defaults to `true`; set it to `false` only in a sink that records
-every explicit exception live. Migrate every adapter reading `origin`: an exhaustive `when` needs an `EXPLICIT`
-branch at source, and one compiled against 0.5.0 throws `NoWhenBranchMatchedException` on its first new origin.
-A check for `origin == BIRTHPLACE` also stops matching explicit records.
-
-**Upgrading from 0.4.** 0.5.0 is a breaking release: recompile against it.
-
-- **Binary.** `TracingCallFactory` gained `spanName` (ADR-021). In Room, `TracingQueryCallback` gained `delegate`
-  and `tracing()` gained `delegate` and `delegateExecutor` (ADR-028). In the core, the opt-in `startSpan` gained
-  `parent`, `collector` and `scopeId` (ADR-023). Their 0.4.0 JVM signatures are gone. `withScope` now compiles into
-  `ScopeContextKt`, beside `currentScopeId` and `currentThreadScopeId`.
-- **Packages.** The core is split by concern (ADR-031); fix the imports of moved symbols:
-  - `dev.kotrace.adapter`: `TraceAdapter`, `LiveAdapter`, `ReportAdapter`, `TracePolicy`, `FaultHook`,
-    `FaultPhase`, `isJvmFatal`;
-  - `dev.kotrace.report`: `reportTrace`, `renderTree`;
-  - `dev.kotrace.bridge`: `startSpan`, `end`, `TraceHandoff`, `NonSuspendTracingBridge`.
-
-  `span`, `withScope`, `Kotrace`, `Span`, `TraceConfig` and the rest of `dev.kotrace`, and all of
-  `dev.kotrace.event`, are where they were.
-- **Source.** `Kotrace.strictWhenUninstalled()` is renamed `Kotrace.strictWhenNotInstalled()` (ADR-011), and
-  `AdapterFaultHook.onAdapterFault` is renamed `FaultHook.onFault` (ADR-014).
-  A span's two string maps are renamed (ADR-032): the filter dimensions `Span.attributes` (the `attributes`
-  parameter of `span`, `startSpan` and `TracingCallFactory`) are now `traits`, and the payload `Span.info` /
-  `putInfo` is now `Span.attributes` / `putAttribute`. `TraceRecord.info` is `spanAttributes`,
-  `Span.EVENTS_DROPPED_INFO` is `EVENTS_DROPPED_ATTRIBUTE`, and the `info` parameter of `addException` /
-  `emitException` is `attributes`. **A policy reading `span.attributes` still compiles but now reads the
-  payload: switch it to `span.traits`.**
-  `Kotrace.resetForTest()` needs `@OptIn(KotraceTestApi::class)`, best granted to the test source set
-  only, and reading `Span.events` or `Span.exception` needs `@OptIn(UnredactedTraceRead::class)` (ADR-028).
-- **Behavior and wire.**
-  - `toJson` renders the span's attributes under `"span_attributes"`, formerly `"info"` (ADR-032). A log query
-    on `info.http.status` becomes `span_attributes.http.status`.
-  - HTTP spans are named `http <METHOD>`, never the URL path, so the `operation` field changes (ADR-021).
-  - `CANCELLED` means the root's coroutine was really cancelled. A timeout inside the operation is `ERROR`, and a
-    cancelled span records no exception (ADR-022).
-  - Each execution of a call opens its own HTTP span, emitting under the flow's configuration (ADR-023). A call its caller
-    canceled records no exception, while one that hit its `callTimeout` does; both mark the span's `http.outcome`
-    attribute (ADR-022/023).
-  - `Level.BODY` is bounded and reads a response only as your code does (ADR-024).
-  - An emit made from inside `onLive` is stored but not fanned out live again, and an HTTP call made there is not
-    traced (ADR-025).
-  - A report covers every root of a collector, not only the first (ADR-026).
-  - `toTraceparent()` throws on an id that is not W3C (ADR-028).
-  - A span keeps up to 1,000 events, dropping the oldest first (ADR-029). `TraceConfig.maxEventsPerSpan` and
-    `Kotrace.install(maxEventsPerSpan = …)` change the cap (ADR-033).
-  - A fault of kotrace's own never changes what `span { }` returns or throws: a span that fails to open runs its
-    block untraced, and a report fault is contained. Both reach the `FaultHook` (`FaultPhase.SPAN_OPEN`,
-    `FaultPhase.REPORT`). Only `strictWhenNotInstalled` still throws on purpose (ADR-034).
-  - The OkHttp and Room integrations report the faults they contain to the `FaultHook` (`FaultPhase.HTTP`,
-    `FaultPhase.DATABASE`), and an armed `strictWhenNotInstalled` now reaches their callers too (ADR-035).
-  - `FaultHook.onFault(phase, adapter, cause)` is now `onFault(phase, faultMessage, cause)`: a symbol naming the
-    step that failed (`live.deliver`, `http.response.body`) replaces the adapter (ADR-036). An adapter that tracks
-    its own health catches its own faults.
-  - The fault hook is no longer a `TraceConfig` or `Kotrace.install` parameter: install it once with
-    `Kotrace.installFaultHook(hook)`, ideally first, so it also hears of a throwing `install` provider
-    (`FaultPhase.INSTALL`) (ADR-037).
+**Upgrading.** [CHANGELOG.md](CHANGELOG.md) lists each release's changes and what to migrate: read it before
+bumping the version.
 
 ## How to run (build + test)
 
@@ -299,7 +222,18 @@ commands. Every run is kept under `benchmarks/results/`.
 
 ## Where to start
 
-`src/main/kotlin/dev/kotrace/Trace.kt` is the entry point: `span {}` opens every span a suspend flow records.
+**By what you are doing:**
+
+| I want to… | Read |
+|---|---|
+| trace a flow | this README, then the `span` KDoc |
+| write or review an adapter | [docs/writing-adapters.md](docs/writing-adapters.md) |
+| know what a scenario delivers to each adapter | [docs/outcome-matrix.md](docs/outcome-matrix.md), generated by the tests |
+| find out why a record is missing or doubled | [docs/troubleshooting.md](docs/troubleshooting.md) |
+| change behavior | [ARCHITECTURE.md](ARCHITECTURE.md) (§11 lists the invariants), then the ADR chain in [DECISIONS.md](DECISIONS.md) § By concept |
+| upgrade | [CHANGELOG.md](CHANGELOG.md) |
+
+**In the code:** `src/main/kotlin/dev/kotrace/Trace.kt` is the entry point: `span {}` opens every span a suspend flow records.
 Read `Span.kt` and `SpanContext.kt` next for the data + propagation model. The rest of the core is one package
 per concern (ADR-031): `event/` (events, records, `toJson`), `adapter/` (the sink contract and the fault hook),
 `report/` (`reportTrace`, `renderTree`), `bridge/` (the non-suspend opt-in and `runIsolated`, what an
@@ -583,4 +517,8 @@ because a static repository needs no auth. Publishing is manual (no CI Runner):
 
 ## Where to go when stuck
 
-Open an issue on the GitHub project. Licensed under the [MIT License](LICENSE).
+1. [docs/troubleshooting.md](docs/troubleshooting.md), by symptom: a missing or doubled exception, a missing
+   attribute or link, no report at all.
+2. [docs/outcome-matrix.md](docs/outcome-matrix.md), for what each adapter receives in a given scenario.
+3. [ARCHITECTURE.md](ARCHITECTURE.md) §11, for the invariants and the known limitations.
+4. Still stuck: open an issue on the GitHub project, with the scenario and what each adapter received. Licensed under the [MIT License](LICENSE).
