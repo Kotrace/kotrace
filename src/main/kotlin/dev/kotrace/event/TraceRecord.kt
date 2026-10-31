@@ -88,7 +88,8 @@ internal fun Span.recordOf(
  * - Always present: `trace_id`, `span_id`, `parent_span_id` and `operation`, written as `null` on a span-less record,
  *   then `kind` (`log`, `event` or `exception`) and that kind's value: `message`, `name`, or `exception`.
  * - Present only when not empty: the event's `attributes`, the span's `span_attributes`, `links` and `scope_id`, and
- *   `exception_origin`, written only as `propagated` on a [ExceptionOrigin.PROPAGATED] copy.
+ *   `exception_origin`, written as `propagated` for [ExceptionOrigin.PROPAGATED] or `explicit` for
+ *   [ExceptionOrigin.EXPLICIT]; a birthplace or live record omits it.
  * - Both attribute maps are **nested** objects, so a consumer's key can never collide with a reserved one.
  * - [TraceRecord.atNanos] is not rendered: it is no wall-clock time.
  *
@@ -122,8 +123,12 @@ fun TraceRecord.toJson(): String = buildString {
             appendField("kind", "exception"); append(',')
             // Class name only: the message can hold user data, and belongs in a crash reporter, joined by trace_id.
             appendField("exception", record.throwable.javaClass.name)
-            // Only for a PROPAGATED copy (ADR-019), so a birthplace-only report keeps its older shape.
-            if (record.origin == ExceptionOrigin.PROPAGATED) { append(','); appendField("exception_origin", "propagated") }
+            // Birthplaces and live records keep their older shape (ADR-019/040).
+            when (record.origin) {
+                ExceptionOrigin.PROPAGATED -> appendOptionalField("exception_origin", "propagated")
+                ExceptionOrigin.EXPLICIT -> appendOptionalField("exception_origin", "explicit")
+                ExceptionOrigin.BIRTHPLACE, null -> Unit
+            }
         }
     }
     appendObject("span_attributes", spanAttributes)

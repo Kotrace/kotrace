@@ -22,6 +22,7 @@ class ExceptionEvent internal constructor(
      * [recordPropagatedException] passes the canonical [lineageKeyOf]. Internal, so no consumer can choose one.
      */
     internal val lineageKey: Any = Any(),
+    internal val explicit: Boolean = false,
 ) : SpanEvent
 
 /**
@@ -73,10 +74,10 @@ private fun Throwable.isRecoveryWrapperOf(cause: Throwable): Boolean =
         stackTrace.any { it.className == COROUTINE_BOUNDARY_FRAME || it.className.contains(COROUTINE_BOUNDARY_LEGACY) }
 
 /**
- * Whether a reported [ExceptionRecord] is the failure's **origin** ([BIRTHPLACE], the deepest span carrying it) or
- * a **copy** re-recorded on an ancestor as it climbed ([PROPAGATED]) (ADR-019). A live record is unclassified.
+ * Whether a reported [ExceptionRecord] is a climb's deepest span ([BIRTHPLACE]), an ancestor copy
+ * ([PROPAGATED], ADR-019), or a consumer's [addException] record ([EXPLICIT], ADR-040). A live record is unclassified.
  */
-enum class ExceptionOrigin { BIRTHPLACE, PROPAGATED }
+enum class ExceptionOrigin { BIRTHPLACE, PROPAGATED, EXPLICIT }
 
 /**
  * The crash record: identity plus the raw [throwable]. It carries no attributes, so only a policy that covers
@@ -88,8 +89,9 @@ enum class ExceptionOrigin { BIRTHPLACE, PROPAGATED }
  * between the log store and the crash reporter.
  *
  * [origin] is `null` on a live record, emitted before the tree is complete (ADR-019). On a report record it is
- * [ExceptionOrigin.BIRTHPLACE] or [ExceptionOrigin.PROPAGATED]; by default an adapter receives only the
- * birthplaces, one with `acceptsPropagatedException` also the copies.
+ * [ExceptionOrigin.BIRTHPLACE], [ExceptionOrigin.PROPAGATED] or [ExceptionOrigin.EXPLICIT]. By default an adapter
+ * receives birthplaces and explicit records; `acceptsPropagatedException` admits ancestor copies, while
+ * `acceptsExplicitException = false` drops explicit records (ADR-040).
  */
 data class ExceptionRecord(
     override val traceId: String?,
@@ -116,10 +118,12 @@ data class ExceptionRecord(
  * only, such as a marker kotrace does not interpret (ADR-010); the event itself holds none, so the report is
  * unaffected.
  *
- * Each call is its **own lineage**, never deduped against another (ADR-015).
+ * Each call is its **own lineage**, never deduped against another (ADR-015). The report stamps it
+ * [ExceptionOrigin.EXPLICIT]; an adapter that already records it live can set
+ * [dev.kotrace.adapter.TracePolicy.acceptsExplicitException] to `false` (ADR-040).
  */
 fun Span.addException(cause: Throwable, attributes: Map<String, String> = emptyMap()) {
-    emit(ExceptionEvent(cause, System.nanoTime()), resolvedThreadConfig(), attributes)
+    emit(ExceptionEvent(cause, System.nanoTime(), explicit = true), resolvedThreadConfig(), attributes)
 }
 
 /**

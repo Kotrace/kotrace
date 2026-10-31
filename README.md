@@ -185,6 +185,13 @@ changes what every adapter receives: declare the attributes each one accepts.
   write `override fun acceptsAttribute(key: String, value: String) = true` for a debug adapter whose output stays on
   the device. `acceptsEvent` is unaffected: a `level` threshold still reads the event's own attributes.
 
+An `addException` report record now has `ExceptionOrigin.EXPLICIT` (ADR-040), and `toJson` writes
+`"exception_origin":"explicit"` for it. Thrown and returned failure climbs and attached orphans keep their origins.
+The new `TracePolicy.acceptsExplicitException` defaults to `true`; set it to `false` only in a sink that records
+every explicit exception live. Migrate every adapter reading `origin`: an exhaustive `when` needs an `EXPLICIT`
+branch at source, and one compiled against 0.5.0 throws `NoWhenBranchMatchedException` on its first new origin.
+A check for `origin == BIRTHPLACE` also stops matching explicit records.
+
 **Upgrading from 0.4.** 0.5.0 is a breaking release: recompile against it.
 
 - **Binary.** `TracingCallFactory` gained `spanName` (ADR-021). In Room, `TracingQueryCallback` gained `delegate`

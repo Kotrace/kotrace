@@ -45,6 +45,13 @@ interface TracePolicy {
     val acceptsPropagatedException: Boolean get() = false
 
     /**
+     * Whether the report hands this adapter [dev.kotrace.event.ExceptionOrigin.EXPLICIT] records from
+     * [dev.kotrace.event.addException] (ADR-040). `true` by default. An adapter setting `false` claims it already
+     * records every such exception live; kotrace cannot prove delivery. Applied before [acceptsEvent], report only.
+     */
+    val acceptsExplicitException: Boolean get() = true
+
+    /**
      * Whether this adapter receives the attribute [key] = [value] (ADR-039). `false` by default, like
      * [acceptsSensitive]: an adapter that declares nothing receives no attribute, so admitting a key is an explicit
      * act. kotrace never interprets a key; the predicate is the adapter's own, an allowlist, a value shape, or `true`

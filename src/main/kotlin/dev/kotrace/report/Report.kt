@@ -33,7 +33,8 @@ import dev.kotrace.resolvedThreadConfig
  * [dev.kotrace.event.ExceptionOrigin] BIRTHPLACE (the deepest span carrying it) or PROPAGATED (ADR-019). A
  * [dev.kotrace.event.NamedEvent] is live-only. By default an adapter drops PROPAGATED copies
  * ([TracePolicy.acceptsPropagatedException]) before [TracePolicy.acceptsEvent] runs, so a crash sink sees each
- * failure once, at its birthplace.
+ * failure once, at its birthplace. A consumer's [dev.kotrace.event.addException] record is stamped EXPLICIT
+ * (ADR-040) and kept by default; [TracePolicy.acceptsExplicitException] can drop it before [TracePolicy.acceptsEvent].
  *
  * [attached] carries **trace-level orphan failures**, throwables that are no span's birthplace (a saga's
  * suppressed rollbacks). Each is reported as an [dev.kotrace.event.ExceptionRecord] of the root, after the walk so
@@ -85,8 +86,11 @@ private fun walkEntries(
         tree.eventsOf(span).filter { it.reportable() }.sortedWith(byTime).forEach { event ->
             val origin = when (event) {
                 !is ExceptionEvent -> null
-                in birthplaces -> ExceptionOrigin.BIRTHPLACE
-                else -> ExceptionOrigin.PROPAGATED
+                else -> when {
+                    event.explicit -> ExceptionOrigin.EXPLICIT
+                    event in birthplaces -> ExceptionOrigin.BIRTHPLACE
+                    else -> ExceptionOrigin.PROPAGATED
+                }
             }
             entries += WalkEntry(span, event, origin)
         }
@@ -122,9 +126,11 @@ internal fun SpanEvent.reportable(): Boolean = when (this) {
 private fun ReportAdapter.viewOf(entries: () -> List<WalkEntry>): Sequence<TraceRecord> {
     // Read on consumption, so a throwing getter cannot abort before the adapter's status gate ran (ADR-019).
     val keepPropagated by lazy { policy.acceptsPropagatedException }
+    val keepExplicit by lazy { policy.acceptsExplicitException }
     return Sequence { entries().iterator() }
         // Before policy.accepts, so a default adapter's policy never sees a dropped copy.
         .filter { keepPropagated || it.origin != ExceptionOrigin.PROPAGATED }
+        .filter { keepExplicit || it.origin != ExceptionOrigin.EXPLICIT }
         .filter { policy.accepts(it.span, it.event) }
         .map { it.span.recordOf(it.event, origin = it.origin) }
         .map { policy.attributeView(it, FaultPhase.REPORT, "report.attribute") }
