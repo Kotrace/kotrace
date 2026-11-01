@@ -11,8 +11,12 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 
-/** The outcome of the work performed within a [Span]. */
-enum class SpanStatus { OK, ERROR }
+/**
+ * The outcome of the work performed within a [Span]: [OK], [ERROR] for a failure, or [CANCELLED] when its own
+ * coroutine was cancelled (ADR-022/044), which records no exception and is no failure. The whole trace's verdict is
+ * [TraceStatus].
+ */
+enum class SpanStatus { OK, ERROR, CANCELLED }
 
 /**
  * One unit of work in a trace. A tree of these, linked by [parentId], is the call path:
@@ -88,14 +92,17 @@ class Span(
      * [status] and [endNanos] published as one immutable pair (ADR-006), so a reader on any thread sees a coherent
      * pair. The birthplace throwable is not here: it lives in [events].
      */
-    private class State(val status: SpanStatus, val endNanos: Long?)
+    internal class State(val status: SpanStatus, val endNanos: Long?)
     private val state = AtomicReference(State(SpanStatus.OK, null))
 
-    /** [SpanStatus.OK] until a failure marks it [SpanStatus.ERROR]. */
+    /** [SpanStatus.OK] until a failure marks it [SpanStatus.ERROR], or a cancellation [SpanStatus.CANCELLED]. */
     val status: SpanStatus get() = state.get().status
 
     /** When the span closed (`System.nanoTime()`), or `null` while still open. */
     val endNanos: Long? get() = state.get().endNanos
+
+    /** [status] and [endNanos] in one read, so a reader never pairs a status with an end from another moment. */
+    internal fun lifecycle(): State = state.get()
 
     internal fun markStatus(newStatus: SpanStatus) {
         updateState { State(newStatus, it.endNanos) }

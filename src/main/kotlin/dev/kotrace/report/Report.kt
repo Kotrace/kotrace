@@ -18,6 +18,7 @@ import dev.kotrace.event.NamedEvent
 import dev.kotrace.event.SpanEvent
 import dev.kotrace.event.TraceRecord
 import dev.kotrace.event.recordOf
+import dev.kotrace.event.spanRecordOf
 import dev.kotrace.resolvedThreadConfig
 
 /**
@@ -42,6 +43,10 @@ import dev.kotrace.resolvedThreadConfig
  * real crash origin. It is read once, when the report begins: a list that throws costs only the orphans (the
  * [FaultHook] hears of it with [FaultPhase.REPORT]), never the report.
  *
+ * **Spans themselves, on request** (ADR-044). An adapter whose [TracePolicy.acceptsSpanRecords] is set also receives
+ * one [dev.kotrace.event.SpanRecord] per span it accepts ([TracePolicy.acceptsSpan]), just before that span's events,
+ * with the span's status and end as they stood when the report began: a span still open then has no end.
+ *
  * **Every root is reported** (ADR-026). A manual collector can hold several trees: two top-level `span {}` calls,
  * or spans whose parent it does not hold. Each is walked in start order into the one report, keeping its own
  * `trace_id` / `parent_id`; [attached] is keyed to the earliest root.
@@ -52,9 +57,9 @@ fun SpanCollector.reportTrace(status: TraceStatus, attached: List<Throwable> = e
     if (adapters.isEmpty()) return
     val all = spans
     if (all.isEmpty()) return
-    // Fix the report's content now (ADR-019/029): an event appended later, by an adapter's own onReport or a late
-    // bridge, must not enter it.
-    val frozen = FrozenTimelines(all)
+    // Fix the report's content now (ADR-019/029/044): an event appended later, by an adapter's own onReport or a late
+    // bridge, must not enter it, and a span ending later stays open in it.
+    val frozen = FrozenSpans(all)
     val orphans = runIsolated(FaultPhase.REPORT, "report.attached", recover = { emptyList() }) { attached.toList() }
     val reportedAt = System.nanoTime()
 
@@ -74,13 +79,14 @@ private fun walkEntries(
     all: List<Span>,
     attached: List<Throwable>,
     reportedAt: Long,
-    frozen: FrozenTimelines,
+    frozen: FrozenSpans,
 ): List<WalkEntry> {
     val roots = rootsOf(all)
     val tree = TraceTreeIndex(all, roots, frozen)
 
     val entries = ArrayList<WalkEntry>()
     fun walk(span: Span) {
+        entries += SpanEntry(span, tree.lifecycleOf(span))
         val birthplaces = tree.birthplaceExceptionsOf(span)
         // The same snapshot the birthplace index used, so a late append cannot be mislabelled (ADR-019).
         tree.eventsOf(span).filter { it.reportable() }.sortedWith(byTime).forEach { event ->
@@ -92,7 +98,7 @@ private fun walkEntries(
                     else -> ExceptionOrigin.PROPAGATED
                 }
             }
-            entries += WalkEntry(span, event, origin)
+            entries += EventEntry(span, event, origin)
         }
         tree.childrenOf(span).forEach(::walk)
     }
@@ -101,12 +107,20 @@ private fun walkEntries(
     if (attached.isNotEmpty()) {
         val root = roots.first()
         // An orphan has no deeper copy: BIRTHPLACE, so the propagated gate never drops it.
-        attached.forEach { entries += WalkEntry(root, ExceptionEvent(it, reportedAt), ExceptionOrigin.BIRTHPLACE) }
+        attached.forEach { entries += EventEntry(root, ExceptionEvent(it, reportedAt), ExceptionOrigin.BIRTHPLACE) }
     }
     return entries
 }
 
-private class WalkEntry(val span: Span, val event: SpanEvent, val origin: ExceptionOrigin?)
+/** One step of the walk: a span itself, then each of its events (ADR-044). */
+private sealed interface WalkEntry {
+    val span: Span
+}
+
+/** The span itself, with its status and end as they stood when the report began. */
+private class SpanEntry(override val span: Span, val lifecycle: Span.State) : WalkEntry
+
+private class EventEntry(override val span: Span, val event: SpanEvent, val origin: ExceptionOrigin?) : WalkEntry
 
 /**
  * Whether an event enters the report at all. Exhaustive over the sealed [SpanEvent], so a new event kind fails to
@@ -120,18 +134,30 @@ internal fun SpanEvent.reportable(): Boolean = when (this) {
 
 /**
  * This adapter's lazy view of the walked [entries], filtered by the same [accepts] predicate the live path uses.
- * A [dev.kotrace.event.TraceRecord] is built only for an entry that survives, holding only the attributes
- * [TracePolicy.acceptsAttribute] admits (ADR-039).
+ * A span entry survives only when [TracePolicy.acceptsSpanRecords] is set and [TracePolicy.acceptsSpan] accepts its
+ * span (ADR-044). A [dev.kotrace.event.TraceRecord] is built only for an entry that survives, holding only the
+ * attributes [TracePolicy.acceptsAttribute] admits (ADR-039).
  */
 private fun ReportAdapter.viewOf(entries: () -> List<WalkEntry>): Sequence<TraceRecord> {
     // Read on consumption, so a throwing getter cannot abort before the adapter's status gate ran (ADR-019).
     val keepPropagated by lazy { policy.acceptsPropagatedException }
     val keepExplicit by lazy { policy.acceptsExplicitException }
+    val keepSpans by lazy { policy.acceptsSpanRecords }
     return Sequence { entries().iterator() }
-        // Before policy.accepts, so a default adapter's policy never sees a dropped copy.
-        .filter { keepPropagated || it.origin != ExceptionOrigin.PROPAGATED }
-        .filter { keepExplicit || it.origin != ExceptionOrigin.EXPLICIT }
-        .filter { policy.accepts(it.span, it.event) }
-        .map { it.span.recordOf(it.event, origin = it.origin) }
+        .filter { entry ->
+            when (entry) {
+                is SpanEntry -> keepSpans && policy.acceptsSpan(entry.span)
+                // The origin gates run before policy.accepts, so a default adapter's policy never sees a dropped copy.
+                is EventEntry -> (keepPropagated || entry.origin != ExceptionOrigin.PROPAGATED) &&
+                    (keepExplicit || entry.origin != ExceptionOrigin.EXPLICIT) &&
+                    policy.accepts(entry.span, entry.event)
+            }
+        }
+        .map { entry ->
+            when (entry) {
+                is SpanEntry -> entry.span.spanRecordOf(entry.lifecycle)
+                is EventEntry -> entry.span.recordOf(entry.event, origin = entry.origin)
+            }
+        }
         .map { policy.attributeView(it, FaultPhase.REPORT, "report.attribute") }
 }

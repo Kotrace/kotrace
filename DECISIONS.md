@@ -14,9 +14,9 @@ rule. Behavior is tabulated in [docs/outcome-matrix.md](docs/outcome-matrix.md),
 | The `span` verb and the trace boundary | 003 → 013 → 017 (016's shape superseded) → 026 | ARCHITECTURE §10 |
 | Returned failures and the trace verdict | 016 → 018 → 020, with 022 for cancellation | ARCHITECTURE §10 |
 | Birthplace, dedup and exception origin | 005 → 015 → 019 → 040 (041 rejected), with 012 for attached orphans | ARCHITECTURE § Birthplace, §4 |
-| Cancellation versus failure | 013 → 022 | ARCHITECTURE §10 |
+| Cancellation versus failure | 013 → 022 → 044 | ARCHITECTURE §10 |
 | A span's two maps (`traits`, `attributes`) and their JSON | 001 → 004 → 032 | ARCHITECTURE §2 |
-| Fan-out and the policy gates | 002 → 019 → 039 → 040, with 008 for unredacted reads | ARCHITECTURE §4, [writing-adapters.md](docs/writing-adapters.md) |
+| Fan-out and the policy gates | 002 → 019 → 039 → 040 → 044, with 008 for unredacted reads | ARCHITECTURE §4, [writing-adapters.md](docs/writing-adapters.md) |
 | Fault isolation and the `FaultHook` | 014 → 034 → 035 → 036 → 037 | ARCHITECTURE §10 |
 | Reentrancy from a sink | 025 | ARCHITECTURE §11, `LiveAdapter.onLive` KDoc |
 | Event cap and hot-path cost | 029 → 033 | ARCHITECTURE §2 |
@@ -73,3 +73,4 @@ rule. Behavior is tabulated in [docs/outcome-matrix.md](docs/outcome-matrix.md),
 | [041](decisions/adr-041-birthplace-already-explicit.md) | `addException` also records its throwable's canonical lineage; the report marks a birthplace/propagated record sharing it under the same root, and `TracePolicy.acceptsExplicitlyRecordedBirthplace` (default `true`) lets a sink keep one. **Rejected:** capture is not delivery, the evidence can be evicted, attached orphans and other roots stay unmatched | Rejected | 2026-10-29 |
 | [042](decisions/adr-042-spanless-emit-links.md) | `emitException` / `emitLog` / `emitNamed` take `links`, so a standalone record about another trace carries the edge without a throwaway root span. **Rejected:** recording inside the linked root already carries the link; the change breaks positional or trailing-lambda calls | Rejected | 2026-10-29 |
 | [043](decisions/adr-043-room-query-executor-carries-trace.md) | Room's query executor carries the submitting thread's trace context: `tracing(queryExecutor)` wraps it (else Room's default IO executor), so a Room 2.6 suspend read, launched outside the caller's coroutine, logs onto its span; the core mirrors through `TraceHandoff.withCapturedContext` | Accepted | 2026-11-01 |
+| [044](decisions/adr-044-span-records-in-the-report.md) | A report carries one `SpanRecord` per span (identity, start, end, `SpanStatus`; no traits, events or throwable), before its events, behind `TracePolicy.acceptsSpanRecords` (default `false`), report-only, status and end frozen at report entry; `SpanStatus.CANCELLED` for a genuine cancellation (amends 022); `toJson` span line with `duration_nanos`, no timestamp | Accepted | 2026-11-01 |

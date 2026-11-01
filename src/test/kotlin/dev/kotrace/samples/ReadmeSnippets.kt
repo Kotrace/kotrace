@@ -12,6 +12,7 @@ import dev.kotrace.adapter.TracePolicy
 import dev.kotrace.currentSpan
 import dev.kotrace.event.ExceptionOrigin
 import dev.kotrace.event.ExceptionRecord
+import dev.kotrace.event.SpanRecord
 import dev.kotrace.event.addException
 import dev.kotrace.event.TraceRecord
 import dev.kotrace.event.emitException
@@ -127,6 +128,7 @@ internal object ReadmeSnippets {
     // Stand-ins for the guide's crash reporter, trace store and metrics.
     interface CrashReporter { fun record(cause: Throwable, traceId: String?) }
     interface TraceStore { fun append(record: ExceptionRecord, propagated: Boolean) }
+    interface SpanExporter { fun enqueue(span: SpanRecord, startUnixNanos: Long, endUnixNanos: Long) }
     private object Metrics { fun count(name: String, tag: String) = Unit }
 
     // README snippet: guide-report-crash
@@ -186,6 +188,25 @@ internal object ReadmeSnippets {
                     ExceptionOrigin.PROPAGATED -> store.append(record, propagated = true)
                     null -> Unit                             // live records only; a report record always has one
                 }
+            }
+        }
+    }
+    // end README snippet
+
+    // README snippet: guide-span-exporter
+    class SpanExporterSink(private val exporter: SpanExporter) : ReportAdapter {
+        override val policy = object : TracePolicy {
+            override val acceptsSpanRecords = true              // one SpanRecord per span, before its events
+            override fun acceptsAttribute(key: String, value: String) = key == "http.status"
+        }
+
+        override fun onReport(status: TraceStatus, records: Sequence<TraceRecord>) {
+            if (status == TraceStatus.OK) return                // tail selection: failed and cancelled traces only
+            // One anchor per report turns monotonic nanos into approximate Unix time (backlog D08).
+            val anchor = System.currentTimeMillis() * 1_000_000 - System.nanoTime()
+            records.filterIsInstance<SpanRecord>().forEach { span ->
+                val end = span.endNanos ?: return@forEach       // open when the report began: its end never comes
+                exporter.enqueue(span, startUnixNanos = anchor + span.atNanos, endUnixNanos = anchor + end)
             }
         }
     }

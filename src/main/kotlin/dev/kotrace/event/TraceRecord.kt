@@ -1,6 +1,7 @@
 package dev.kotrace.event
 
 import dev.kotrace.Span
+import dev.kotrace.SpanStatus
 import dev.kotrace.TraceLink
 import java.util.Locale
 
@@ -10,7 +11,8 @@ import java.util.Locale
  * carries the identity a backend rebuilds the tree from.
  *
  * There is one kind per [SpanEvent] kind: a [LogRecord], a [NamedRecord], and an [ExceptionRecord], which a report
- * marks with an [ExceptionOrigin] (ADR-019). A `when` over them is exhaustive.
+ * marks with an [ExceptionOrigin] (ADR-019). A fourth, [SpanRecord], is the span itself, delivered only by a report
+ * and only to an adapter that asks for it (ADR-044). A `when` over them is exhaustive.
  *
  * **Identity.** [traceId], [spanId] and [parentId] are the span's W3C ids; [parentId] is null on a root. [operation]
  * is the span's name. All four are null on a span-less emit ([emitLog], [emitNamed], [emitException], ADR-010), which
@@ -86,12 +88,14 @@ internal fun Span.recordOf(
  *
  * **Shape (ADR-004/032).**
  * - Always present: `trace_id`, `span_id`, `parent_span_id` and `operation`, written as `null` on a span-less record,
- *   then `kind` (`log`, `event` or `exception`) and that kind's value: `message`, `name`, or `exception`.
+ *   then `kind` (`log`, `event`, `exception` or `span`) and that kind's value: `message`, `name`, `exception`, or
+ *   for a span `span_status` (`ok`, `error` or `cancelled`) and `duration_nanos`, `null` while the span is open.
  * - Present only when not empty: the event's `attributes`, the span's `span_attributes`, `links` and `scope_id`, and
  *   `exception_origin`, written as `propagated` for [ExceptionOrigin.PROPAGATED] or `explicit` for
  *   [ExceptionOrigin.EXPLICIT]; a birthplace or live record omits it.
  * - Both attribute maps are **nested** objects, so a consumer's key can never collide with a reserved one.
- * - [TraceRecord.atNanos] is not rendered: it is no wall-clock time.
+ * - [TraceRecord.atNanos] is not rendered, nor a span's end: neither is a wall-clock time. A span's
+ *   `duration_nanos` is a measured length, which means the same in any process.
  *
  * **A shape of its own.** The keys are kotrace's, not a vendor schema such as the Elastic Common Schema: a pipeline
  * that wants `trace.id` or `error.type` renames them at ingest. A line carries no timestamp, so the log shipper
@@ -136,6 +140,17 @@ fun TraceRecord.toJson(): String = buildString {
                 ExceptionOrigin.EXPLICIT -> appendOptionalField("exception_origin", "explicit")
                 ExceptionOrigin.BIRTHPLACE, null -> Unit
             }
+        }
+        is SpanRecord -> {
+            appendField("kind", "span"); append(',')
+            // Spelled out, so renaming a constant never changes the wire (ADR-044).
+            val status = when (record.status) {
+                SpanStatus.OK -> "ok"
+                SpanStatus.ERROR -> "error"
+                SpanStatus.CANCELLED -> "cancelled"
+            }
+            appendField("span_status", status); append(',')
+            append("\"duration_nanos\":").append(record.endNanos?.let { (it - record.atNanos).toString() } ?: "null")
         }
     }
     appendObject("span_attributes", spanAttributes)

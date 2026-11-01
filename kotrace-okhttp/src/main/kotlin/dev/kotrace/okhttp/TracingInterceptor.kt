@@ -38,9 +38,10 @@ import java.util.concurrent.atomic.AtomicBoolean
  * (`/users/alice@example.com`, `Authorization`); a report sink drops those unless its policy opts in. The span's
  * method, status and timing are the only non-sensitive facts.
  *
- * A call its caller canceled ends its span ERROR without recording an exception, like a cancelled span (ADR-022).
- * A call that hit its `callTimeout` is a failure and is recorded, although OkHttp enforces the timeout by canceling
- * the call. The span's `http.outcome` attribute (`canceled` or `call_timeout`) tells them apart for a non-sensitive sink.
+ * A call its caller canceled ends its span `CANCELLED` without recording an exception, like a cancelled span
+ * (ADR-022/044). A call that hit its `callTimeout` is a failure: it ends `ERROR` and is recorded, although OkHttp
+ * enforces the timeout by canceling the call. The span's `http.outcome` attribute (`canceled` or `call_timeout`) names
+ * the cause for a non-sensitive sink.
  * A timeout records OkHttp's own cancellation exception; the caller receives it wrapped in an
  * `InterruptedIOException("timeout")`.
  *
@@ -129,7 +130,8 @@ class TracingInterceptor(
                     }
                 }
             }
-            if (canceled && !timedOut) span.end(SpanStatus.ERROR) else span.end(SpanStatus.ERROR, t)
+            // A call its caller cancelled is no failure (ADR-044); a timeout is.
+            if (canceled && !timedOut) span.end(SpanStatus.CANCELLED) else span.end(SpanStatus.ERROR, t)
             throw t
         }
 

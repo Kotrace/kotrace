@@ -9,6 +9,7 @@ import dev.kotrace.adapter.ReportAdapter
 import dev.kotrace.adapter.TracePolicy
 import dev.kotrace.currentSpan
 import dev.kotrace.event.ExceptionRecord
+import dev.kotrace.event.SpanRecord
 import dev.kotrace.event.TraceRecord
 import dev.kotrace.event.addException
 import dev.kotrace.event.emitException
@@ -141,6 +142,7 @@ class OutcomeMatrixTest {
         val report: List<String>,
         val propagated: List<String>,
         val explicitOff: List<String>,
+        val spans: List<String>,
     )
 
     private fun run(scenario: Scenario): Row {
@@ -149,7 +151,8 @@ class OutcomeMatrixTest {
         val default = Report(object : TracePolicy {})
         val propagated = Report(object : TracePolicy { override val acceptsPropagatedException = true })
         val explicitOff = Report(object : TracePolicy { override val acceptsExplicitException = false })
-        Kotrace.install(listOf(live, default, propagated, explicitOff), returnVerdictClassifier = ::classify)
+        val spans = Report(object : TracePolicy { override val acceptsSpanRecords = true })
+        Kotrace.install(listOf(live, default, propagated, explicitOff, spans), returnVerdictClassifier = ::classify)
         // Virtual time: a timeout fires only when the test scheduler advances, never from DefaultExecutor's thread, so
         // the caller's timeout cannot cancel the root before it opens.
         runTest { runCatching { scenario.block() } }
@@ -160,16 +163,17 @@ class OutcomeMatrixTest {
             report = default.exceptions.map { it.where() + it.originSuffix() },
             propagated = propagated.exceptions.map { it.where() + it.originSuffix() },
             explicitOff = explicitOff.exceptions.map { it.where() + it.originSuffix() },
+            spans = spans.spans.map { "${it.operation} ${it.status.name}" },
         )
     }
 
     private fun render(rows: List<Row>): String = buildString {
-        appendLine("| Scenario | Trace status | Live exceptions | Report: default | Report: `acceptsPropagatedException` | Report: `acceptsExplicitException = false` |")
-        append("|---|---|---|---|---|---|")
+        appendLine("| Scenario | Trace status | Live exceptions | Report: default | Report: `acceptsPropagatedException` | Report: `acceptsExplicitException = false` | Report: `acceptsSpanRecords`, span statuses |")
+        append("|---|---|---|---|---|---|---|")
         rows.forEach { row ->
             appendLine()
             append("| ${row.scenario} | ${row.status} | ${row.live.cell()} | ${row.report.cell()} | ")
-            append("${row.propagated.cell()} | ${row.explicitOff.cell()} |")
+            append("${row.propagated.cell()} | ${row.explicitOff.cell()} | ${row.spans.cell()} |")
         }
     }
 
@@ -192,9 +196,13 @@ class OutcomeMatrixTest {
     private class Report(override val policy: TracePolicy) : ReportAdapter {
         val statuses = mutableListOf<TraceStatus>()
         val exceptions = mutableListOf<ExceptionRecord>()
+        val spans = mutableListOf<SpanRecord>()
         override fun onReport(status: TraceStatus, records: Sequence<TraceRecord>) {
             statuses += status
-            exceptions += records.filterIsInstance<ExceptionRecord>()
+            records.forEach { record ->
+                if (record is ExceptionRecord) exceptions += record
+                if (record is SpanRecord) spans += record
+            }
         }
     }
 

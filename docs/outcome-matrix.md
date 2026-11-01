@@ -17,32 +17,34 @@ Read the columns as:
 - **Report** columns: the `ExceptionRecord`s in the report, with their `ExceptionOrigin`, under three policies:
   the default, one that also takes the `PROPAGATED` copies of a climb (a trace viewer), and one that refuses
   `EXPLICIT` records because it already shipped them live (ADR-040).
+- **Report: `acceptsSpanRecords`**: the `SpanRecord`s a span exporter's report holds (ADR-044), in tree order, as
+  `operation` and `SpanStatus`. A cancelled span reads `CANCELLED`, never `ERROR`.
 
 Every scenario installs a classifier that maps `Result.failure(e)` to `ReturnVerdict.Failure(e)` and one sentinel
 value to `ReturnVerdict.Failure(null)` (ADR-018/020).
 
 <!-- outcome-matrix:start -->
-| Scenario | Trace status | Live exceptions | Report: default | Report: `acceptsPropagatedException` | Report: `acceptsExplicitException = false` |
-|---|---|---|---|---|---|
-| root returns normally | OK | — | — | — | — |
-| root throws | ERROR | root `root` | root `root` BIRTHPLACE | root `root` BIRTHPLACE | root `root` BIRTHPLACE |
-| child throws, escapes the root | ERROR | child `child`, root `child` | child `child` BIRTHPLACE | root `child` PROPAGATED, child `child` BIRTHPLACE | child `child` BIRTHPLACE |
-| child throws, root catches and recovers | OK | child `child` | child `child` BIRTHPLACE | child `child` BIRTHPLACE | child `child` BIRTHPLACE |
-| child throws, root catches and rethrows the same | ERROR | child `child`, root `child` | child `child` BIRTHPLACE | root `child` PROPAGATED, child `child` BIRTHPLACE | child `child` BIRTHPLACE |
-| child throws, root catches and throws a new one | ERROR | child `child`, root `root` | root `root` BIRTHPLACE, child `child` BIRTHPLACE | root `root` BIRTHPLACE, child `child` BIRTHPLACE | root `root` BIRTHPLACE, child `child` BIRTHPLACE |
-| `addException`, root returns normally | OK | root `explicit` | root `explicit` EXPLICIT | root `explicit` EXPLICIT | — |
-| `addException`, root throws another | ERROR | root `explicit`, root `root` | root `explicit` EXPLICIT, root `root` BIRTHPLACE | root `explicit` EXPLICIT, root `root` BIRTHPLACE | root `root` BIRTHPLACE |
-| `addException(e)`, root throws the same `e` | ERROR | root `same`, root `same` | root `same` EXPLICIT, root `same` BIRTHPLACE | root `same` EXPLICIT, root `same` BIRTHPLACE | root `same` BIRTHPLACE |
-| `emitException` outside any span | no report | span-less `span-less` | — | — | — |
-| root returns `Result.failure` (classifier `Failure(throwable)`) | ERROR | root `returned` | root `returned` BIRTHPLACE | root `returned` BIRTHPLACE | root `returned` BIRTHPLACE |
-| root returns a value classified `Failure(null)` | ERROR | — | — | — | — |
-| root `returnedOutcome` = OK over a returned `Result.failure` | OK | root `returned` | root `returned` BIRTHPLACE | root `returned` BIRTHPLACE | root `returned` BIRTHPLACE |
-| root throws, with a `returnedOutcome` = OK | ERROR | root `root` | root `root` BIRTHPLACE | root `root` BIRTHPLACE | root `root` BIRTHPLACE |
-| root `returnedOutcome` = ERROR with an attached throwable | ERROR | — | root `attached` BIRTHPLACE | root `attached` BIRTHPLACE | root `attached` BIRTHPLACE |
-| child `returnedOutcome` = ERROR with an attached throwable | OK | — | — | — | — |
-| `withTimeout` inside the root expires | ERROR | root `TimeoutCancellationException` | root `TimeoutCancellationException` BIRTHPLACE | root `TimeoutCancellationException` BIRTHPLACE | root `TimeoutCancellationException` BIRTHPLACE |
-| active root awaits a `Deferred` cancelled elsewhere | ERROR | root `JobCancellationException` | root `JobCancellationException` BIRTHPLACE | root `JobCancellationException` BIRTHPLACE | root `JobCancellationException` BIRTHPLACE |
-| caller's `withTimeout` around the root expires | CANCELLED | — | — | — | — |
+| Scenario | Trace status | Live exceptions | Report: default | Report: `acceptsPropagatedException` | Report: `acceptsExplicitException = false` | Report: `acceptsSpanRecords`, span statuses |
+|---|---|---|---|---|---|---|
+| root returns normally | OK | — | — | — | — | root OK |
+| root throws | ERROR | root `root` | root `root` BIRTHPLACE | root `root` BIRTHPLACE | root `root` BIRTHPLACE | root ERROR |
+| child throws, escapes the root | ERROR | child `child`, root `child` | child `child` BIRTHPLACE | root `child` PROPAGATED, child `child` BIRTHPLACE | child `child` BIRTHPLACE | root ERROR, child ERROR |
+| child throws, root catches and recovers | OK | child `child` | child `child` BIRTHPLACE | child `child` BIRTHPLACE | child `child` BIRTHPLACE | root OK, child ERROR |
+| child throws, root catches and rethrows the same | ERROR | child `child`, root `child` | child `child` BIRTHPLACE | root `child` PROPAGATED, child `child` BIRTHPLACE | child `child` BIRTHPLACE | root ERROR, child ERROR |
+| child throws, root catches and throws a new one | ERROR | child `child`, root `root` | root `root` BIRTHPLACE, child `child` BIRTHPLACE | root `root` BIRTHPLACE, child `child` BIRTHPLACE | root `root` BIRTHPLACE, child `child` BIRTHPLACE | root ERROR, child ERROR |
+| `addException`, root returns normally | OK | root `explicit` | root `explicit` EXPLICIT | root `explicit` EXPLICIT | — | root OK |
+| `addException`, root throws another | ERROR | root `explicit`, root `root` | root `explicit` EXPLICIT, root `root` BIRTHPLACE | root `explicit` EXPLICIT, root `root` BIRTHPLACE | root `root` BIRTHPLACE | root ERROR |
+| `addException(e)`, root throws the same `e` | ERROR | root `same`, root `same` | root `same` EXPLICIT, root `same` BIRTHPLACE | root `same` EXPLICIT, root `same` BIRTHPLACE | root `same` BIRTHPLACE | root ERROR |
+| `emitException` outside any span | no report | span-less `span-less` | — | — | — | — |
+| root returns `Result.failure` (classifier `Failure(throwable)`) | ERROR | root `returned` | root `returned` BIRTHPLACE | root `returned` BIRTHPLACE | root `returned` BIRTHPLACE | root ERROR |
+| root returns a value classified `Failure(null)` | ERROR | — | — | — | — | root ERROR |
+| root `returnedOutcome` = OK over a returned `Result.failure` | OK | root `returned` | root `returned` BIRTHPLACE | root `returned` BIRTHPLACE | root `returned` BIRTHPLACE | root ERROR |
+| root throws, with a `returnedOutcome` = OK | ERROR | root `root` | root `root` BIRTHPLACE | root `root` BIRTHPLACE | root `root` BIRTHPLACE | root ERROR |
+| root `returnedOutcome` = ERROR with an attached throwable | ERROR | — | root `attached` BIRTHPLACE | root `attached` BIRTHPLACE | root `attached` BIRTHPLACE | root OK |
+| child `returnedOutcome` = ERROR with an attached throwable | OK | — | — | — | — | root OK, child OK |
+| `withTimeout` inside the root expires | ERROR | root `TimeoutCancellationException` | root `TimeoutCancellationException` BIRTHPLACE | root `TimeoutCancellationException` BIRTHPLACE | root `TimeoutCancellationException` BIRTHPLACE | root ERROR |
+| active root awaits a `Deferred` cancelled elsewhere | ERROR | root `JobCancellationException` | root `JobCancellationException` BIRTHPLACE | root `JobCancellationException` BIRTHPLACE | root `JobCancellationException` BIRTHPLACE | root ERROR |
+| caller's `withTimeout` around the root expires | CANCELLED | — | — | — | — | root CANCELLED |
 <!-- outcome-matrix:end -->
 
 ## What the table says

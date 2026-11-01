@@ -54,10 +54,10 @@ import kotlinx.coroutines.withContext
  * [Kotrace.strictWhenNotInstalled]: in a debug build that armed it, a missing install throws on purpose (ADR-011).
  * A JVM-fatal error always propagates.
  *
- * **Cancellation.** A span whose own coroutine is cancelled is marked ERROR but records no exception, so no sink
- * sees a `JobCancellationException` (ADR-022). The test is on the type: blocking code that surfaces a cancellation
- * as something else (`IOException("Canceled")`, `ClosedByInterruptException`) is recorded as a failure. Rethrow it
- * as a `CancellationException` if it should read as a cancellation.
+ * **Cancellation.** A span whose own coroutine is cancelled is marked [SpanStatus.CANCELLED] and records no
+ * exception, so no sink sees a `JobCancellationException` (ADR-022/044). The test is on the type: blocking code that
+ * surfaces a cancellation as something else (`IOException("Canceled")`, `ClosedByInterruptException`) is recorded as
+ * a failure. Rethrow it as a `CancellationException` if it should read as a cancellation.
  *
  * **In `flow { }`, never `emit` inside a span:** the block runs under `withContext`, so `emit` fails with "Flow
  * invariant is violated". Compute inside the span and emit outside it, as `spanInFlowUsage` shows.
@@ -280,20 +280,20 @@ private suspend fun <T> executeSpan(
         } else {
             runIsolated(FaultPhase.RETURN_VERDICT_CLASSIFIER, "span.classify", recover = { ReturnVerdict.Success }) { classifier(value) }
         }
-        if (verdict is ReturnVerdict.Failure) opened.markStatus(SpanStatus.ERROR)
         val returnedThrowable = (verdict as? ReturnVerdict.Failure)?.throwable
-        // A returned cancellation of this coroutine is not recorded, like a thrown one (ADR-022).
+        // A returned cancellation of this coroutine is not recorded, like a thrown one, and marks CANCELLED (ADR-022/044).
         val cancelled = returnedThrowable?.isCancellationOfCurrentCoroutine() == true
+        if (verdict is ReturnVerdict.Failure) opened.markStatus(if (cancelled) SpanStatus.CANCELLED else SpanStatus.ERROR)
         if (returnedThrowable != null && !cancelled) {
             // Recorded with its lineage key, like a thrown failure (ADR-015). A recording fault never fails the return.
             runIsolated(phase = null, recover = {}) { opened.recordPropagatedException(returnedThrowable) }
         }
         SpanExit.Completed(value, verdict, cancelled)
     } catch (t: Throwable) {
-        opened.markStatus(SpanStatus.ERROR)
         // A cancellation of this coroutine is not this span's failure; a CancellationException while it is still
-        // active (an inner withTimeout) is (ADR-022).
+        // active (an inner withTimeout) is (ADR-022/044).
         val cancelled = t.isCancellationOfCurrentCoroutine()
+        opened.markStatus(if (cancelled) SpanStatus.CANCELLED else SpanStatus.ERROR)
         if (cancelled) return SpanExit.Escaped(t, cancelled = true)
         // Every enclosing span records the climbing throwable; its lineage key collapses the climb to the
         // birthplace (ADR-015). Recording must never replace it: a non-fatal failure rides it as suppressed (ADR-013).

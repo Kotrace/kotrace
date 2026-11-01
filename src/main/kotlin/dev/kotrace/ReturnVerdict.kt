@@ -3,6 +3,8 @@ package dev.kotrace
 /**
  * What a [ReturnVerdictClassifier] decides about a span's normally returned value (ADR-020): [Success], or a
  * [Failure] that marks the span [SpanStatus.ERROR] and supplies the auto-root's default [TraceStatus.ERROR] verdict.
+ * A failure whose throwable is a genuine cancellation of the span's own coroutine marks it [SpanStatus.CANCELLED]
+ * instead (ADR-022/044).
  *
  * It decides the span's status on a normal return only: a thrown failure is classified by kotrace itself, and the
  * trace's verdict is [TraceStatus].

@@ -44,11 +44,13 @@ flowchart TD
   SP ==>|"reportTrace(status), at trace end"| WALK{{"one DFS walk"}}
   WALK --> LR["LogRecord"]
   WALK --> XR["ExceptionRecord (birthplace)"]
+  WALK --> SR["SpanRecord (acceptsSpanRecords)"]
 
   LIVE["LiveAdapter.onLive<br/>LogRecord + NamedRecord + ExceptionRecord"]
   LR --> REPORT
   XR --> REPORT
-  REPORT["ReportAdapter.onReport(status)<br/>breadcrumbs + crash"]
+  SR --> REPORT
+  REPORT["ReportAdapter.onReport(status)<br/>breadcrumbs + crash + spans on request"]
 ```
 
 Capture is **normalized** (events on the span, id stored once); egress is **denormalized** (flat,
@@ -74,14 +76,14 @@ interchange.
 | **span** | **one node** (`Span`): a name, a status, `traits`, `attributes`, `events` (the birthplace `ExceptionEvent`, if any, lives among them; there is no `error` field), a parent. Entity, not value (§2). |
 | **link** | a **cross-trace causal edge** (`TraceLink` on `Span.links`): a reference to another *trace* by `trace_id` only (no `span_id`; ADR-009), the OpenTelemetry *span link* shape. Distinct from `parentId` (the **in-tree** edge). Birth-set like `attributes`; surfaces on the wire as a `links` array on every record off the span. Never interchange with **parent**. |
 | **operation** | the owning **`Span.name`** at egress: its label as the flat **join key** on every `TraceRecord` and `toJson` column. `name` = the in-memory field; `operation` = that value as the wire/backend-join key (OpenTelemetry-aligned). A **wire contract** (§2), and distinct from `NamedRecord.name` (the *event*'s name). |
-| **record** | a flat **egress line** (`TraceRecord`), lifted off a span at fan-out. Three kinds ↓. |
+| **record** | a flat **egress line** (`TraceRecord`), lifted off a span at fan-out. Three kinds per event ↓, plus a `SpanRecord` for the span itself, in a report only and only to an adapter that asks (`acceptsSpanRecords`, ADR-044). |
 | **log** | a **breadcrumb** event (`Span.log` → `LogEvent` → `LogRecord`): a line bound to a span. |
 | **event** (named) | a **named / analytics** occurrence (`Span.addNamed` → `NamedEvent` → `NamedRecord`, OpenTelemetry `addEvent` shape). |
 | **exception** | the **birthplace crash**: an `ExceptionEvent` on `Span.events` (read via the `Span.exception` extension, §8), surfaced at egress as `ExceptionRecord`. It is subject only to `TracePolicy.acceptsEvent` (which defaults to keeping it), so a breadcrumb filter never drops the crash unless a policy explicitly covers exceptions; it does **not** bypass every gate. |
 | **span-less emit** | `emitLog` / `emitNamed` / `emitException` (ADR-010): the **orphan** counterparts of the span-scoped `log` / `addNamed` / `addException`, for an occurrence outside any span (an app-lifecycle or push callback, a non-coroutine entry). Fanned **live-only** through the resolved configuration (context override, else the process-wide `Kotrace` configuration ↓), gated by policy; a record with null identity, carrying the active `withScope`'s `scope_id`, else the installed fallback's (ADR-038). `emitException(cause, attributes)` (and `addException(cause, attributes)`) populate record-level `ExceptionRecord.spanAttributes` while the event stays object-only (ADR-005). |
-| **report** | the **tail** fan-out at trace end (`ReportAdapter.onReport(status)`): buffered tree, breadcrumbs + crash, gated by status. |
+| **report** | the **tail** fan-out at trace end (`ReportAdapter.onReport(status)`): buffered tree, breadcrumbs + crash, and spans for an adapter that asks, gated by status. |
 | **live** | the **per-event** fan-out as it happens (`LiveAdapter.onLive`): immediate, ungated by trace status. |
-| **status** | `SpanStatus` = one node's outcome; `TraceStatus` = the whole trace's verdict (`OK`/`ERROR`/`CANCELLED`). Separate on purpose (§2). |
+| **status** | `SpanStatus` = one node's outcome (`OK`/`ERROR`/`CANCELLED`, the last for a span whose own coroutine was cancelled, ADR-044); `TraceStatus` = the whole trace's verdict (`OK`/`ERROR`/`CANCELLED`). Separate on purpose (§2). |
 | **adapter** | a consumer sink (`TraceAdapter`): `ReportAdapter` (tail) or `LiveAdapter` (per-event). |
 
 ---
@@ -370,7 +372,7 @@ interface TracePolicy {
 | | Emitted | Kinds | Trigger |
 |---|---|---|---|
 | **Live** (`onLive`) | per event, immediately | `LogRecord`, `NamedRecord`, `ExceptionRecord` | any registered `LiveAdapter` |
-| **Report** (`onReport`) | once, at trace end | `LogRecord`, `ExceptionRecord` | `reportTrace(status)` |
+| **Report** (`onReport`) | once, at trace end | `LogRecord`, `ExceptionRecord`, and `SpanRecord` when the policy asks (ADR-044) | `reportTrace(status)` |
 
 A **named/analytics** event fires **live** (on success too), never tail-buffered for failure; that is the
 right lifecycle for product data. A **log breadcrumb** rides both: live if a live adapter is watching, and
@@ -551,6 +553,7 @@ gate in the model, per adapter). Same words, different scope.
 | "Event" (named) | a `LogRecord` with `event.name` (event ⊂ log) | `NamedEvent` (a kind of `SpanEvent`) |
 | Exception | a Span Event (`recordException`, serialized attrs) | an `ExceptionEvent` on `Span.events` (live `Throwable`, §8) |
 | Sampling | **head** sampler at the root (blind to outcome) | **tail**: buffer, decide at end |
+| Span export | a `SpanProcessor` per span end, then an exporter | a `SpanRecord` per span in the report, behind `acceptsSpanRecords`, tail-selected by status (ADR-044) |
 | PII | scrubbed by a collector processor, outside the app | **in the model**, per adapter, fail-closed at fan-out: a `sensitive` flag on a log message, and an attribute allowlist (`acceptsAttribute`, ADR-039) |
 | Cross-process | full context + resource + links | `traceparent` only |
 
@@ -582,7 +585,8 @@ genuinely bespoke boundaries.
 - `Success`;
 - `Failure(throwable)`: span `ERROR` plus the canonical exception lineage;
 - `Failure(null)`: span `ERROR`, no synthetic event or record. Without another event the adapter sees
-  `onReport(ERROR, emptySequence())`; backlog D01 covers span-granular export and D03 a safe symbolic reason.
+  `onReport(ERROR, emptySequence())`. An adapter that accepts span records still receives the span, `ERROR`, with
+  its identity and timing (ADR-044); backlog D03 covers a safe symbolic reason.
 
 It is overridable per call (`span(returnVerdictClassifier = …) { }`), including a local opt-out
 `{ ReturnVerdict.Success }`.
@@ -600,8 +604,9 @@ by precedence:
 
 **Cancellation versus failure (ADR-022).** A `CancellationException` means *cancellation* only while the running
 coroutine is no longer active; one seen while it is still active (an inner `withTimeout` expiring, a cancelled
-`Deferred` awaited) is a *failure*. A genuinely cancelled span is marked `ERROR` but records no exception, so a
-failing sibling's cancelled neighbours never reach a crash sink as `JobCancellationException` birthplaces.
+`Deferred` awaited) is a *failure*. A genuinely cancelled span is marked `CANCELLED` and records no exception
+(ADR-044), so a failing sibling's cancelled neighbours never reach a crash sink as `JobCancellationException`
+birthplaces, and a span exporter never shows them as failures.
 
 **Faults.** An optional, process-wide `FaultHook` (`Kotrace.installFaultHook`, ADR-037) observes any fault
 contained during fan-out (ADR-014), and any fault of kotrace's own while opening a span or reporting, which never
@@ -654,6 +659,8 @@ The rules below hold everywhere; the decisions that set them are cited. When one
 | A returned failure is classified only when bound to `T` | a result discarded in a `Unit` position is never a failure | ADR-018/020 |
 | `tracing()` sets Room's query executor | a `setQueryExecutor` after it replaces kotrace's, and suspend reads on Room 2.6 log nothing; an app passes its executor as `queryExecutor` | ADR-043 |
 | No persistence | an in-flight trace is lost on process death | backlog D02 |
-| Adapters see records, never spans | no span timing or span-ended signal; no faithful OTLP span export | backlog D01 |
-| A value-only failure has no record | `Failure(null)` reports `ERROR` with nothing to group on | backlog D03 |
+| Span records are report-only, frozen when the report begins | a span still open then has no end, and its later end reaches no adapter; nothing ships before the root ends | ADR-044, backlog D05 |
+| A span record carries no kind, and a link no span id | a span export maps every span to one kind and cannot convert links faithfully | backlog D06, D07 |
+| Every time is monotonic | a span exporter converts to Unix time with an anchor of its own, an approximation | ADR-044, backlog D08 |
+| A value-only failure has no reason | `Failure(null)` reports `ERROR`; a span exporter sees the span, never a symbol to group on | backlog D03 |
 

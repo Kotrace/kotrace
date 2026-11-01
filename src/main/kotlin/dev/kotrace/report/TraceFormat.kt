@@ -17,7 +17,7 @@ import java.util.concurrent.TimeUnit
 fun List<Span>.renderTree(): String {
     if (isEmpty()) return "(no spans)"
     val roots = rootsOf(this)
-    val tree = TraceTreeIndex(this, roots, FrozenTimelines(this))
+    val tree = TraceTreeIndex(this, roots, FrozenSpans(this))
     val sb = StringBuilder()
     roots.forEach { root -> sb.renderRoot(root, tree) }
     return sb.toString()
@@ -27,6 +27,7 @@ private fun StringBuilder.renderRoot(root: Span, tree: TraceTreeIndex) {
     val sb = this
     val base = root.startNanos
 
+    // A cancelled span is no failure (ADR-044); its status still shows on its line.
     fun failed(span: Span): Boolean = span.status == SpanStatus.ERROR || tree.childrenOf(span).any(::failed)
     sb.append(if (failed(root)) "✗ trace ${root.traceId} FAILED" else "✓ trace ${root.traceId}")
     sb.append("  (total ${durMs(root)}ms)\n")

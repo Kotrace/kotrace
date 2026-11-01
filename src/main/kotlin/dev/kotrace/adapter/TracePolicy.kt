@@ -10,6 +10,7 @@ import dev.kotrace.event.LogRecord
 import dev.kotrace.event.NamedEvent
 import dev.kotrace.event.NamedRecord
 import dev.kotrace.event.SpanEvent
+import dev.kotrace.event.SpanRecord
 import dev.kotrace.event.TraceRecord
 
 /**
@@ -50,6 +51,15 @@ interface TracePolicy {
      * records every such exception live; kotrace cannot prove delivery. Applied before [acceptsEvent], report only.
      */
     val acceptsExplicitException: Boolean get() = true
+
+    /**
+     * Whether the report hands this adapter one [dev.kotrace.event.SpanRecord] per span (ADR-044), before that span's
+     * events: the span's identity, timing and [dev.kotrace.SpanStatus], for a span backend. `false` by default, so an
+     * adapter that does not ask receives the records it always did. A span record passes [acceptsSpan], never
+     * [acceptsEvent], and carries only the attributes [acceptsAttribute] admits. Report only: a live adapter never
+     * receives one.
+     */
+    val acceptsSpanRecords: Boolean get() = false
 
     /**
      * Whether this adapter receives the attribute [key] = [value] (ADR-039). `false` by default, like
@@ -112,6 +122,7 @@ internal fun TracePolicy.attributeView(record: TraceRecord, phase: FaultPhase, f
             else record.copy(spanAttributes = spanAttributes, links = links, attributes = attributes)
         }
         is ExceptionRecord -> if (unchanged) record else record.copy(spanAttributes = spanAttributes, links = links)
+        is SpanRecord -> if (unchanged) record else record.copy(spanAttributes = spanAttributes, links = links)
     }
 }
 

@@ -5,6 +5,10 @@ import dev.kotrace.adapter.ReportAdapter
 import dev.kotrace.adapter.TracePolicy
 import dev.kotrace.event.ExceptionRecord
 import dev.kotrace.event.TraceRecord
+import dev.kotrace.report.renderTree
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -14,6 +18,7 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.util.concurrent.CopyOnWriteArrayList
 
@@ -50,6 +55,29 @@ class CancellationVerdictTest {
             }
         },
     )
+
+    @OptIn(UnredactedTraceRead::class)
+    @Test fun `a span whose own coroutine is cancelled is CANCELLED, records nothing, and fails no render`() = runBlocking {
+        val collector = SpanCollector()
+        val opened = CompletableDeferred<Unit>()
+        val job = launch(Dispatchers.Default) {
+            withContext(collector) {
+                span("screen") { span("load") { opened.complete(Unit); awaitCancellation() } }
+            }
+        }
+        opened.await()
+        job.cancelAndJoin()
+
+        assertEquals("both spans saw their own coroutine cancelled (ADR-044)", listOf(SpanStatus.CANCELLED, SpanStatus.CANCELLED), collector.spans.map { it.status })
+        assertTrue("a cancellation is no crash", collector.spans.all { it.events.isEmpty() })
+        assertTrue("and no failure in a render", collector.spans.renderTree().startsWith("✓"))
+    }
+
+    @Test fun `a timeout inside a span is a failure, so the span is ERROR`() = runBlocking {
+        val spans = collectTrace { span("op") { withTimeout(1) { delay(1_000) } } }
+
+        assertEquals(SpanStatus.ERROR, spans.single().status)
+    }
 
     @Test fun `a thrown failure stays ERROR when the job is cancelled after it was recorded`() = runBlocking {
         val outcome = Outcome()

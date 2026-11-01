@@ -226,7 +226,7 @@ class ExceptionOriginMarkingTest {
         val first = ExceptionEvent(IllegalStateException("first"), 1)
         root.appendEvent(first)
 
-        val index = TraceTreeIndex(listOf(root), listOf(root), FrozenTimelines(listOf(root))) // snapshot taken here
+        val index = TraceTreeIndex(listOf(root), listOf(root), FrozenSpans(listOf(root))) // snapshot taken here
 
         root.appendEvent(ExceptionEvent(IllegalStateException("late"), 2)) // appended AFTER indexing
 

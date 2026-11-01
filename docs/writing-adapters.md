@@ -13,6 +13,7 @@ The rationale behind each rule is in the ADR it cites. Every code block below is
 | Exception records | every one, every level of a climb, recovered ones too; `origin` is `null` | deduped by the policy; `origin` is set |
 | Logs | yes | yes, buffered in the tree |
 | Named (analytics) events | yes | no |
+| Spans themselves (`SpanRecord`) | no | when the policy sets `acceptsSpanRecords` (ADR-044) |
 | Span-less emits (`emit*`) | yes | no: there is no tree |
 | Use for | analytics, a debug watch, an exception that must ship whatever the outcome | a crash verdict, breadcrumbs of a failed flow |
 
@@ -170,7 +171,37 @@ class TraceViewerSink(private val store: TraceStore) : ReportAdapter {
 Match `origin` exhaustively, with no `else`. An `else` hides a new origin, as `EXPLICIT` was in 0.6.0, and an
 adapter compiled against an older version throws `NoWhenBranchMatchedException` on it.
 
-## 7. Checklist
+## 7. Recipe: a span exporter
+
+A span backend (OTLP, Tempo, Jaeger) wants every span with its timing and status, eventless ones included. One
+policy line asks for them, and the status gate keeps tail selection: export only the traces worth keeping.
+
+<!-- snippet: guide-span-exporter -->
+```kotlin
+class SpanExporterSink(private val exporter: SpanExporter) : ReportAdapter {
+    override val policy = object : TracePolicy {
+        override val acceptsSpanRecords = true              // one SpanRecord per span, before its events
+        override fun acceptsAttribute(key: String, value: String) = key == "http.status"
+    }
+
+    override fun onReport(status: TraceStatus, records: Sequence<TraceRecord>) {
+        if (status == TraceStatus.OK) return                // tail selection: failed and cancelled traces only
+        // One anchor per report turns monotonic nanos into approximate Unix time (backlog D08).
+        val anchor = System.currentTimeMillis() * 1_000_000 - System.nanoTime()
+        records.filterIsInstance<SpanRecord>().forEach { span ->
+            val end = span.endNanos ?: return@forEach       // open when the report began: its end never comes
+            exporter.enqueue(span, startUnixNanos = anchor + span.atNanos, endUnixNanos = anchor + end)
+        }
+    }
+}
+```
+
+A span still open when the report begins, such as a bridge span whose call outlived the root, arrives with no end;
+skip it or show it open, and never invent one. `acceptsSpan` filters span records like logs, but an exception record
+passes `acceptsEvent` alone, so a policy that rejects spans can leave a crash without its span. Map
+`SpanStatus.CANCELLED` to an unset status rather than an error: a cancelled span is no failure.
+
+## 8. Checklist
 
 - [ ] The policy admits, by name, every attribute key this adapter may ship, and no others.
 - [ ] `acceptsSensitive` stays `false` unless the output never leaves the device.

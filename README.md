@@ -12,7 +12,7 @@ contract, so an OpenTelemetry upgrade later is additive.
   `attributes`, values a sink should see (`span(…, attributes = …)` when it opens, `putAttribute` later), which
   ride every record as `spanAttributes`, to each adapter whose policy accepts them, and are never a filter key.
 - `span(name) { … }`: opens a child of the ambient span, closes it on return, marks it `ERROR` and
-  rethrows on failure. Instrumentation only: it observes and rethrows, never swallows. A failure carried as a
+  rethrows on failure, or marks it `CANCELLED` when its own coroutine is cancelled (ADR-044). Instrumentation only: it observes and rethrows, never swallows. A failure carried as a
   returned value counts too: `returnVerdictClassifier` marks the span (ADR-020) and `returnedOutcome` sets the
   trace's outcome at an auto-root (ADR-016).
 - `SpanContext`: carries the current span ambiently; also mirrors it to a `ThreadLocal` so non-suspend
@@ -29,7 +29,8 @@ contract, so an OpenTelemetry upgrade later is additive.
   that wants only `INFO`+ says so in `acceptsEvent`). Events are stored unconditionally, and the message lambda
   is not built for a log no adapter accepts.
 - `TraceRecord` / `ReportAdapter` / `SpanCollector.reportTrace(status)`: fan a trace out at its end as one
-  searchable record per log line + the birthplace throwable, each tagged `trace_id` / `span_id` /
+  searchable record per log line + the birthplace throwable, and one per span for an adapter that asks
+  (`acceptsSpanRecords`, ADR-044), each tagged `trace_id` / `span_id` /
   `parent_span_id`, to every `ReportAdapter` in the resolved `TraceConfig`. Backends group by any of the ids.
   The status is `OK`, `ERROR` or `CANCELLED`. A `withTimeout` inside the span is `ERROR`; a `withTimeout` that
   the caller wraps around a top-level span cancels it, so the trace is `CANCELLED` with no exception record
@@ -112,7 +113,10 @@ contract, so an OpenTelemetry upgrade later is additive.
   escaped) for a JSON log pipeline (ELK, Loki) to ingest `trace_id`/`span_id` as queryable fields. The keys are
   kotrace's own, not the Elastic Common Schema, and a line has no timestamp: the pipeline renames keys and stamps the
   time as it reads. For another shape, a time per event or an exception's message, build the line from the record's
-  public fields.
+  public fields. A `SpanRecord` renders as `"kind":"span"` with its `span_status` and `duration_nanos`.
+- `SpanRecord`: the span itself in a report, for a span backend (OTLP, Tempo, Jaeger), to an adapter whose policy
+  sets `acceptsSpanRecords` (ADR-044): one per span, before its events, an eventless span included, with its start,
+  end and `SpanStatus`. See the span exporter recipe in [docs/writing-adapters.md](docs/writing-adapters.md).
 - `TraceLink`: a birth-set, cross-trace edge: `span(name, links = listOf(TraceLink(otherTraceId)))` points
   the span at another *trace* by its `trace_id` (the OpenTelemetry span-link shape), joining two separate trees where
   `Span.parentId` (an in-tree edge) cannot. Trace-level, `trace_id` only, no `span_id` (ADR-009). It rides

@@ -119,7 +119,7 @@ class ReportSnapshotTest {
         withContext(TraceConfig(emptyList())) {
             val span = Span("t", "s", null, "root", startNanos = 0L)
             span.log { "before" }
-            val frozen = FrozenTimelines(listOf(span))
+            val frozen = FrozenSpans(listOf(span))
             span.log { "after" }
 
             fun messages() = frozen.of(span).map { (it as LogEvent).message }

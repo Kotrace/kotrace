@@ -76,7 +76,7 @@ Two tools answer most questions:
 - **A `CANCELLED` report holds an exception record.** A child's failure was on its way up when the caller cancelled
   the root; the record stays (ADR-022).
 - **A cancelled child or sibling records no `JobCancellationException`.** By design: a span whose own coroutine is
-  cancelled records no exception (ADR-022). A `CancellationException` thrown through a coroutine that is still
+  cancelled is `CANCELLED` and records no exception (ADR-022/044). A `CancellationException` thrown through a coroutine that is still
   active is a failure and *is* recorded: awaiting a `Deferred` that something else cancelled, or an inner
   `withTimeout`. A blocking API that surfaces cancellation as another type (`IOException("Canceled")`) is recorded as a
   failure; rethrow it as a `CancellationException`.
@@ -88,6 +88,12 @@ Two tools answer most questions:
 - **A log made inside `onLive` never reaches the live adapters.** It is stored but not fanned out again, so a sink
   cannot recurse into itself (ADR-025).
 - **A sensitive log is missing.** `acceptsSensitive` defaults to `false`.
+- **A span exporter receives no span.** `acceptsSpanRecords` defaults to `false`, and span records come from a
+  report only, never live (ADR-044). With it set, `acceptsSpan` still filters them.
+- **A span arrives with no end.** It was still open when the report began, such as a bridge span whose call
+  outlived the root; that report never learns of its end (ADR-044, backlog D05).
+- **A crash arrives without its span.** The policy's `acceptsSpan` rejected the span, but an exception record passes
+  `acceptsEvent` alone (ADR-044).
 - **A Room read logs no SQL, while writes do.** The query executor was set after `.tracing()`, replacing the one
   that carries the span to Room's thread; Room 2.6 runs a suspend read outside the caller's coroutine. Pass it as
   `.tracing(queryExecutor = …)` instead (ADR-043). If no SQL is logged at all, a `setQueryCallback` after

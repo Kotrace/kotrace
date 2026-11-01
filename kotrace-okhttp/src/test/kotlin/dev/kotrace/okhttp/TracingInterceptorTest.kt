@@ -244,7 +244,7 @@ class TracingInterceptorTest {
 
         assertTrue("the call's own exception still reaches the caller", thrown is IOException)
         val span = collector.httpSpan()
-        assertEquals(SpanStatus.ERROR, span.status)
+        assertEquals("a cancellation is no failure either (ADR-044)", SpanStatus.CANCELLED, span.status)
         assertTrue("a cancellation is not a crash", span.events.none { it is ExceptionEvent })
         assertEquals("canceled", span.attributes["http.outcome"])
     }

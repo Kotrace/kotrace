@@ -12,15 +12,28 @@ in [DECISIONS.md](DECISIONS.md). A binary-breaking change bumps the version and 
   mirrored onto the calling thread, for a library callback that reads the thread mirrors itself (ADR-043).
 - `kotrace-room`: `tracing(queryExecutor = …)`, the executor Room runs queries on, wrapped so each task carries the
   trace context of the thread that submitted it (ADR-043).
+- `SpanRecord` and `TracePolicy.acceptsSpanRecords`: a report hands an adapter that asks one record per span, before
+  its events, with its start, end and status, so a span exporter can be built on the adapter API (ADR-044).
+  `toJson` renders it as `"kind":"span"` with `span_status` and `duration_nanos`.
+- `SpanStatus.CANCELLED`: a span whose own coroutine is cancelled, and a call its caller canceled in `kotrace-okhttp`
+  (ADR-044).
 
 **Fixed**
 
 - `kotrace-room`: on Room 2.6, a suspend `@Query` read logged no SQL. Room launches it outside the caller's
   coroutine, so no span reached its thread; `tracing()`'s query executor now carries it (ADR-043).
 
-**Upgrading from 0.6.** 0.7.0 is binary-compatible: the 0.6.0 `tracing()` signature is kept. It changes how Room is
-built:
+**Upgrading from 0.6.** 0.7.0 breaks source for an exhaustive `when` over `TraceRecord` or `SpanStatus`, and changes
+a cancelled span's status and how Room is built:
 
+- **Source.** `TraceRecord` gains `SpanRecord` and `SpanStatus` gains `CANCELLED` (ADR-044): an exhaustive `when` over
+  either stops compiling until it handles them. An adapter compiled against 0.6.0 never receives a `SpanRecord`,
+  since `acceptsSpanRecords` defaults to `false`; code compiled against 0.6.0 with an exhaustive `when` over
+  `SpanStatus` throws `NoWhenBranchMatchedException` on its first cancelled span, so recompile it. The 0.6.0
+  `tracing()` signature is kept.
+- **Behaviour.** A span whose own coroutine is cancelled, and an OkHttp call its caller canceled, now end
+  `CANCELLED`, no longer `ERROR`; a timeout stays `ERROR`. A check for `status == ERROR` stops matching them, and
+  `renderTree` no longer shows such a trace as failed. `TraceStatus` is unchanged.
 - **Behaviour.** `tracing()` now sets Room's query executor. One set with `setQueryExecutor` before it is replaced,
   and one set after it replaces kotrace's, so suspend reads on Room 2.6 log nothing again.
 - **Migrate.** Pass the executor you set with `setQueryExecutor` as `tracing(queryExecutor = …)` instead. An app that

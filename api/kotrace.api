@@ -115,6 +115,7 @@ public final class dev/kotrace/SpanContextKt {
 }
 
 public final class dev/kotrace/SpanStatus : java/lang/Enum {
+	public static final field CANCELLED Ldev/kotrace/SpanStatus;
 	public static final field ERROR Ldev/kotrace/SpanStatus;
 	public static final field OK Ldev/kotrace/SpanStatus;
 	public static fun getEntries ()Lkotlin/enums/EnumEntries;
@@ -237,6 +238,7 @@ public abstract interface class dev/kotrace/adapter/TracePolicy {
 	public fun getAcceptsExplicitException ()Z
 	public fun getAcceptsPropagatedException ()Z
 	public fun getAcceptsSensitive ()Z
+	public fun getAcceptsSpanRecords ()Z
 }
 
 public final class dev/kotrace/adapter/TracePolicy$DefaultImpls {
@@ -246,6 +248,7 @@ public final class dev/kotrace/adapter/TracePolicy$DefaultImpls {
 	public static fun getAcceptsExplicitException (Ldev/kotrace/adapter/TracePolicy;)Z
 	public static fun getAcceptsPropagatedException (Ldev/kotrace/adapter/TracePolicy;)Z
 	public static fun getAcceptsSensitive (Ldev/kotrace/adapter/TracePolicy;)Z
+	public static fun getAcceptsSpanRecords (Ldev/kotrace/adapter/TracePolicy;)Z
 }
 
 public abstract interface annotation class dev/kotrace/bridge/KotraceIntegrationApi : java/lang/annotation/Annotation {
@@ -411,6 +414,36 @@ public final class dev/kotrace/event/NamedRecord : dev/kotrace/event/AttributedR
 
 public abstract interface class dev/kotrace/event/SpanEvent {
 	public abstract fun getAtNanos ()J
+}
+
+public final class dev/kotrace/event/SpanRecord : dev/kotrace/event/TraceRecord {
+	public fun <init> (Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;JLjava/lang/String;Ljava/util/Map;Ljava/util/List;Ljava/lang/Long;Ldev/kotrace/SpanStatus;)V
+	public synthetic fun <init> (Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;JLjava/lang/String;Ljava/util/Map;Ljava/util/List;Ljava/lang/Long;Ldev/kotrace/SpanStatus;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1 ()Ljava/lang/String;
+	public final fun component10 ()Ldev/kotrace/SpanStatus;
+	public final fun component2 ()Ljava/lang/String;
+	public final fun component3 ()Ljava/lang/String;
+	public final fun component4 ()Ljava/lang/String;
+	public final fun component5 ()J
+	public final fun component6 ()Ljava/lang/String;
+	public final fun component7 ()Ljava/util/Map;
+	public final fun component8 ()Ljava/util/List;
+	public final fun component9 ()Ljava/lang/Long;
+	public final fun copy (Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;JLjava/lang/String;Ljava/util/Map;Ljava/util/List;Ljava/lang/Long;Ldev/kotrace/SpanStatus;)Ldev/kotrace/event/SpanRecord;
+	public static synthetic fun copy$default (Ldev/kotrace/event/SpanRecord;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;JLjava/lang/String;Ljava/util/Map;Ljava/util/List;Ljava/lang/Long;Ldev/kotrace/SpanStatus;ILjava/lang/Object;)Ldev/kotrace/event/SpanRecord;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getAtNanos ()J
+	public final fun getEndNanos ()Ljava/lang/Long;
+	public fun getLinks ()Ljava/util/List;
+	public fun getOperation ()Ljava/lang/String;
+	public fun getParentId ()Ljava/lang/String;
+	public fun getScopeId ()Ljava/lang/String;
+	public fun getSpanAttributes ()Ljava/util/Map;
+	public fun getSpanId ()Ljava/lang/String;
+	public final fun getStatus ()Ldev/kotrace/SpanStatus;
+	public fun getTraceId ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
 }
 
 public final class dev/kotrace/event/SpanlessEmitKt {

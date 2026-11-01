@@ -49,6 +49,8 @@ fun startSpan(
 /**
  * Ends a span opened by [startSpan] with [status], recording [error] if given.
  *
+ * A cancellation ends with [SpanStatus.CANCELLED] and no [error], since a cancellation is no failure (ADR-044).
+ *
  * Only the first call counts (ADR-023): a later one can neither flip the status nor record twice. A non-fatal
  * failure to record [error] is attached to it as suppressed (ADR-013), so the caller's `throw error` still throws
  * the application's throwable.

@@ -2,6 +2,8 @@
 
 - **Date:** 2026-09-25
 - **Status:** Accepted
+- **Amended:** 2026-11-01 by [ADR-044](adr-044-span-records-in-the-report.md): a cancelled span is
+  `SpanStatus.CANCELLED`, no longer `ERROR`.
 - **Affects:** `span` (`Trace.kt`): the escaping-outcome rule of the auto-root, the returned-`CausedBy`
   verdict, and what a span's catch records. No API change; a **semantic** change to `TraceStatus` and to which
   `ExceptionRecord`s a trace emits.
