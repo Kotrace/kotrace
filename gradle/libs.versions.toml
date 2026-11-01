@@ -22,6 +22,8 @@ agp = "9.1.1"
 # A consumer floor although `compileOnly` (ADR-027): `kotrace-room` is compiled and tested against it. The last
 # release before Room's Kotlin Multiplatform rewrite (2.7), which many apps have not taken.
 room = "2.6.1"
+# Test only: the newest Room, which `:room28-test` compiles `kotrace-room`'s real-database tests against.
+room28Test = "2.8.4"
 # Test only: generates the in-memory Room database `kotrace-room` tests run on. Matched to the Camailux app, whose
 # composite build refuses a second KSP version.
 ksp = "2.3.5"
@@ -45,6 +47,9 @@ room-runtime = { module = "androidx.room:room-runtime", version.ref = "room" }
 arch-core-runtime = { module = "androidx.arch.core:core-runtime", version = "2.2.0" }
 room-ktx = { module = "androidx.room:room-ktx", version.ref = "room" }
 room-compiler = { module = "androidx.room:room-compiler", version.ref = "room" }
+room28-runtime = { module = "androidx.room:room-runtime", version.ref = "room28Test" }
+room28-ktx = { module = "androidx.room:room-ktx", version.ref = "room28Test" }
+room28-compiler = { module = "androidx.room:room-compiler", version.ref = "room28Test" }
 robolectric = { module = "org.robolectric:robolectric", version.ref = "robolectric" }
 jmh-core = { module = "org.openjdk.jmh:jmh-core", version.ref = "jmh" }
 jmh-generator-annprocess = { module = "org.openjdk.jmh:jmh-generator-annprocess", version.ref = "jmh" }

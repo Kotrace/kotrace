@@ -163,7 +163,7 @@ support. A newer version in your build wins through normal dependency resolution
 | Kotlin (your compiler) | 2.1 (the artifacts carry Kotlin 2.2 metadata and declare `kotlin-stdlib` 2.2.0) |
 | `kotlinx-coroutines-core` | 1.10.2 |
 | OkHttp (`kotrace-okhttp`) | 4.12.0 (the tests also run on 5.x) |
-| Room (`kotrace-room`) | 2.6.1 (`compileOnly`: your own version is used) |
+| Room (`kotrace-room`) | 2.6.1 (`compileOnly`: your own version is used; the real-database tests also run on 2.8.4) |
 | Android `minSdk` | 21 (`kotrace-room` declares it; the core and `kotrace-okhttp` call no newer Android API) |
 | Java (JVM modules) | 11, bytecode and API |
 

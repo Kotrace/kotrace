@@ -18,6 +18,8 @@ rootProject.name = "kotrace"
 
 include(":kotrace-okhttp")
 include(":kotrace-room")
+// Unpublished: `kotrace-room`'s real-database tests, compiled and run against the newest Room.
+include(":room28-test")
 // Bill of materials: aligns the versions of every published module.
 include(":kotrace-bom")
 // Unpublished: the JMH harness, kept apart so JMH never reaches a consumer, and the runnable showcase.

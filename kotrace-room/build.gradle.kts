@@ -31,6 +31,9 @@ android {
         unitTests.isReturnDefaultValues = true
     }
 
+    // The real-database tests: their own directory, because `:room28-test` compiles them against Room 2.8 too.
+    sourceSets.named("test") { kotlin.srcDir("src/testDatabase/kotlin") }
+
     publishing {
         singleVariant("release") { withSourcesJar() }
     }
