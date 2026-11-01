@@ -6,7 +6,9 @@ public final class dev/kotrace/room/TracingQueryCallback : androidx/room/RoomDat
 }
 
 public final class dev/kotrace/room/TracingQueryCallbackKt {
-	public static final fun tracing (Landroidx/room/RoomDatabase$Builder;Ljava/util/Map;Landroidx/room/RoomDatabase$QueryCallback;Ljava/util/concurrent/Executor;)Landroidx/room/RoomDatabase$Builder;
+	public static final synthetic fun tracing (Landroidx/room/RoomDatabase$Builder;Ljava/util/Map;Landroidx/room/RoomDatabase$QueryCallback;Ljava/util/concurrent/Executor;)Landroidx/room/RoomDatabase$Builder;
+	public static final fun tracing (Landroidx/room/RoomDatabase$Builder;Ljava/util/Map;Landroidx/room/RoomDatabase$QueryCallback;Ljava/util/concurrent/Executor;Ljava/util/concurrent/Executor;)Landroidx/room/RoomDatabase$Builder;
 	public static synthetic fun tracing$default (Landroidx/room/RoomDatabase$Builder;Ljava/util/Map;Landroidx/room/RoomDatabase$QueryCallback;Ljava/util/concurrent/Executor;ILjava/lang/Object;)Landroidx/room/RoomDatabase$Builder;
+	public static synthetic fun tracing$default (Landroidx/room/RoomDatabase$Builder;Ljava/util/Map;Landroidx/room/RoomDatabase$QueryCallback;Ljava/util/concurrent/Executor;Ljava/util/concurrent/Executor;ILjava/lang/Object;)Landroidx/room/RoomDatabase$Builder;
 }
 

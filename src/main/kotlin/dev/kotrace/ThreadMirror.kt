@@ -24,4 +24,14 @@ internal class ThreadMirror<T : Any> {
     fun restore(previous: T?) {
         local.set(previous)
     }
+
+    /** Runs [block] with [value] mirrored onto this thread, then puts back what was there. */
+    fun <R> mirroring(value: T?, block: () -> R): R {
+        val previous = swap(value)
+        try {
+            return block()
+        } finally {
+            restore(previous)
+        }
+    }
 }

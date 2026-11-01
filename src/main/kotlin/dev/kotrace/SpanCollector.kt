@@ -6,7 +6,7 @@ import java.util.concurrent.CopyOnWriteArrayList
 import kotlin.coroutines.AbstractCoroutineContextElement
 import kotlin.coroutines.CoroutineContext
 
-private val collectorMirror = ThreadMirror<SpanCollector>()
+internal val collectorMirror = ThreadMirror<SpanCollector>()
 
 /**
  * The [SpanCollector] in the current coroutine, or null. Non-suspend code reads [currentThreadCollector] instead.

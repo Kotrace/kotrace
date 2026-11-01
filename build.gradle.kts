@@ -3,6 +3,8 @@ plugins {
     // Declared here so `:kotrace-room` resolves one AGP version. AGP 9 has built-in Kotlin, so that module applies
     // no Kotlin plugin.
     alias(libs.plugins.android.library) apply false
+    // Test only, for `:kotrace-room`'s Room database; declared here beside AGP for the same reason.
+    alias(libs.plugins.ksp) apply false
     alias(libs.plugins.dokka)
     `java-library`
     `maven-publish`

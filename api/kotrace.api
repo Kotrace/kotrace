@@ -272,6 +272,7 @@ public final class dev/kotrace/bridge/TraceHandoff {
 	public final fun getParent ()Ldev/kotrace/Span;
 	public final fun getScopeId ()Ljava/lang/String;
 	public final fun withCapturedConfig (Lkotlin/jvm/functions/Function0;)Ljava/lang/Object;
+	public final fun withCapturedContext (Lkotlin/jvm/functions/Function0;)Ljava/lang/Object;
 }
 
 public final class dev/kotrace/bridge/TraceHandoff$Companion {

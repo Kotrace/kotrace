@@ -4,6 +4,29 @@ What changed in each release, and what a consumer must do to upgrade. Every chan
 in [DECISIONS.md](DECISIONS.md). A binary-breaking change bumps the version and gets an entry here in the same commit
 (AGENTS.md § Build And Test).
 
+## 0.7.0 (unreleased)
+
+**Added**
+
+- `TraceHandoff.withCapturedContext`: runs a block with the captured span, collector, configuration and ambient scope
+  mirrored onto the calling thread, for a library callback that reads the thread mirrors itself (ADR-043).
+- `kotrace-room`: `tracing(queryExecutor = …)`, the executor Room runs queries on, wrapped so each task carries the
+  trace context of the thread that submitted it (ADR-043).
+
+**Fixed**
+
+- `kotrace-room`: on Room 2.6, a suspend `@Query` read logged no SQL. Room launches it outside the caller's
+  coroutine, so no span reached its thread; `tracing()`'s query executor now carries it (ADR-043).
+
+**Upgrading from 0.6.** 0.7.0 is binary-compatible: the 0.6.0 `tracing()` signature is kept. It changes how Room is
+built:
+
+- **Behaviour.** `tracing()` now sets Room's query executor. One set with `setQueryExecutor` before it is replaced,
+  and one set after it replaces kotrace's, so suspend reads on Room 2.6 log nothing again.
+- **Migrate.** Pass the executor you set with `setQueryExecutor` as `tracing(queryExecutor = …)` instead. An app that
+  sets only `setTransactionExecutor` ran its queries there too, since Room copies one executor to the other: pass that
+  executor as `queryExecutor` as well to keep them there.
+
 ## 0.6.0 (2026-11-01)
 
 **Added**

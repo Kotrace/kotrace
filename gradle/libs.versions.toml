@@ -22,6 +22,11 @@ agp = "9.1.1"
 # A consumer floor although `compileOnly` (ADR-027): `kotrace-room` is compiled and tested against it. The last
 # release before Room's Kotlin Multiplatform rewrite (2.7), which many apps have not taken.
 room = "2.6.1"
+# Test only: generates the in-memory Room database `kotrace-room` tests run on. Matched to the Camailux app, whose
+# composite build refuses a second KSP version.
+ksp = "2.3.5"
+# Test only: an Android runtime on the JVM, for that database.
+robolectric = "4.16.1"
 jmh = "1.37"
 androidCompileSdk = "36"
 # A consumer floor: an app below it fails at manifest merge. The core and `kotrace-okhttp` run there too, so they
@@ -36,6 +41,11 @@ okhttp = { module = "com.squareup.okhttp3:okhttp", version.ref = "okhttp" }
 okhttp-mockwebserver = { module = "com.squareup.okhttp3:mockwebserver", version.ref = "okhttp" }
 mockk = { module = "io.mockk:mockk", version.ref = "mockk" }
 room-runtime = { module = "androidx.room:room-runtime", version.ref = "room" }
+# Compile only: Room's default query executor, which `kotrace-room` wraps. The version Room's floor depends on.
+arch-core-runtime = { module = "androidx.arch.core:core-runtime", version = "2.2.0" }
+room-ktx = { module = "androidx.room:room-ktx", version.ref = "room" }
+room-compiler = { module = "androidx.room:room-compiler", version.ref = "room" }
+robolectric = { module = "org.robolectric:robolectric", version.ref = "robolectric" }
 jmh-core = { module = "org.openjdk.jmh:jmh-core", version.ref = "jmh" }
 jmh-generator-annprocess = { module = "org.openjdk.jmh:jmh-generator-annprocess", version.ref = "jmh" }
 # Build only (build-logic): the ABI dumper KGP's `abiValidation()` runs, at the compiler's version, and AGP's
@@ -52,3 +62,4 @@ dokka-gradle-plugin = { module = "org.jetbrains.dokka:dokka-gradle-plugin", vers
 kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
 dokka = { id = "org.jetbrains.dokka", version.ref = "dokka" }
 android-library = { id = "com.android.library", version.ref = "agp" }
+ksp = { id = "com.google.devtools.ksp", version.ref = "ksp" }

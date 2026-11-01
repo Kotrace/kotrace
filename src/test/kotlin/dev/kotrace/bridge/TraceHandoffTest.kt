@@ -7,10 +7,14 @@ import dev.kotrace.TraceConfig
 import dev.kotrace.adapter.LiveAdapter
 import dev.kotrace.adapter.TracePolicy
 import dev.kotrace.currentSpan
+import dev.kotrace.currentThreadCollector
 import dev.kotrace.currentThreadConfig
+import dev.kotrace.currentThreadScopeId
+import dev.kotrace.currentThreadSpan
 import dev.kotrace.event.TraceRecord
 import dev.kotrace.event.log
 import dev.kotrace.span
+import dev.kotrace.withScope
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withContext
 import org.junit.After
@@ -92,6 +96,40 @@ class TraceHandoffTest {
         assertEquals(1, flowOverride.records.size)
         assertTrue("nothing leaks to the process-wide adapter", global.records.isEmpty())
         assertNull("the thread's mirror is restored after the block", seenAfter)
+    }
+
+    @Test fun `withCapturedContext mirrors the whole captured context onto another thread, then restores it`() = runTest {
+        val collector = SpanCollector()
+        val config = TraceConfig(emptyList())
+        var parent: Span? = null
+        val handoff = withContext(collector + config) {
+            withScope("journey-1") {
+                span("caller") {
+                    parent = currentSpan()
+                    TraceHandoff.captureOrNull()!!
+                }
+            }
+        }
+
+        val (inside, after) = onPlainThread {
+            val inside = handoff.withCapturedContext {
+                listOf(currentThreadSpan(), currentThreadCollector(), currentThreadConfig(), currentThreadScopeId())
+            }
+            inside to listOf(currentThreadSpan(), currentThreadCollector(), currentThreadConfig(), currentThreadScopeId())
+        }
+
+        assertEquals("each thread read returns what it did at capture", listOf(parent, collector, config, "journey-1"), inside)
+        assertEquals("the thread's mirrors are restored after the block", listOf(null, null, null, null), after)
+    }
+
+    @Test fun `withCapturedContext mirrors the ambient scope only, so the fallback still resolves at emit`() = runTest {
+        Kotrace.install(emptyList(), fallbackScopeId = { "session-1" })
+        val handoff = withContext(SpanCollector()) { TraceHandoff.captureOrNull()!! }
+
+        val mirrored = onPlainThread { handoff.withCapturedContext { currentThreadScopeId() } }
+
+        assertEquals("the fallback is resolved into scopeId", "session-1", handoff.scopeId)
+        assertNull("but never mirrored as if it were ambient", mirrored)
     }
 
     @Test fun `with no override captured, emits resolve the process-wide configuration as usual`() = runTest {

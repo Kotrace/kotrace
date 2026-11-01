@@ -23,7 +23,7 @@ rule. Behavior is tabulated in [docs/outcome-matrix.md](docs/outcome-matrix.md),
 | Cross-trace links | 009 (042 rejected) | ARCHITECTURE § Vocabulary, `TraceLink` KDoc |
 | Span-less emits and scopes | 010 → 038 | README § Span-less emits & scopes |
 | Install and configuration | 011, 033, 037, 038 | README § Where to start |
-| OkHttp and Room integrations | 021 → 023 → 024 → 035 | ARCHITECTURE §7 |
+| OkHttp and Room integrations | 021 → 023 → 024 → 035 → 043 | ARCHITECTURE §7 |
 | API, packaging and documentation | 007 → 030, 027, 028, 031 | AGENTS.md, README § Coordinates |
 
 ## Index
@@ -72,3 +72,4 @@ rule. Behavior is tabulated in [docs/outcome-matrix.md](docs/outcome-matrix.md),
 | [040](decisions/adr-040-explicit-exception-origin.md) | A report stamps an `addException` record `ExceptionOrigin.EXPLICIT`, never `BIRTHPLACE`; `TracePolicy.acceptsExplicitException` (default `true`) lets a sink that ships explicit exceptions live drop it from the report; setting it `false` is the adapter's own claim of live delivery | Accepted | 2026-10-29 |
 | [041](decisions/adr-041-birthplace-already-explicit.md) | `addException` also records its throwable's canonical lineage; the report marks a birthplace/propagated record sharing it under the same root, and `TracePolicy.acceptsExplicitlyRecordedBirthplace` (default `true`) lets a sink keep one. **Rejected:** capture is not delivery, the evidence can be evicted, attached orphans and other roots stay unmatched | Rejected | 2026-10-29 |
 | [042](decisions/adr-042-spanless-emit-links.md) | `emitException` / `emitLog` / `emitNamed` take `links`, so a standalone record about another trace carries the edge without a throwaway root span. **Rejected:** recording inside the linked root already carries the link; the change breaks positional or trailing-lambda calls | Rejected | 2026-10-29 |
+| [043](decisions/adr-043-room-query-executor-carries-trace.md) | Room's query executor carries the submitting thread's trace context: `tracing(queryExecutor)` wraps it (else Room's default IO executor), so a Room 2.6 suspend read, launched outside the caller's coroutine, logs onto its span; the core mirrors through `TraceHandoff.withCapturedContext` | Accepted | 2026-11-01 |

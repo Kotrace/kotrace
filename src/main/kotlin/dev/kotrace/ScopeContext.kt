@@ -27,7 +27,7 @@ import kotlin.coroutines.CoroutineContext
 suspend fun <T> withScope(scopeId: String, block: suspend () -> T): T =
     withContext(ScopeContext(scopeId)) { block() }
 
-private val scopeMirror = ThreadMirror<String>()
+internal val scopeMirror = ThreadMirror<String>()
 
 /**
  * The [withScope] id in the current coroutine, or null outside any scope. Non-suspend code reads

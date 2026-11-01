@@ -10,7 +10,7 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlin.coroutines.AbstractCoroutineContextElement
 import kotlin.coroutines.CoroutineContext
 
-private val configMirror = ThreadMirror<TraceConfig>()
+internal val configMirror = ThreadMirror<TraceConfig>()
 
 /**
  * The per-flow [TraceConfig] in the current coroutine, or null. Non-suspend code reads [currentThreadConfig]

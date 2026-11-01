@@ -88,5 +88,9 @@ Two tools answer most questions:
 - **A log made inside `onLive` never reaches the live adapters.** It is stored but not fanned out again, so a sink
   cannot recurse into itself (ADR-025).
 - **A sensitive log is missing.** `acceptsSensitive` defaults to `false`.
+- **A Room read logs no SQL, while writes do.** The query executor was set after `.tracing()`, replacing the one
+  that carries the span to Room's thread; Room 2.6 runs a suspend read outside the caller's coroutine. Pass it as
+  `.tracing(queryExecutor = …)` instead (ADR-043). If no SQL is logged at all, a `setQueryCallback` after
+  `.tracing()` replaced kotrace's callback, or the policy refuses `sensitive` events.
 - **A record has a `scope_id` but no `trace_id`.** It was emitted outside any span, inside a `withScope` or under the
   installed fallback scope (ADR-010/038).

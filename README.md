@@ -251,8 +251,8 @@ client's `Call.Factory` with the factory and add the interceptor. A call passes 
 would consume its span: no active span or collector, and no live adapter.
 
 For Room, `kotrace-room/` (Android) holds `TracingQueryCallback` + the `RoomDatabase.Builder.tracing()`
-installer: SQL onto the active span, resolved via `currentThreadSpan()` (Room runs under the caller's coroutine,
-so the `ThreadContextElement` mirror reaches its executor thread).
+installer: SQL onto the active span, resolved via `currentThreadSpan()` on Room's query thread, where
+`tracing()`'s query executor carries the caller's span (ADR-043).
 
 Example: seed a `SpanCollector` on the context, run the flow, then read the tree:
 
@@ -354,10 +354,11 @@ See `demo/…/Main.kt` for a full end-to-end run.
 ## Using with Room
 
 One call in the builder. `db.tracing()` installs a `QueryCallback` that logs each statement's SQL onto
-the active span. It reads the span via `currentThreadSpan()` (no request-tag bridge like OkHttp needs) because
-Room runs a suspend query under the caller's coroutine (`withContext`), and `SpanContext` is a
-`ThreadContextElement`, so the span is mirrored onto Room's executor thread while the query runs. The
-callback is installed with a **direct executor** so it fires inline there.
+the active span. It reads the span via `currentThreadSpan()` on Room's query thread, so the callback is installed
+with a **direct executor** and fires inline there. The span reaches that thread through Room's query executor,
+which `tracing()` also sets: it carries the trace context of the thread submitting each query to the thread running
+it. A write runs under the caller's coroutine anyway, but Room 2.6 launches a suspend read in its own scope, which
+carries no span (ADR-043).
 
 <!-- snippet: room-setup -->
 ```kotlin
@@ -379,7 +380,11 @@ attribute, an adapter receives `level` on the record only if its `acceptsAttribu
 Room keeps a single query callback, so `.tracing()` replaces one you set with `setQueryCallback`. Pass yours as
 `.tracing(attrs, delegate = myCallback, delegateExecutor = myExecutor)` to keep it. `.tracing()` does not work
 with `setDriver(SQLiteDriver)`: Room rejects every query callback when a driver is configured, and `build()`
-throws. A trace sink that writes to a database built with `.tracing()` logs its own inserts (as `sensitive` lines)
+throws. Room also keeps a single query executor, so pass yours as `.tracing(attrs, queryExecutor = myExecutor)`
+rather than calling `setQueryExecutor`: one set before `.tracing()` is replaced, and one set after it replaces
+kotrace's, and suspend reads on Room 2.6 log nothing. Without one, Room's own default is used. If you set only
+`setTransactionExecutor`, Room ran your queries there too: pass it as `queryExecutor` to keep them there. A trace
+sink that writes to a database built with `.tracing()` logs its own inserts (as `sensitive` lines)
 onto every traced flow; give the sink its own, uninstrumented database. (For a sink's HTTP uploads, see "A
 trace sink's own uploads" under Using with OkHttp.)
 
@@ -447,7 +452,7 @@ coroutine (same idea as OkHttp's request-tag bridge).
 | `viewModelScope.launch`, suspend repo/usecase | yes | `span("…") { }` | ambient parent + collector flow with the context |
 | `withContext(Dispatchers.IO/Default)` hop | yes | `span { }` spans the hop | `SpanContext` is a `ThreadContextElement`, re-mirrored on the new thread |
 | Retrofit / OkHttp call | yes (call site) | `TracingCallFactory` + `TracingInterceptor`, call inside `span { }` | factory captures the flow's context on the coroutine thread; interceptor opens and ends one http span per execution on OkHttp's thread via the request tag (ADR-023) |
-| Room suspend DAO query | yes | `db.tracing()` | `QueryCallback` reads `currentThreadSpan()` inline on Room's executor thread |
+| Room suspend DAO query | yes | `db.tracing()` | `QueryCallback` reads `currentThreadSpan()` inline on Room's query thread, where `tracing()`'s query executor carries the caller's span (ADR-043) |
 | `CoroutineWorker.doWork()` | yes | `span { }` | it hands you a coroutine |
 | Non-suspend factory/interceptor invoked **inline on the coroutine thread** | no (but on that thread) | `startSpan()` / `Span.end()` (opt-in `@NonSuspendTracingBridge`) | the mirror is live inline: the one legitimate `startSpan` site (ADR-003) |
 | Non-suspend hook that only **attaches** to the open span | no (inline) | `currentThreadSpan()?.log(…)` / `emit*` | read the mirror, don't open a node |

@@ -82,9 +82,4 @@ _None open._
 
 ### Tests
 
-- **T01: no test runs a real Room database.** `tracing()`'s wiring is unit-tested against a mocked
-  `RoomDatabase.Builder`: the SQL logger on a direct executor, the app's callback forwarded inline or on its
-  executor. That Room then calls it inline on the query thread, under the caller's mirrored span, is Room's
-  behavior, read from its source and not exercised. **Trigger to repay:** a Room upgrade, or a report that SQL
-  lines stopped reaching spans. **Likely shape:** a Robolectric test with a KSP-generated in-memory database.
-
+_None open._

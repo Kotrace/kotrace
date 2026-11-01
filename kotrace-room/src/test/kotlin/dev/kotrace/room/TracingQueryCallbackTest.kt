@@ -14,6 +14,8 @@ import dev.kotrace.event.LogEvent
 import dev.kotrace.event.SpanEvent
 import dev.kotrace.event.TraceRecord
 import dev.kotrace.report.reportTrace
+import dev.kotrace.Span
+import dev.kotrace.currentThreadSpan
 import dev.kotrace.span
 import androidx.room.RoomDatabase
 import io.mockk.CapturingSlot
@@ -24,10 +26,15 @@ import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withContext
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotSame
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.util.concurrent.CompletableFuture
 import java.util.concurrent.Executor
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 
 /**
  * The callback logs the executed SQL onto the active span (resolved via the `currentThreadSpan()` ThreadLocal,
@@ -190,12 +197,53 @@ class TracingQueryCallbackTest {
         assertSame("only a task that never started counts as refused", own, thrown)
     }
 
-    /** A builder that records what `tracing()` installs; `setQueryCallback` is all it touches. */
+    /** A builder that records what `tracing()` installs: its query callback and its query executor. */
     private fun builderCapturing(
         callback: CapturingSlot<RoomDatabase.QueryCallback>,
         executor: CapturingSlot<Executor>,
+        queryExecutor: CapturingSlot<Executor> = slot(),
     ): RoomDatabase.Builder<RoomDatabase> = mockk {
         every { setQueryCallback(capture(callback), capture(executor)) } returns this
+        every { setQueryExecutor(capture(queryExecutor)) } returns this
+    }
+
+    @Test
+    fun `tracing() runs each query task on the app's executor, under the span of the thread that submitted it`() = runTest {
+        val queryExecutor = slot<Executor>()
+        val appExecutor = Executors.newSingleThreadExecutor()
+        builderCapturing(slot(), slot(), queryExecutor).tracing(queryExecutor = appExecutor)
+
+        val collector = SpanCollector()
+        var submittedUnder: Span? = null
+        val ranUnder = CompletableFuture<Pair<Thread, Span?>>()
+        withContext(collector + TraceConfig(listOf(captureAll))) {
+            span("account.get") {
+                submittedUnder = currentThreadSpan()
+                // Room 2.6 submits a suspend read like this: from the caller's thread, outside its coroutine.
+                queryExecutor.captured.execute { ranUnder.complete(Thread.currentThread() to currentThreadSpan()) }
+                ranUnder.get(5, TimeUnit.SECONDS)
+            }
+        }
+        val afterward = CompletableFuture<Span?>()
+        appExecutor.execute { afterward.complete(currentThreadSpan()) }
+        appExecutor.shutdown()
+
+        val (thread, span) = ranUnder.get()
+        assertNotSame("the task ran on the app's executor", Thread.currentThread(), thread)
+        assertSame("under the submitting thread's span", submittedUnder, span)
+        assertNull("the executor's thread is restored after the task", afterward.get(5, TimeUnit.SECONDS))
+    }
+
+    @Test
+    fun `tracing() passes a task through untouched when there is nothing to carry`() {
+        val queryExecutor = slot<Executor>()
+        val submitted = mutableListOf<Runnable>()
+        builderCapturing(slot(), slot(), queryExecutor).tracing(queryExecutor = { submitted += it })
+
+        val task = Runnable {}
+        queryExecutor.captured.execute(task)
+
+        assertSame("no span, no collector, no live adapter: the task itself", task, submitted.single())
     }
 
     @Test

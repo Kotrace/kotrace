@@ -1,7 +1,11 @@
 package dev.kotrace.room
 
+import android.annotation.SuppressLint
+import androidx.arch.core.executor.ArchTaskExecutor
 import androidx.room.RoomDatabase
 import dev.kotrace.adapter.FaultPhase
+import dev.kotrace.bridge.NonSuspendTracingBridge
+import dev.kotrace.bridge.TraceHandoff
 import dev.kotrace.bridge.runIsolated
 import dev.kotrace.currentThreadSpan
 import dev.kotrace.event.log
@@ -15,10 +19,10 @@ import java.util.concurrent.RejectedExecutionException
  * **What it logs.** One log per statement, `SQL <statement>`, on `currentThreadSpan()`. With no span on the thread,
  * nothing is logged. Bind arguments are never read, so their values never reach a log.
  *
- * **Why it must run inline.** Room runs a suspend query under the caller's coroutine, and kotrace mirrors that
- * coroutine's span onto Room's thread for the call. `currentThreadSpan()` sees the span only on that thread and only
- * during the call, so this callback must run on the query thread itself: [tracing] installs it with a direct
- * executor. Set by hand on any other executor, it finds no span and logs nothing.
+ * **Why it must run inline.** Room runs a query on its own thread, and `currentThreadSpan()` sees the caller's span
+ * there only while the query runs, so this callback must run on the query thread itself: [tracing] installs it with a
+ * direct executor. Set by hand on any other executor, it finds no span and logs nothing. How the span reaches Room's
+ * thread is [tracing]'s query executor.
  *
  * **Sensitive by default.** Each log is marked `sensitive`: a `@RawQuery` built by concatenation can put user values
  * into the SQL text itself. A sink receives it only if its policy opts in to sensitive events
@@ -71,6 +75,18 @@ private val DirectExecutor = Executor { it.run() }
  *     .build()
  * ```
  *
+ * **It takes Room's query executor too.** A suspend read does not always run under the caller's coroutine: Room 2.6
+ * launches it in its own scope, which carries no span to Room's thread. So this sets a query executor that carries
+ * the trace context of the thread submitting each task to the thread running it ([TraceHandoff.withCapturedContext]),
+ * over [queryExecutor], else Room's own default. So:
+ * - pass the executor you would set with `setQueryExecutor` as [queryExecutor] instead; a `setQueryExecutor` called
+ *   before this is replaced, and one called after it replaces kotrace's, so suspend reads on Room 2.6 log nothing;
+ * - Room runs transactions on the query executor when no transaction executor is set, so they are carried too. An app
+ *   that sets only `setTransactionExecutor`, and so ran its queries there, passes that executor as [queryExecutor]
+ *   to keep them there;
+ * - a task Room submits from a traced query thread, such as its invalidation refresh after a write, carries the
+ *   same span, and its SQL is logged there.
+ *
  * **It takes Room's query callback.** Room holds only one, and this sets it, with an executor that runs it inline on
  * the query thread, the only place the span is visible. So:
  * - a callback set earlier with `setQueryCallback` is replaced. Pass it as [delegate] instead: it receives every
@@ -86,13 +102,45 @@ private val DirectExecutor = Executor { it.run() }
  * **Not on a sink's own database.** A trace sink writing to a database built with this logs its own inserts onto
  * every traced flow; give the sink a database without it.
  */
+@SuppressLint("RestrictedApi")
 fun <T : RoomDatabase> RoomDatabase.Builder<T>.tracing(
     attributes: Map<String, String> = emptyMap(),
     delegate: RoomDatabase.QueryCallback? = null,
     delegateExecutor: Executor? = null,
+    queryExecutor: Executor? = null,
 ): RoomDatabase.Builder<T> {
     val forwarded = if (delegate == null || delegateExecutor == null) delegate else delegate.dispatchedTo(delegateExecutor)
+    // Room's own default query executor, a restricted API of the Room library group, read here only.
     return setQueryCallback(TracingQueryCallback(attributes, forwarded), DirectExecutor)
+        .setQueryExecutor((queryExecutor ?: ArchTaskExecutor.getIOThreadExecutor()).carryingTrace())
+}
+
+/** [tracing] without its query executor parameter, kept for code compiled against an earlier kotrace. */
+@Deprecated("Replaced by the overload taking queryExecutor.", level = DeprecationLevel.HIDDEN)
+fun <T : RoomDatabase> RoomDatabase.Builder<T>.tracing(
+    attributes: Map<String, String> = emptyMap(),
+    delegate: RoomDatabase.QueryCallback? = null,
+    delegateExecutor: Executor? = null,
+): RoomDatabase.Builder<T> = tracing(attributes, delegate, delegateExecutor, queryExecutor = null)
+
+/**
+ * Wraps this executor so each task runs with the trace context of the thread that submitted it
+ * ([TraceHandoff.withCapturedContext]): the span a query runs under reaches Room's thread even when Room launched the
+ * query outside the caller's coroutine. A task submitted with nothing to carry runs unwrapped.
+ *
+ * The capture runs on the submitting thread, inside Room's dispatch, so a fault in it is contained and reported to
+ * the `FaultHook` as [dev.kotrace.adapter.FaultPhase.DATABASE] (ADR-035), and the task runs unwrapped. Only a JVM-fatal
+ * error and the strict-not-installed failure (ADR-011) propagate, failing the dispatch.
+ */
+@OptIn(NonSuspendTracingBridge::class)
+internal fun Executor.carryingTrace(): Executor {
+    val delegate = this
+    return Executor { task ->
+        val handoff = runIsolated(FaultPhase.DATABASE, "database.query.capture", recover = { null }) {
+            TraceHandoff.captureOrNull()
+        }
+        delegate.execute(if (handoff == null) task else Runnable { handoff.withCapturedContext { task.run() } })
+    }
 }
 
 /**

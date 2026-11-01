@@ -501,9 +501,12 @@ pure-JVM consumer drags neither:
   logged as **`sensitive`** events, bounded to `bodyLimit` bytes; a response body is copied as the caller reads
   it (tee-on-read, never read ahead), and streaming and one-shot bodies are omitted (ADR-024).
 - **`kotrace-room`**: logs each query's SQL template (never the bound arguments) onto the active span, resolved
-  via the `currentThreadSpan()` ThreadLocal (Room runs the suspend query under the caller's coroutine). Room
-  keeps one query callback, so an app's own callback is passed as `delegate` and still runs (ADR-028); a fault in
-  logging reaches the `FaultHook` as `FaultPhase.DATABASE` and never fails the query (ADR-035).
+  via the `currentThreadSpan()` ThreadLocal on Room's query thread. The span gets there through Room's query
+  executor, which `tracing()` wraps so each task runs under `TraceHandoff.withCapturedContext` of the thread that
+  submitted it: Room 2.6 launches a suspend read outside the caller's coroutine (ADR-043). Room keeps one query
+  callback and one query executor, so an app's own are passed as `delegate` and `queryExecutor` and still run
+  (ADR-028/043); a fault in logging or in the capture reaches the `FaultHook` as `FaultPhase.DATABASE` and never
+  fails the query (ADR-035).
 - **Writing an integration** (Ktor, a database driver): every telemetry step goes through `runIsolated`
   (`@KotraceIntegrationApi`, ADR-035), the rule the core itself follows: a fault is told to the hook with the
   integration's `FaultPhase` and a `faultMessage`, and the traced call's own result or exception is never
@@ -649,6 +652,7 @@ The rules below hold everywhere; the decisions that set them are cited. When one
 | A live record snapshots the span's attributes | a value `putAttribute` stamps later reaches the report only | ADR-001/032 |
 | The report is delivered for every status | each sink gates on `status` itself | ADR-013 |
 | A returned failure is classified only when bound to `T` | a result discarded in a `Unit` position is never a failure | ADR-018/020 |
+| `tracing()` sets Room's query executor | a `setQueryExecutor` after it replaces kotrace's, and suspend reads on Room 2.6 log nothing; an app passes its executor as `queryExecutor` | ADR-043 |
 | No persistence | an in-flight trace is lost on process death | backlog D02 |
 | Adapters see records, never spans | no span timing or span-ended signal; no faithful OTLP span export | backlog D01 |
 | A value-only failure has no record | `Failure(null)` reports `ERROR` with nothing to group on | backlog D03 |

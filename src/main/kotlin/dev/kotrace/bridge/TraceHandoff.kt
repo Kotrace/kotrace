@@ -4,6 +4,8 @@ import dev.kotrace.Kotrace
 import dev.kotrace.Span
 import dev.kotrace.SpanCollector
 import dev.kotrace.TraceConfig
+import dev.kotrace.collectorMirror
+import dev.kotrace.configMirror
 import dev.kotrace.adapter.FaultPhase
 import dev.kotrace.currentThreadCollector
 import dev.kotrace.currentThreadConfig
@@ -12,6 +14,8 @@ import dev.kotrace.currentThreadSpan
 import dev.kotrace.internal.liveFanOutRunning
 import dev.kotrace.resolveScopeId
 import dev.kotrace.resolvedThreadConfig
+import dev.kotrace.scopeMirror
+import dev.kotrace.spanMirror
 import dev.kotrace.withMirroredConfig
 import dev.kotrace.withScope
 
@@ -31,6 +35,9 @@ import dev.kotrace.withScope
  * - [parent], [collector] and [scopeId] go to [dev.kotrace.bridge.startSpan], which opens a span **per execution**
  *   under them on any thread.
  * - [withCapturedConfig] runs the bridge's emits against the flow's configuration, so they reach the same adapters.
+ * - [withCapturedContext] runs code that reads the thread mirrors itself, such as a library callback calling
+ *   [currentThreadSpan], as if on the flow's own thread: the span, collector, configuration and ambient scope id are
+ *   all mirrored.
  *
  * Immutable and thread-safe: capture once, use from any thread.
  */
@@ -40,9 +47,23 @@ class TraceHandoff private constructor(
     val collector: SpanCollector?,
     private val config: TraceConfig?,
     val scopeId: String?,
+    private val ambientScopeId: String?,
 ) {
     /** Runs [block] so every emit inside resolves the flow's configuration, as the flow's own code would. */
     fun <T> withCapturedConfig(block: () -> T): T = withMirroredConfig(config, block)
+
+    /**
+     * Runs [block] with the whole captured context mirrored onto this thread, then restores what the thread held:
+     * inside, [currentThreadSpan] is [parent] and the other thread reads return what they returned at capture. The
+     * scope mirrored is the ambient [withScope] id, not [scopeId], so the installed fallback still applies only
+     * where no scope is ambient. For code a bridge does not write, which reads the mirrors itself.
+     */
+    fun <T> withCapturedContext(block: () -> T): T =
+        spanMirror.mirroring(parent) {
+            collectorMirror.mirroring(collector) {
+                configMirror.mirroring(config) { scopeMirror.mirroring(ambientScopeId, block) }
+            }
+        }
 
     companion object {
         /**
@@ -65,7 +86,14 @@ class TraceHandoff private constructor(
             if (parent == null && collector == null && resolvedThreadConfig()?.liveAdapters.isNullOrEmpty()) {
                 return null
             }
-            return TraceHandoff(parent, collector, config, resolveScopeId(currentThreadScopeId(), FaultPhase.SPAN_OPEN))
+            val ambientScopeId = currentThreadScopeId()
+            return TraceHandoff(
+                parent,
+                collector,
+                config,
+                resolveScopeId(ambientScopeId, FaultPhase.SPAN_OPEN),
+                ambientScopeId,
+            )
         }
     }
 }

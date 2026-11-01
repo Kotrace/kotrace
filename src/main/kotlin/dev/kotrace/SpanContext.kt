@@ -5,7 +5,7 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlin.coroutines.AbstractCoroutineContextElement
 import kotlin.coroutines.CoroutineContext
 
-private val spanMirror = ThreadMirror<Span>()
+internal val spanMirror = ThreadMirror<Span>()
 
 /** The [Span] in the current coroutine, or null. Non-suspend code reads [currentThreadSpan] instead. */
 suspend fun currentSpan(): Span? = currentCoroutineContext()[SpanContext]?.span
