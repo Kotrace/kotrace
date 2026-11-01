@@ -478,7 +478,9 @@ to ingest `trace_id`/`span_id` as queryable fields, with the event's `attributes
 `span_attributes` nested under their own objects (ADR-004/032) and any cross-trace **`links`** as a nested
 `[{"trace_id":…,"attributes":{…}}]` array (ADR-009, omitted when empty): the machine, PII-safe counterpart to
 the unredacted, `@UnredactedTraceRead`-gated `renderTree` (ADR-008). A delivered record's JSON holds only the
-attributes its adapter accepted (ADR-039).
+attributes its adapter accepted (ADR-039). The keys are kotrace's own, not a vendor schema such as the Elastic Common
+Schema, and a line carries no timestamp, since `atNanos` is no wall-clock time: the pipeline renames keys and stamps
+the time at ingest. An adapter that needs another shape builds it from the record's public fields.
 
 ---
 

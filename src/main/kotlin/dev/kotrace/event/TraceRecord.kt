@@ -93,8 +93,15 @@ internal fun Span.recordOf(
  * - Both attribute maps are **nested** objects, so a consumer's key can never collide with a reserved one.
  * - [TraceRecord.atNanos] is not rendered: it is no wall-clock time.
  *
+ * **A shape of its own.** The keys are kotrace's, not a vendor schema such as the Elastic Common Schema: a pipeline
+ * that wants `trace.id` or `error.type` renames them at ingest. A line carries no timestamp, so the log shipper
+ * stamps one as it reads the line; from a [dev.kotrace.adapter.ReportAdapter], that is the end of the trace for every
+ * record. An adapter that needs another shape or a time per event builds its own line from the record's public
+ * fields.
+ *
  * **What it renders.** This is machine egress, so it must never carry user data (see [dev.kotrace.Span]). An
- * exception renders its class name only, never its message. A [LogRecord] marked `sensitive` renders its message
+ * exception renders its class name only, never its message; an adapter that wants the message reads
+ * [ExceptionRecord.throwable] into a line of its own. A [LogRecord] marked `sensitive` renders its message
  * as is: keeping it out is the adapter's [dev.kotrace.adapter.TracePolicy.acceptsSensitive], which refuses it by
  * default. Likewise it renders every attribute the record holds, which on a delivered record are only those the
  * adapter's [dev.kotrace.adapter.TracePolicy.acceptsAttribute] admitted (ADR-039).

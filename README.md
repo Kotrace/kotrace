@@ -109,7 +109,10 @@ contract, so an OpenTelemetry upgrade later is additive.
     and reaches the `FaultHook` (`scope.fallback`). `currentScopeId()` / `currentThreadScopeId()` read the ambient
     scope only.
 - `TraceRecord.toJson()`: a one-line, snake_case JSON rendering (no serialization dependency, values
-  escaped) for a JSON log pipeline (ELK, Loki) to ingest `trace_id`/`span_id` as queryable fields.
+  escaped) for a JSON log pipeline (ELK, Loki) to ingest `trace_id`/`span_id` as queryable fields. The keys are
+  kotrace's own, not the Elastic Common Schema, and a line has no timestamp: the pipeline renames keys and stamps the
+  time as it reads. For another shape, a time per event or an exception's message, build the line from the record's
+  public fields.
 - `TraceLink`: a birth-set, cross-trace edge: `span(name, links = listOf(TraceLink(otherTraceId)))` points
   the span at another *trace* by its `trace_id` (the OpenTelemetry span-link shape), joining two separate trees where
   `Span.parentId` (an in-tree edge) cannot. Trace-level, `trace_id` only, no `span_id` (ADR-009). It rides
