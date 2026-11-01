@@ -12,7 +12,8 @@ This repository is a Kotlin/JVM tracing library. Use this file as the repository
 - Core packages, one per concern (ADR-031); the directory is the package, under `src/main/kotlin/dev/kotrace/`:
   - root `dev.kotrace`: `Trace.kt` (public `span {}` entry point), `Span.kt` with its `EventTimeline.kt` (the
     bounded copy-on-write event timeline), the context elements
-    (`SpanContext.kt`, `SpanCollector.kt`, and `ScopeContext.kt` with `withScope`), `Kotrace.kt` and `TraceConfig.kt` (configuration
+    (`SpanContext.kt`, `SpanCollector.kt`, and `ScopeContext.kt` with `withScope`), `ThreadMirror.kt` (the
+    thread mirror all four context elements share, `TraceConfig` included), `Kotrace.kt` and `TraceConfig.kt` (configuration
     install and resolution), statuses and outcomes;
   - `event/`: events, records, the event verbs, span-less emits, `toJson`;
   - `adapter/`: `TraceAdapter.kt`, `TracePolicy.kt`, `FaultHook.kt` (the sink contract);

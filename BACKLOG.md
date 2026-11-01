@@ -80,12 +80,6 @@ _None open._
   or SDK that exposes nothing else). **Likely shape:** a scoped opt-out on the worker (`untraced { }`, a
   per-thread flag `captureOrNull` honors, with a coroutine-context twin), or a request tag the factory honors.
 
-- **D05: four hand-written `ThreadContextElement` mirrors.** `SpanContext`, `SpanCollector`, `TraceConfig` and
-  `ScopeContext` each repeat the same `updateThreadContext`/`restoreThreadContext` pair over their own
-  `ThreadLocal`. **Why now:** each is a few lines and they rarely change. **Cost:** a fix to the mirror contract
-  must be made four times. **Trigger to repay:** a fifth element, or a change to how the mirror restores.
-  **Likely shape:** one internal base class taking the `ThreadLocal`.
-
 ### Tests
 
 - **T01: no test runs a real Room database.** `tracing()`'s wiring is unit-tested against a mocked

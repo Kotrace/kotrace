@@ -27,7 +27,7 @@ import kotlin.coroutines.CoroutineContext
 suspend fun <T> withScope(scopeId: String, block: suspend () -> T): T =
     withContext(ScopeContext(scopeId)) { block() }
 
-private val currentScopeThreadLocal = ThreadLocal<String?>()
+private val scopeMirror = ThreadMirror<String>()
 
 /**
  * The [withScope] id in the current coroutine, or null outside any scope. Non-suspend code reads
@@ -45,7 +45,7 @@ suspend fun currentScopeId(): String? = currentCoroutineContext()[ScopeContext]?
  * Ambient only: it never returns the installed fallback (`Kotrace.install(fallbackScopeId = …)`, ADR-038), which a
  * record emitted here would carry when this is null.
  */
-fun currentThreadScopeId(): String? = currentScopeThreadLocal.get()
+fun currentThreadScopeId(): String? = scopeMirror.get()
 
 /** Whether this thread is running the fallback scope provider, so a record it emits does not re-enter it. */
 private val resolvingFallbackScope = threadFlag()
@@ -79,13 +79,7 @@ class ScopeContext(val scopeId: String) :
 
     companion object Key : CoroutineContext.Key<ScopeContext>
 
-    override fun updateThreadContext(context: CoroutineContext): String? {
-        val previous = currentScopeThreadLocal.get()
-        currentScopeThreadLocal.set(scopeId)
-        return previous
-    }
+    override fun updateThreadContext(context: CoroutineContext): String? = scopeMirror.swap(scopeId)
 
-    override fun restoreThreadContext(context: CoroutineContext, oldState: String?) {
-        currentScopeThreadLocal.set(oldState)
-    }
+    override fun restoreThreadContext(context: CoroutineContext, oldState: String?) = scopeMirror.restore(oldState)
 }

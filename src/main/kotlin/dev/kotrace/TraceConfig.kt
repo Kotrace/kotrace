@@ -10,7 +10,7 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlin.coroutines.AbstractCoroutineContextElement
 import kotlin.coroutines.CoroutineContext
 
-private val currentConfigThreadLocal = ThreadLocal<TraceConfig?>()
+private val configMirror = ThreadMirror<TraceConfig>()
 
 /**
  * The per-flow [TraceConfig] in the current coroutine, or null. Non-suspend code reads [currentThreadConfig]
@@ -23,7 +23,7 @@ suspend fun currentConfig(): TraceConfig? = currentCoroutineContext()[TraceConfi
  * coroutine's thread (the OkHttp `Call.Factory`, a Room callback). A suspend caller should prefer
  * [currentConfig].
  */
-fun currentThreadConfig(): TraceConfig? = currentConfigThreadLocal.get()
+fun currentThreadConfig(): TraceConfig? = configMirror.get()
 
 /**
  * Runs [block] with [config] mirrored onto this thread, then restores the previous value: the mirror for a thread
@@ -31,13 +31,12 @@ fun currentThreadConfig(): TraceConfig? = currentConfigThreadLocal.get()
  * thread already mirrors [config] (no override on either side, or the flow's own thread), it touches nothing.
  */
 internal fun <T> withMirroredConfig(config: TraceConfig?, block: () -> T): T {
-    val previous = currentConfigThreadLocal.get()
-    if (previous === config) return block()
-    currentConfigThreadLocal.set(config)
+    if (configMirror.get() === config) return block()
+    val previous = configMirror.swap(config)
     try {
         return block()
     } finally {
-        currentConfigThreadLocal.set(previous)
+        configMirror.restore(previous)
     }
 }
 
@@ -100,13 +99,7 @@ class TraceConfig(
     val liveAdapters: List<LiveAdapter> = adapters.filterIsInstance<LiveAdapter>()
     val reportAdapters: List<ReportAdapter> = adapters.filterIsInstance<ReportAdapter>()
 
-    override fun updateThreadContext(context: CoroutineContext): TraceConfig? {
-        val previous = currentConfigThreadLocal.get()
-        currentConfigThreadLocal.set(this)
-        return previous
-    }
+    override fun updateThreadContext(context: CoroutineContext): TraceConfig? = configMirror.swap(this)
 
-    override fun restoreThreadContext(context: CoroutineContext, oldState: TraceConfig?) {
-        currentConfigThreadLocal.set(oldState)
-    }
+    override fun restoreThreadContext(context: CoroutineContext, oldState: TraceConfig?) = configMirror.restore(oldState)
 }

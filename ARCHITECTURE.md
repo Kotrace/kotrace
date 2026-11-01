@@ -221,7 +221,8 @@ These are **four separate boundaries**, decoupled on purpose: a span can have a 
 collector (untraced-but-identified); the configuration is orthogonal to both. Why a `ThreadContextElement` and not
 a bare `ThreadLocal`: a coroutine resumes on different threads, so the mirror must be re-established on every
 resume and restored on the way out; that is exactly the `updateThreadContext`/`restoreThreadContext`
-contract. `AbstractCoroutineContextElement` supplies only the `key` plumbing; it could be handwritten.
+contract, which all four delegate to one internal `ThreadMirror`. `AbstractCoroutineContextElement` supplies
+only the `key` plumbing; it could be handwritten.
 
 ### `SpanCollector` is per-trace and ephemeral
 

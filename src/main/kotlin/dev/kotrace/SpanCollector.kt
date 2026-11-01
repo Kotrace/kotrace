@@ -6,7 +6,7 @@ import java.util.concurrent.CopyOnWriteArrayList
 import kotlin.coroutines.AbstractCoroutineContextElement
 import kotlin.coroutines.CoroutineContext
 
-private val currentCollectorThreadLocal = ThreadLocal<SpanCollector?>()
+private val collectorMirror = ThreadMirror<SpanCollector>()
 
 /**
  * The [SpanCollector] in the current coroutine, or null. Non-suspend code reads [currentThreadCollector] instead.
@@ -17,7 +17,7 @@ suspend fun currentCollector(): SpanCollector? = currentCoroutineContext()[SpanC
  * The [SpanCollector] mirrored onto this thread, or null: for **non-suspend** code running on a coroutine's thread
  * (the OkHttp `Call.Factory`). A suspend caller should prefer [currentCollector].
  */
-fun currentThreadCollector(): SpanCollector? = currentCollectorThreadLocal.get()
+fun currentThreadCollector(): SpanCollector? = collectorMirror.get()
 
 /**
  * Holds every [Span] of a trace until it is reported, so the whole tree can be walked. Seeded at the root; each
@@ -38,13 +38,7 @@ class SpanCollector :
         entries.add(span)
     }
 
-    override fun updateThreadContext(context: CoroutineContext): SpanCollector? {
-        val previous = currentCollectorThreadLocal.get()
-        currentCollectorThreadLocal.set(this)
-        return previous
-    }
+    override fun updateThreadContext(context: CoroutineContext): SpanCollector? = collectorMirror.swap(this)
 
-    override fun restoreThreadContext(context: CoroutineContext, oldState: SpanCollector?) {
-        currentCollectorThreadLocal.set(oldState)
-    }
+    override fun restoreThreadContext(context: CoroutineContext, oldState: SpanCollector?) = collectorMirror.restore(oldState)
 }
