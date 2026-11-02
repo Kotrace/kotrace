@@ -38,9 +38,6 @@ internal class TraceTreeIndex(
     /** The event snapshot indexed for [span]. */
     fun eventsOf(span: Span): List<SpanEvent> = timelines.of(span)
 
-    /** [span]'s status and end when the report began (ADR-044). */
-    fun lifecycleOf(span: Span): Span.State = timelines.lifecycleOf(span)
-
     private fun indexBirthplaces(span: Span): MutableSet<Any>? {
         val events = timelines.of(span)
 
@@ -95,33 +92,42 @@ internal class TraceTreeIndex(
 
 /**
  * Every span as it stood when a report began (ADR-019/029/044): its timeline, one [dev.kotrace.EventTimeline.snapshot]
- * taken in O(1), and its status and end, taken in one read ([Span.lifecycle]). An event appended later, by an
- * adapter or a late bridge, never enters it, a span ending later stays open in it, and a walk retried after a fault
- * reads the same values.
+ * taken in O(1), and any open lifecycle, taken in one read ([Span.lifecycle]). An ended span's state never changes.
+ * An event appended later, by an adapter or a late bridge, never enters it, a span ending later stays open in it,
+ * and a walk retried after a fault reads the same values.
  *
  * A trace of at most [LINEAR_LOOKUP_SPANS] spans finds a span by scanning, with no map: a small trace pays almost
  * nothing to freeze, which a one-span report notices most.
  */
 internal class FrozenSpans(private val spans: List<Span>) {
-    // Parallel arrays rather than a holder per span: freezing allocates nothing per span beyond the snapshots.
-    private val timelines: Array<List<SpanEvent>> = Array(spans.size) { spans[it].eventBuffer.snapshot() }
-    private val lifecycles: Array<Span.State> = Array(spans.size) { spans[it].lifecycle() }
+    // Declared before the timelines, whose initializers fill it: usually it stays null, since every span has ended.
+    private var openLifecycles: IdentityHashMap<Span, Span.State>? = null
 
-    private val indexBySpan: IdentityHashMap<Span, Int>? =
+    private val bySpan: IdentityHashMap<Span, List<SpanEvent>>? =
         if (spans.size <= LINEAR_LOOKUP_SPANS) null
-        else IdentityHashMap<Span, Int>(spans.size).apply { spans.forEachIndexed { index, span -> put(span, index) } }
+        else IdentityHashMap<Span, List<SpanEvent>>(spans.size).apply { spans.forEach { put(it, freeze(it)) } }
+
+    private val inOrder: Array<List<SpanEvent>>? =
+        if (bySpan != null) null else Array(spans.size) { freeze(spans[it]) }
 
     /** [span]'s frozen timeline; the same list on every call. */
-    fun of(span: Span): List<SpanEvent> = timelines[indexOf(span)]
-
-    /** [span]'s status and end when the report began. */
-    fun lifecycleOf(span: Span): Span.State = lifecycles[indexOf(span)]
-
-    private fun indexOf(span: Span): Int {
-        indexBySpan?.let { return it.getValue(span) }
+    fun of(span: Span): List<SpanEvent> {
+        bySpan?.let { return it.getValue(span) }
         val index = spans.indexOfFirst { it === span }
         require(index >= 0) { "span ${span.spanId} is not part of this report" }
-        return index
+        return inOrder!![index]
+    }
+
+    /** [span]'s status and end when the report began. */
+    fun lifecycleOf(span: Span): Span.State = openLifecycles?.get(span) ?: span.lifecycle()
+
+    private fun freeze(span: Span): List<SpanEvent> {
+        val lifecycle = span.lifecycle()
+        if (lifecycle.endNanos == null) {
+            val open = openLifecycles ?: IdentityHashMap<Span, Span.State>().also { openLifecycles = it }
+            open[span] = lifecycle
+        }
+        return span.eventBuffer.snapshot()
     }
 
     private companion object {

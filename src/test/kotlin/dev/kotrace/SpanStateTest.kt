@@ -6,9 +6,12 @@ package dev.kotrace
 import dev.kotrace.bridge.NonSuspendTracingBridge
 import dev.kotrace.bridge.end
 import dev.kotrace.event.exception
+import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withContext
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
@@ -23,6 +26,58 @@ class SpanStateTest {
         val span = Span("t", "s", null, "op", startNanos = 0L)
         assertEquals("status defaults OK", SpanStatus.OK, span.status)
         assertNull("endNanos null while open", span.endNanos)
+    }
+
+    @Test
+    fun `markStatus and markEnd leave an ended span unchanged`() {
+        val span = Span("t", "s", null, "operation", startNanos = 0L)
+        span.markStatus(SpanStatus.ERROR)
+        span.markEnd(10L)
+
+        span.markStatus(SpanStatus.OK)
+        span.markEnd(20L)
+
+        assertEquals(SpanStatus.ERROR, span.status)
+        assertEquals(10L, span.endNanos)
+    }
+
+    @Test
+    @OptIn(NonSuspendTracingBridge::class)
+    fun `markStatus and markEnd leave a bridge completion unchanged`() {
+        val span = Span("t", "s", null, "operation", startNanos = 0L)
+        span.end(SpanStatus.CANCELLED)
+        val firstEnd = span.endNanos
+
+        span.markStatus(SpanStatus.ERROR)
+        span.markEnd(20L)
+
+        assertEquals(SpanStatus.CANCELLED, span.status)
+        assertEquals(firstEnd, span.endNanos)
+    }
+
+    @Test
+    @OptIn(NonSuspendTracingBridge::class)
+    fun `a bridge end inside a span block wins over its later failure and finally`() = runTest {
+        val collector = SpanCollector()
+        val failure = IllegalStateException("failure")
+        var firstEnd: Long? = null
+
+        val thrown = runCatching {
+            withContext(collector) {
+                span("operation") {
+                    val current = currentSpan()!!
+                    current.end()
+                    firstEnd = current.endNanos
+                    throw failure
+                }
+            }
+        }.exceptionOrNull()
+
+        val ended = collector.spans.single()
+        assertTrue(generateSequence(thrown) { it.cause }.any { it === failure })
+        assertEquals(SpanStatus.OK, ended.status)
+        assertEquals(firstEnd, ended.endNanos)
+        assertTrue("the failure is still recorded", generateSequence(ended.exception) { it.cause }.any { it === failure })
     }
 
     @Test

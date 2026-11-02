@@ -112,10 +112,14 @@ class Span(
         updateState { State(it.status, nanos) }
     }
 
-    /** `AtomicReference.updateAndGet` by hand: Android has it only from API 24. */
+    /**
+     * `AtomicReference.updateAndGet` by hand (Android has it only from API 24), on an open span only: an ended span's
+     * state never changes, which lets a report read it after it began ([dev.kotrace.report.FrozenSpans]).
+     */
     private inline fun updateState(transform: (State) -> State) {
         while (true) {
             val current = state.get()
+            if (current.endNanos != null) return
             if (state.compareAndSet(current, transform(current))) return
         }
     }

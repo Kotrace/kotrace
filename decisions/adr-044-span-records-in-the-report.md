@@ -70,8 +70,9 @@ display concern. A span export makes it a correctness one.
   the report before the adapter's status gate ran.
 - **Report-only.** A `LiveAdapter` never receives a `SpanRecord`. Delivering one when a span ends is a separate
   decision, with its own gate, duplicate and reentrancy rules (ADR-025). It never rides this gate.
-- **Status and end are frozen at report entry,** with the timelines (`FrozenSpans`). They are read in one read
-  of the span's atomic state (ADR-006), never through the two getters, which could observe different transitions.
+- **Status and end are frozen at report entry,** with the timelines (`FrozenSpans`). An ended span's status and end
+  never change, so only a span still open is copied, in one read of its atomic state (ADR-006), never through the two
+  getters, which could observe different transitions.
   The auto-root's own span has ended by then (`span` ends it before it reports), so only a span still running
   elsewhere is open: a bridge span, or any span under a manual collector reported early. It is delivered with
   `endNanos == null` and the status it held, and that report never learns of its end (D05). An exporter skips such a span or represents it as open, and never invents an end time.

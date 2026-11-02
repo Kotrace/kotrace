@@ -3,6 +3,7 @@ package dev.kotrace.report
 import dev.kotrace.Kotrace
 import dev.kotrace.Span
 import dev.kotrace.SpanCollector
+import dev.kotrace.SpanStatus
 import dev.kotrace.TraceConfig
 import dev.kotrace.TraceStatus
 import dev.kotrace.adapter.FaultPhase
@@ -113,6 +114,24 @@ class ReportSnapshotTest {
 
         assertEquals("the span's records are still reported", listOf("step"), logs)
         assertEquals(listOf<Pair<FaultPhase, String?>>(FaultPhase.REPORT to "report.attached"), faults)
+    }
+
+    @Test fun `an open lifecycle stays frozen on both sides of the timeline lookup threshold`() {
+        for (count in listOf(1, 9)) {
+            val spans = List(count) { Span("trace", "span$it", null, "operation", startNanos = 0L) }
+            val open = spans.last()
+            spans.dropLast(1).forEach { it.markEnd(10L) }
+            open.markStatus(SpanStatus.ERROR)
+            val frozen = FrozenSpans(spans)
+
+            open.markStatus(SpanStatus.CANCELLED)
+            open.markEnd(20L)
+
+            assertEquals(SpanStatus.ERROR, frozen.lifecycleOf(open).status)
+            assertEquals(null, frozen.lifecycleOf(open).endNanos)
+            assertEquals(SpanStatus.CANCELLED, open.status)
+            assertEquals(20L, open.endNanos)
+        }
     }
 
     @Test fun `a frozen timeline reads the same on every call and never sees a later append`() = runTest {

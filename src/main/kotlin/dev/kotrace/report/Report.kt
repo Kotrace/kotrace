@@ -69,7 +69,7 @@ fun SpanCollector.reportTrace(status: TraceStatus, attached: List<Throwable> = e
     // An adapter consumes its view in-call, so this guard also contains its policy and message faults (ADR-014).
     adapters.forEach { adapter ->
         runIsolated(FaultPhase.REPORT, "report.deliver", recover = {}) {
-            adapter.onReport(status, adapter.viewOf { entries })
+            adapter.onReport(status, adapter.viewOf(frozen) { entries })
         }
     }
 }
@@ -80,13 +80,16 @@ private fun walkEntries(
     attached: List<Throwable>,
     reportedAt: Long,
     frozen: FrozenSpans,
-): List<WalkEntry> {
+): WalkEntries {
     val roots = rootsOf(all)
     val tree = TraceTreeIndex(all, roots, frozen)
 
-    val entries = ArrayList<WalkEntry>()
+    val entries = ArrayList<EventEntry>()
+    val spans = ArrayList<Span>(all.size)
+    val eventOffsets = IntArray(all.size + 1)
     fun walk(span: Span) {
-        entries += SpanEntry(span, tree.lifecycleOf(span))
+        eventOffsets[spans.size] = entries.size
+        spans += span
         val birthplaces = tree.birthplaceExceptionsOf(span)
         // The same snapshot the birthplace index used, so a late append cannot be mislabelled (ADR-019).
         tree.eventsOf(span).filter { it.reportable() }.sortedWith(byTime).forEach { event ->
@@ -103,24 +106,20 @@ private fun walkEntries(
         tree.childrenOf(span).forEach(::walk)
     }
     roots.forEach(::walk)
+    eventOffsets[spans.size] = entries.size
 
     if (attached.isNotEmpty()) {
         val root = roots.first()
         // An orphan has no deeper copy: BIRTHPLACE, so the propagated gate never drops it.
         attached.forEach { entries += EventEntry(root, ExceptionEvent(it, reportedAt), ExceptionOrigin.BIRTHPLACE) }
     }
-    return entries
+    return WalkEntries(entries, spans, eventOffsets)
 }
 
-/** One step of the walk: a span itself, then each of its events (ADR-044). */
-private sealed interface WalkEntry {
-    val span: Span
-}
+/** Spans in walk order and their event ranges, followed by the attached orphans in [events]. */
+private class WalkEntries(val events: List<EventEntry>, val spans: List<Span>, val eventOffsets: IntArray)
 
-/** The span itself, with its status and end as they stood when the report began. */
-private class SpanEntry(override val span: Span, val lifecycle: Span.State) : WalkEntry
-
-private class EventEntry(override val span: Span, val event: SpanEvent, val origin: ExceptionOrigin?) : WalkEntry
+private class EventEntry(val span: Span, val event: SpanEvent, val origin: ExceptionOrigin?)
 
 /**
  * Whether an event enters the report at all. Exhaustive over the sealed [SpanEvent], so a new event kind fails to
@@ -138,26 +137,34 @@ internal fun SpanEvent.reportable(): Boolean = when (this) {
  * span (ADR-044). A [dev.kotrace.event.TraceRecord] is built only for an entry that survives, holding only the
  * attributes [TracePolicy.acceptsAttribute] admits (ADR-039).
  */
-private fun ReportAdapter.viewOf(entries: () -> List<WalkEntry>): Sequence<TraceRecord> {
+private fun ReportAdapter.viewOf(frozen: FrozenSpans, entries: () -> WalkEntries): Sequence<TraceRecord> {
     // Read on consumption, so a throwing getter cannot abort before the adapter's status gate ran (ADR-019).
     val keepPropagated by lazy { policy.acceptsPropagatedException }
     val keepExplicit by lazy { policy.acceptsExplicitException }
     val keepSpans by lazy { policy.acceptsSpanRecords }
-    return Sequence { entries().iterator() }
-        .filter { entry ->
-            when (entry) {
-                is SpanEntry -> keepSpans && policy.acceptsSpan(entry.span)
-                // The origin gates run before policy.accepts, so a default adapter's policy never sees a dropped copy.
-                is EventEntry -> (keepPropagated || entry.origin != ExceptionOrigin.PROPAGATED) &&
-                    (keepExplicit || entry.origin != ExceptionOrigin.EXPLICIT) &&
-                    policy.accepts(entry.span, entry.event)
+    fun recordOf(entry: EventEntry): TraceRecord? {
+        // The origin gates run before policy.accepts, so a default adapter's policy never sees a dropped copy.
+        if (!(keepPropagated || entry.origin != ExceptionOrigin.PROPAGATED) ||
+            !(keepExplicit || entry.origin != ExceptionOrigin.EXPLICIT) ||
+            !policy.accepts(entry.span, entry.event)
+        ) return null
+        return entry.span.recordOf(entry.event, origin = entry.origin)
+    }
+
+    return sequence {
+        val walked = entries()
+        var eventIndex = 0
+        if (keepSpans) {
+            walked.spans.forEachIndexed { index, span ->
+                if (policy.acceptsSpan(span)) yield(span.spanRecordOf(frozen.lifecycleOf(span)))
+                while (eventIndex < walked.eventOffsets[index + 1]) {
+                    recordOf(walked.events[eventIndex++])?.let { yield(it) }
+                }
             }
         }
-        .map { entry ->
-            when (entry) {
-                is SpanEntry -> entry.span.spanRecordOf(entry.lifecycle)
-                is EventEntry -> entry.span.recordOf(entry.event, origin = entry.origin)
-            }
+        // Without span records this is the whole walk; otherwise only the attached orphans remain.
+        while (eventIndex < walked.events.size) {
+            recordOf(walked.events[eventIndex++])?.let { yield(it) }
         }
-        .map { policy.attributeView(it, FaultPhase.REPORT, "report.attribute") }
+    }.map { policy.attributeView(it, FaultPhase.REPORT, "report.attribute") }
 }
