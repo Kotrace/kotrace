@@ -4,7 +4,7 @@ What changed in each release, and what a consumer must do to upgrade. Every chan
 in [DECISIONS.md](DECISIONS.md). A binary-breaking change bumps the version and gets an entry here in the same commit
 (AGENTS.md § Build And Test).
 
-## 0.7.0 (unreleased)
+## 0.7.0 (2026-11-03)
 
 **Added**
 
