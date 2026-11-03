@@ -34,6 +34,9 @@ a cancelled span's status and how Room is built:
 - **Behaviour.** A span whose own coroutine is cancelled, and an OkHttp call its caller canceled, now end
   `CANCELLED`, no longer `ERROR`; a timeout stays `ERROR`. A check for `status == ERROR` stops matching them, and
   `renderTree` no longer shows such a trace as failed. `TraceStatus` is unchanged.
+- **Behaviour.** A span's first end is final. A `span { }` block whose own span was already ended through the
+  bridge's `end()` keeps that status and end time when the block then fails or returns; the block still throws
+  or returns exactly as before, and the failure is still recorded.
 - **Behaviour.** `tracing()` now sets Room's query executor. One set with `setQueryExecutor` before it is replaced,
   and one set after it replaces kotrace's, so suspend reads on Room 2.6 log nothing again.
 - **Migrate.** Pass the executor you set with `setQueryExecutor` as `tracing(queryExecutor = …)` instead. An app that

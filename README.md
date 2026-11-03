@@ -136,20 +136,20 @@ contract, so an OpenTelemetry upgrade later is additive.
 maven { url = uri("https://maven.kotrace.dev") }
 
 // build.gradle.kts
-implementation("dev.kotrace:kotrace:0.5.0")
+implementation("dev.kotrace:kotrace:0.7.0")
 
 // OkHttp integration only: the traceparent-on-the-wire glue. Pulls the core transitively.
-implementation("dev.kotrace:kotrace-okhttp:0.5.0")
+implementation("dev.kotrace:kotrace-okhttp:0.7.0")
 
 // Room integration only (Android): logs each query's SQL onto the active span. Pulls the core.
-implementation("dev.kotrace:kotrace-room:0.5.0")
+implementation("dev.kotrace:kotrace-room:0.7.0")
 ```
 
 Or align every module through the BOM: declare its version once, drop the version off each dependency:
 
 <!-- snippet: gradle -->
 ```kotlin
-implementation(platform("dev.kotrace:kotrace-bom:0.5.0"))
+implementation(platform("dev.kotrace:kotrace-bom:0.7.0"))
 implementation("dev.kotrace:kotrace")
 implementation("dev.kotrace:kotrace-okhttp")
 ```
@@ -191,8 +191,8 @@ levels. No secrets are needed to build or test.
 
 The benchmark suite lives in the non-published `:benchmarks` module. The figures below are steady-state
 JMH results from an Apple M1 Pro running Oracle JDK 21.0.3, G1GC and a fixed 1 GiB heap, using 3 forks ×
-5 warm-up iterations × 5 measurement iterations, measured on 2026-11-02 against the 0.7.0 code. They characterize this JVM workload, not Android ART
-or production end-to-end latency.
+5 warm-up iterations × 5 measurement iterations, measured on 2026-11-02 against the 0.7.0 code. They characterize
+this JVM workload, not Android ART or production end-to-end latency.
 
 | Scenario | Result | Allocation |
 |---|---:|---:|
