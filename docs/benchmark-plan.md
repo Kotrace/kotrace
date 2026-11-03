@@ -3,7 +3,7 @@
 Đo độ trễ, allocation và cách chi phí tracing tăng theo số event, hình dạng cây, số adapter và cạnh tranh
 giữa coroutine. Phạm vi là JVM core trên HotSpot: kết quả không suy rộng thành hiệu năng Android ART, OkHttp
 network hay Room database. Số liệu hiện hành nằm trong [README](../README.md#performance) và run gần nhất
-trong [`benchmarks/results/20261017-full`](../benchmarks/results/20261017-full/analysis.md).
+trong [`benchmarks/results/20261102-fixed`](../benchmarks/results/20261102-fixed/analysis.md).
 
 ## Cấu trúc
 

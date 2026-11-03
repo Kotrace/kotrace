@@ -191,22 +191,22 @@ levels. No secrets are needed to build or test.
 
 The benchmark suite lives in the non-published `:benchmarks` module. The figures below are steady-state
 JMH results from an Apple M1 Pro running Oracle JDK 21.0.3, G1GC and a fixed 1 GiB heap, using 3 forks ×
-5 warm-up iterations × 5 measurement iterations, measured on 2026-10-17 against the 0.5.0 code (the full run,
-with the cases the event timeline touches rerun after it). They characterize this JVM workload, not Android ART
+5 warm-up iterations × 5 measurement iterations, measured on 2026-11-02 against the 0.7.0 code. They characterize this JVM workload, not Android ART
 or production end-to-end latency.
 
 | Scenario | Result | Allocation |
 |---|---:|---:|
-| Empty auto-root, no configuration | 1.01 ± 0.02 µs/flow | 2.1 KiB/flow |
-| Capture 100 logs, no sink | 3.73 ± 0.02 µs/batch | 28.8 KiB/batch |
-| Report a 512-span balanced tree | 58.00 ± 0.71 µs/report | 191.3 KiB/report |
-| Report a 128-span tree whose adapter skips the outcome | 1.01 ± 0.11 µs/report | 6.2 KiB/report |
-| 16 workers × 100 logs on one shared span, under the cap | 550.49 ± 17.46 µs/flow | 5.30 MiB/flow |
+| Empty auto-root, no configuration | 0.97 ± 0.02 µs/flow | 2.1 KiB/flow |
+| Capture 100 logs, no sink | 3.87 ± 0.05 µs/batch | 28.8 KiB/batch |
+| Report a 512-span balanced tree | 59.83 ± 0.60 µs/report | 195.6 KiB/report |
+| Report a 128-span tree whose adapter skips the outcome | 0.95 ± 0.03 µs/report | 5.4 KiB/report |
+| 16 workers × 100 logs on one shared span, under the cap | 538.36 ± 5.91 µs/flow | 5.30 MiB/flow |
 
 Span and trace ids are encoded through a lookup table, so an empty auto-root costs about one microsecond. The
 report walk runs only when an adapter reads its records, so an adapter that gates on the outcome costs ~1 µs at
-128 spans. A report that is read freezes each span's timeline at report start (ADR-029) in O(1), since a snapshot
-shares the timeline's array, and indexes the tree once, so its cost grows close to linearly with the spans.
+128 spans. Every report freezes each span's timeline at report start (ADR-029) in O(1), since a snapshot shares
+the timeline's array, and copies the status of only the spans still open (ADR-044). A report that is read indexes
+the tree once, so its cost grows close to linearly with the spans.
 
 The shared-span case is the main known hotspot: a span's timeline is copy-on-write, which is a good trade for
 the common 0–10-event trace but becomes expensive with hundreds of events or many concurrent writers. A span
@@ -214,17 +214,17 @@ keeps `Span.MAX_EVENTS` (1,000) events, discarding the oldest first: named (anal
 exception only once nothing else is left. It counts them in `Span.droppedEvents`,
 so a span logging in a loop stays bounded (ADR-029). The cap is per span, set by
 `TraceConfig.maxEventsPerSpan` when the span opens (ADR-033). Every append copies the timeline once, an append
-past the cap included, since it discards and appends in the same copy: 2,000 logs onto one span cost 142 µs at a
-cap of 100, 312 µs at the default 1,000 and 330 µs with nothing discarded, and the same 16 workers past the
-default cap take 587 µs. Appends are serialized, so the cap holds exactly under concurrent writers.
+past the cap included, since it discards and appends in the same copy: 2,000 logs onto one span cost 130 µs at a
+cap of 100, 307 µs at the default 1,000 and 321 µs with nothing discarded, and the same 16 workers past the
+default cap take 620 µs. Appends are serialized, so the cap holds exactly under concurrent writers.
 
 Live adapters are synchronous and therefore apply backpressure directly to the traced operation. In the
-synthetic 1 ms blocking-sink workload, one event measured 1.28 ms at p50 and 5.42 ms at p99; ten events
-measured 12.73 ms at p50 and 22.09 ms at p99. An adapter that performs I/O should enqueue onto its own
+synthetic 1 ms blocking-sink workload, one event measured 1.53 ms at p50 and 2.82 ms at p99; ten events
+measured 15.32 ms at p50 and 21.82 ms at p99. An adapter that performs I/O should enqueue onto its own
 bounded worker rather than block `onLive`.
 
 See the [benchmark plan](docs/benchmark-plan.md) for the workloads and how to run them, and the
-[current run](benchmarks/results/20261017-full/analysis.md) for confidence intervals, limitations and the exact
+[current run](benchmarks/results/20261102-fixed/analysis.md) for confidence intervals, limitations and the exact
 commands. Every run is kept under `benchmarks/results/`.
 
 ## Where to start
