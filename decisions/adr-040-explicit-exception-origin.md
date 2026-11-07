@@ -2,6 +2,8 @@
 
 - **Date:** 2026-10-29
 - **Status:** Accepted (implemented in 0.6.0)
+- **Amended:** 2026-11-07 by [ADR-045](adr-045-attach-exception-from-any-span.md): an `attached` orphan no longer
+  keeps its `BIRTHPLACE` stamp; it is `ATTACHED`, like a failure registered with `attachException`.
 - **Affects:**
   - `ExceptionOrigin` gains `EXPLICIT`;
   - `ExceptionEvent` gains an internal marker set only by `Span.addException`;

@@ -1,5 +1,6 @@
 package dev.kotrace.report
 
+import dev.kotrace.AttachedFailure
 import dev.kotrace.Span
 import dev.kotrace.SpanCollector
 import dev.kotrace.TraceConfig
@@ -20,6 +21,8 @@ import dev.kotrace.event.TraceRecord
 import dev.kotrace.event.recordOf
 import dev.kotrace.event.spanRecordOf
 import dev.kotrace.resolvedThreadConfig
+import java.util.Collections
+import java.util.IdentityHashMap
 
 /**
  * Fans the finished trace out to every [ReportAdapter] in the active [TraceConfig]. Each adapter receives a lazy
@@ -37,8 +40,12 @@ import dev.kotrace.resolvedThreadConfig
  * failure once, at its birthplace. A consumer's [dev.kotrace.event.addException] record is stamped EXPLICIT
  * (ADR-040) and kept by default; [TracePolicy.acceptsExplicitException] can drop it before [TracePolicy.acceptsEvent].
  *
+ * Failures registered by [dev.kotrace.event.attachException] follow the tree walk in registration order, on their
+ * owner spans and with their registration times. The registry is copied once when reporting begins; a later
+ * registration belongs to a later report. Reports do not drain it. Both attachment routes are stamped ATTACHED.
+ *
  * [attached] carries **trace-level orphan failures**, throwables that are no span's birthplace (a saga's
- * suppressed rollbacks). Each is reported as an [dev.kotrace.event.ExceptionRecord] of the root, after the walk so
+ * suppressed rollbacks). Each is reported as an [dev.kotrace.event.ExceptionRecord] of the root, after the registry so
  * the birthplace dedup cannot drop it, and never written onto [Span.events], where it would shadow the tree's
  * real crash origin. It is read once, when the report begins: a list that throws costs only the orphans (the
  * [FaultHook] hears of it with [FaultPhase.REPORT]), never the report.
@@ -60,11 +67,19 @@ fun SpanCollector.reportTrace(status: TraceStatus, attached: List<Throwable> = e
     // Fix the report's content now (ADR-019/029/044): an event appended later, by an adapter's own onReport or a late
     // bridge, must not enter it, and a span ending later stays open in it.
     val frozen = FrozenSpans(all)
+    val registered = runIsolated(FaultPhase.REPORT, "report.attach_registry", recover = { emptyList() }) {
+        val copy = attachedSnapshot()
+        if (copy.isEmpty()) copy else {
+            val membership = Collections.newSetFromMap(IdentityHashMap<Span, Boolean>())
+            membership.addAll(all)
+            copy.filter { it.owner in membership }
+        }
+    }
     val orphans = runIsolated(FaultPhase.REPORT, "report.attached", recover = { emptyList() }) { attached.toList() }
     val reportedAt = System.nanoTime()
 
     // Walked on the first adapter's read and shared, so an adapter that gates on status pays no walk (ADR-029).
-    val entries by lazy { walkEntries(all, orphans, reportedAt, frozen) }
+    val entries by lazy { walkEntries(all, registered, orphans, reportedAt, frozen) }
 
     // An adapter consumes its view in-call, so this guard also contains its policy and message faults (ADR-014).
     adapters.forEach { adapter ->
@@ -74,9 +89,10 @@ fun SpanCollector.reportTrace(status: TraceStatus, attached: List<Throwable> = e
     }
 }
 
-/** The whole trace as origin-stamped entries: every root's walk in tree order, then [attached]. */
+/** Every root's walk in tree order, then [registered] and [attached], stamped with their origins. */
 private fun walkEntries(
     all: List<Span>,
+    registered: List<AttachedFailure>,
     attached: List<Throwable>,
     reportedAt: Long,
     frozen: FrozenSpans,
@@ -108,10 +124,10 @@ private fun walkEntries(
     roots.forEach(::walk)
     eventOffsets[spans.size] = entries.size
 
+    registered.forEach { entries += EventEntry(it.owner, ExceptionEvent(it.throwable, it.atNanos), ExceptionOrigin.ATTACHED) }
     if (attached.isNotEmpty()) {
         val root = roots.first()
-        // An orphan has no deeper copy: BIRTHPLACE, so the propagated gate never drops it.
-        attached.forEach { entries += EventEntry(root, ExceptionEvent(it, reportedAt), ExceptionOrigin.BIRTHPLACE) }
+        attached.forEach { entries += EventEntry(root, ExceptionEvent(it, reportedAt), ExceptionOrigin.ATTACHED) }
     }
     return WalkEntries(entries, spans, eventOffsets)
 }

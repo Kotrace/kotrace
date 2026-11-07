@@ -1,10 +1,14 @@
 package dev.kotrace.event
 
 import dev.kotrace.Span
+import dev.kotrace.SpanCollector
+import dev.kotrace.SpanContext
 import dev.kotrace.TraceLink
 import dev.kotrace.UnredactedTraceRead
+import dev.kotrace.adapter.FaultPhase
 import dev.kotrace.bridge.runIsolated
 import dev.kotrace.resolvedThreadConfig
+import kotlinx.coroutines.currentCoroutineContext
 import java.util.Collections
 import java.util.IdentityHashMap
 
@@ -75,9 +79,10 @@ private fun Throwable.isRecoveryWrapperOf(cause: Throwable): Boolean =
 
 /**
  * Whether a reported [ExceptionRecord] is a climb's deepest span ([BIRTHPLACE]), an ancestor copy
- * ([PROPAGATED], ADR-019), or a consumer's [addException] record ([EXPLICIT], ADR-040). A live record is unclassified.
+ * ([PROPAGATED], ADR-019), a consumer's [addException] record ([EXPLICIT], ADR-040), or a trace-level failure
+ * registered by [attachException] or passed to [dev.kotrace.report.reportTrace] ([ATTACHED]). A live record is unclassified.
  */
-enum class ExceptionOrigin { BIRTHPLACE, PROPAGATED, EXPLICIT }
+enum class ExceptionOrigin { BIRTHPLACE, PROPAGATED, EXPLICIT, ATTACHED }
 
 /**
  * The crash record: identity plus the raw [throwable]. It carries no attributes, so only a policy that covers
@@ -89,8 +94,8 @@ enum class ExceptionOrigin { BIRTHPLACE, PROPAGATED, EXPLICIT }
  * between the log store and the crash reporter.
  *
  * [origin] is `null` on a live record, emitted before the tree is complete (ADR-019). On a report record it is
- * [ExceptionOrigin.BIRTHPLACE], [ExceptionOrigin.PROPAGATED] or [ExceptionOrigin.EXPLICIT]. By default an adapter
- * receives birthplaces and explicit records; `acceptsPropagatedException` admits ancestor copies, while
+ * [ExceptionOrigin.BIRTHPLACE], [ExceptionOrigin.PROPAGATED], [ExceptionOrigin.EXPLICIT] or [ExceptionOrigin.ATTACHED].
+ * By default an adapter receives birthplaces, explicit records and attached failures; `acceptsPropagatedException` admits ancestor copies, while
  * `acceptsExplicitException = false` drops explicit records (ADR-040).
  */
 data class ExceptionRecord(
@@ -124,6 +129,30 @@ data class ExceptionRecord(
  */
 fun Span.addException(cause: Throwable, attributes: Map<String, String> = emptyMap()) {
     emit(ExceptionEvent(cause, System.nanoTime(), explicit = true), resolvedThreadConfig(), attributes)
+}
+
+/**
+ * Registers [cause] as a trace-level failure owned by the current span, delivered only at report time with
+ * [ExceptionOrigin.ATTACHED], independently of the trace's verdict. Call inside the wrapper's [dev.kotrace.span]
+ * block, before it returns. A throwable already on a span's timeline should not also be attached: both routes report it.
+ *
+ * With no current span or collector, or a span outside that collector, this does nothing. The first registration
+ * of an identity wins across the collector. It holds at most 100 failures; each further distinct registration
+ * increments [Span.ATTACHED_DROPPED_ATTRIBUTE] on its owner without retaining the refused throwable.
+ *
+ * This reads only the coroutine context: it never suspends, checks cancellation or resolves configuration.
+ * A non-fatal registration fault reaches the fault hook as [FaultPhase.REPORT] with `report.attach` and is contained.
+ * A JVM-fatal error propagates. Registration changes neither span status nor its timeline and never delivers live.
+ *
+ * @sample dev.kotrace.samples.SpanSamples.attachExceptionUsage
+ */
+suspend fun attachException(cause: Throwable) {
+    val context = currentCoroutineContext()
+    val owner = context[SpanContext]?.span ?: return
+    val collector = context[SpanCollector] ?: return
+    runIsolated(FaultPhase.REPORT, "report.attach", recover = {}) {
+        collector.attach(owner, cause, System.nanoTime())
+    }
 }
 
 /**

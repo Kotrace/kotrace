@@ -40,8 +40,11 @@ value to `ReturnVerdict.Failure(null)` (ADR-018/020).
 | root returns a value classified `Failure(null)` | ERROR | — | — | — | — | root ERROR |
 | root `returnedOutcome` = OK over a returned `Result.failure` | OK | root `returned` | root `returned` BIRTHPLACE | root `returned` BIRTHPLACE | root `returned` BIRTHPLACE | root ERROR |
 | root throws, with a `returnedOutcome` = OK | ERROR | root `root` | root `root` BIRTHPLACE | root `root` BIRTHPLACE | root `root` BIRTHPLACE | root ERROR |
-| root `returnedOutcome` = ERROR with an attached throwable | ERROR | — | root `attached` BIRTHPLACE | root `attached` BIRTHPLACE | root `attached` BIRTHPLACE | root OK |
+| root `returnedOutcome` = ERROR with an attached throwable | ERROR | — | root `attached` ATTACHED | root `attached` ATTACHED | root `attached` ATTACHED | root OK |
 | child `returnedOutcome` = ERROR with an attached throwable | OK | — | — | — | — | root OK, child OK |
+| child `attachException`, root returns OK | OK | — | child `attached` ATTACHED | child `attached` ATTACHED | child `attached` ATTACHED | root OK, child OK |
+| child `attachException`, root throws ERROR | ERROR | root `root` | root `root` BIRTHPLACE, child `attached` ATTACHED | root `root` BIRTHPLACE, child `attached` ATTACHED | root `root` BIRTHPLACE, child `attached` ATTACHED | root ERROR, child OK |
+| child `attachException`, caller cancels the root | CANCELLED | — | child `attached` ATTACHED | child `attached` ATTACHED | child `attached` ATTACHED | root CANCELLED, child OK |
 | `withTimeout` inside the root expires | ERROR | root `TimeoutCancellationException` | root `TimeoutCancellationException` BIRTHPLACE | root `TimeoutCancellationException` BIRTHPLACE | root `TimeoutCancellationException` BIRTHPLACE | root ERROR |
 | active root awaits a `Deferred` cancelled elsewhere | ERROR | root `JobCancellationException` | root `JobCancellationException` BIRTHPLACE | root `JobCancellationException` BIRTHPLACE | root `JobCancellationException` BIRTHPLACE | root ERROR |
 | caller's `withTimeout` around the root expires | CANCELLED | — | — | — | — | root CANCELLED |

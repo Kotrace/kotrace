@@ -69,7 +69,8 @@ _None open._
 
 - **D05: a span that ends after its trace's report is never delivered as ended.** ADR-044 freezes each span's
   status and end when the report begins, so a bridge span whose call outlives the root (an OkHttp body read after the
-  root returned) reaches a span exporter open, with `endNanos == null`, and its end reaches no adapter. **Why now:** on
+  root returned) reaches a span exporter open, with `endNanos == null`, and its end reaches no adapter. An attached
+  failure registered after the report's registry copy is also absent from that report (ADR-045). **Why now:** on
   mobile most traces end within one operation, so late spans are rare. **Cost:** an exporter drops the span or shows it
   open. **Trigger to repay:** an exporter seeing open spans often. **Likely shape:** a trace-finalization step that
   keeps the trace's verdict, tracks spans still open and delivers their ends later (with timeout, retention and

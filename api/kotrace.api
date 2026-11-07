@@ -53,6 +53,7 @@ public final class dev/kotrace/ScopeContextKt {
 }
 
 public final class dev/kotrace/Span {
+	public static final field ATTACHED_DROPPED_ATTRIBUTE Ljava/lang/String;
 	public static final field Companion Ldev/kotrace/Span$Companion;
 	public static final field EVENTS_DROPPED_ATTRIBUTE Ljava/lang/String;
 	public static final field MAX_EVENTS I
@@ -296,6 +297,7 @@ public final class dev/kotrace/event/ExceptionEvent : dev/kotrace/event/SpanEven
 }
 
 public final class dev/kotrace/event/ExceptionOrigin : java/lang/Enum {
+	public static final field ATTACHED Ldev/kotrace/event/ExceptionOrigin;
 	public static final field BIRTHPLACE Ldev/kotrace/event/ExceptionOrigin;
 	public static final field EXPLICIT Ldev/kotrace/event/ExceptionOrigin;
 	public static final field PROPAGATED Ldev/kotrace/event/ExceptionOrigin;
@@ -458,6 +460,7 @@ public final class dev/kotrace/event/SpanlessEmitKt {
 public final class dev/kotrace/event/TraceExceptionKt {
 	public static final fun addException (Ldev/kotrace/Span;Ljava/lang/Throwable;Ljava/util/Map;)V
 	public static synthetic fun addException$default (Ldev/kotrace/Span;Ljava/lang/Throwable;Ljava/util/Map;ILjava/lang/Object;)V
+	public static final fun attachException (Ljava/lang/Throwable;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
 	public static final fun getException (Ldev/kotrace/Span;)Ljava/lang/Throwable;
 }
 

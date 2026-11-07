@@ -168,7 +168,7 @@ class ExceptionOriginMarkingTest {
 
     // --- attached orphans ---
 
-    @Test fun `an attached orphan is a BIRTHPLACE and rides through the default gate`() = runTest {
+    @Test fun `an attached orphan is ATTACHED and rides through the default gate`() = runTest {
         val report = CollectingReport()
         Kotrace.install(listOf(report))
         val orphan = IllegalStateException("saga rollback")
@@ -177,7 +177,7 @@ class ExceptionOriginMarkingTest {
         span("op", returnedOutcome = { TraceOutcome(TraceStatus.ERROR, attached = listOf(orphan)) }) { 1 }
 
         val crash = report.crashes.single()
-        assertEquals(ExceptionOrigin.BIRTHPLACE, crash.origin)
+        assertEquals(ExceptionOrigin.ATTACHED, crash.origin)
         assertEquals("keyed to the root operation", "op", crash.operation)
     }
 

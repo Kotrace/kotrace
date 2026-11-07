@@ -92,7 +92,7 @@ internal fun Span.recordOf(
  *   for a span `span_status` (`ok`, `error` or `cancelled`) and `duration_nanos`, `null` while the span is open.
  * - Present only when not empty: the event's `attributes`, the span's `span_attributes`, `links` and `scope_id`, and
  *   `exception_origin`, written as `propagated` for [ExceptionOrigin.PROPAGATED] or `explicit` for
- *   [ExceptionOrigin.EXPLICIT]; a birthplace or live record omits it.
+ *   [ExceptionOrigin.EXPLICIT], or `attached` for [ExceptionOrigin.ATTACHED]; a birthplace or live record omits it.
  * - Both attribute maps are **nested** objects, so a consumer's key can never collide with a reserved one.
  * - [TraceRecord.atNanos] is not rendered, nor a span's end: neither is a wall-clock time. A span's
  *   `duration_nanos` is a measured length, which means the same in any process.
@@ -138,6 +138,7 @@ fun TraceRecord.toJson(): String = buildString {
             when (record.origin) {
                 ExceptionOrigin.PROPAGATED -> appendOptionalField("exception_origin", "propagated")
                 ExceptionOrigin.EXPLICIT -> appendOptionalField("exception_origin", "explicit")
+                ExceptionOrigin.ATTACHED -> appendOptionalField("exception_origin", "attached")
                 ExceptionOrigin.BIRTHPLACE, null -> Unit
             }
         }

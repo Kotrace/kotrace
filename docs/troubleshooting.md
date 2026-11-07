@@ -23,7 +23,8 @@ Two tools answer most questions:
 4. **The caller cancelled the root.** A `withTimeout` *around* a top-level span gives `CANCELLED` and no record;
    put the timeout inside the span to get an `ERROR` with a birthplace (ADR-022).
 5. **`returnedOutcome` was set on a child span.** It is invoked only at an auto-root; on a child, its status and
-   attached throwables are dropped.
+   attached throwables are dropped. A wrapper that may nest registers trace-level failures with `attachException`
+   inside its span block; its crash sink selects `ATTACHED` on every status.
 6. **It was emitted outside any span.** `emitException` goes live only: a `ReportAdapter` never sees it.
 7. **The adapter's own policy dropped it.** `acceptsEvent` can refuse an `ExceptionEvent`, and
    `acceptsExplicitException = false` removes every `addException` record from the report, including ones the
@@ -32,9 +33,18 @@ Two tools answer most questions:
    `Kotrace.strictWhenNotInstalled()` in debug builds to fail fast instead (ADR-011).
 9. **The adapter threw.** The fault is contained and the record lost for that adapter only. Install a `FaultHook`
    to see it (`FaultPhase.REPORT` or `LIVE`, ADR-014/037).
-10. **The process died before the trace ended.** The tree lives in memory; nothing reports it (backlog D02).
+10. **An attachment could not enter the report.** `attachException` needs a current span belonging to the current
+    collector. The collector keeps 100 distinct identities; further registrations increment
+    `Span.ATTACHED_DROPPED_ATTRIBUTE`, visible only when admitted by `acceptsAttribute`. A registration after the
+    report's registry copy reaches only a later manual report (backlog D05). Install a `FaultHook` for registration
+    or copy faults (`REPORT`, `report.attach` or `report.attach_registry`).
+11. **The process died before the trace ended.** The tree lives in memory; nothing reports it (backlog D02).
 
 ## The same exception is recorded twice
+
+An identity registered through `attachException` is unique within its collector, but the `attached` argument keeps
+its multiplicity. Passing the same throwable through both routes, or attaching a throwable already recorded on the
+timeline, reports it twice.
 
 1. **It was reported and rethrown.** `addException(e)` then `throw e` is two lineages: `EXPLICIT` plus
    `BIRTHPLACE`. Report or rethrow, never both (ADR-041, rejected, explains why kotrace does not merge them).

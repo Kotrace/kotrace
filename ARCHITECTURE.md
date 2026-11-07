@@ -76,13 +76,13 @@ interchange.
 | **span** | **one node** (`Span`): a name, a status, `traits`, `attributes`, `events` (the birthplace `ExceptionEvent`, if any, lives among them; there is no `error` field), a parent. Entity, not value (§2). |
 | **link** | a **cross-trace causal edge** (`TraceLink` on `Span.links`): a reference to another *trace* by `trace_id` only (no `span_id`; ADR-009), the OpenTelemetry *span link* shape. Distinct from `parentId` (the **in-tree** edge). Birth-set like `attributes`; surfaces on the wire as a `links` array on every record off the span. Never interchange with **parent**. |
 | **operation** | the owning **`Span.name`** at egress: its label as the flat **join key** on every `TraceRecord` and `toJson` column. `name` = the in-memory field; `operation` = that value as the wire/backend-join key (OpenTelemetry-aligned). A **wire contract** (§2), and distinct from `NamedRecord.name` (the *event*'s name). |
-| **record** | a flat **egress line** (`TraceRecord`), lifted off a span at fan-out. Three kinds per event ↓, plus a `SpanRecord` for the span itself, in a report only and only to an adapter that asks (`acceptsSpanRecords`, ADR-044). |
+| **record** | a flat **egress line** (`TraceRecord`), lifted off a span at fan-out. Three kinds per event ↓, including report-only attached failures, plus a `SpanRecord` for the span itself, in a report only and only to an adapter that asks (`acceptsSpanRecords`, ADR-044). |
 | **log** | a **breadcrumb** event (`Span.log` → `LogEvent` → `LogRecord`): a line bound to a span. |
 | **event** (named) | a **named / analytics** occurrence (`Span.addNamed` → `NamedEvent` → `NamedRecord`, OpenTelemetry `addEvent` shape). |
-| **exception** | the **birthplace crash**: an `ExceptionEvent` on `Span.events` (read via the `Span.exception` extension, §8), surfaced at egress as `ExceptionRecord`. It is subject only to `TracePolicy.acceptsEvent` (which defaults to keeping it), so a breadcrumb filter never drops the crash unless a policy explicitly covers exceptions; it does **not** bypass every gate. |
+| **exception** | a throwable on `Span.events` (read via `Span.exception`, §8), or a trace-level failure registered by `attachException` or passed as `attached`. Each surfaces as `ExceptionRecord`; attached failures have no timeline entry. It is subject only to `TracePolicy.acceptsEvent` (which defaults to keeping it), so a breadcrumb filter never drops the crash unless a policy explicitly covers exceptions; it does **not** bypass every gate. |
 | **span-less emit** | `emitLog` / `emitNamed` / `emitException` (ADR-010): the **orphan** counterparts of the span-scoped `log` / `addNamed` / `addException`, for an occurrence outside any span (an app-lifecycle or push callback, a non-coroutine entry). Fanned **live-only** through the resolved configuration (context override, else the process-wide `Kotrace` configuration ↓), gated by policy; a record with null identity, carrying the active `withScope`'s `scope_id`, else the installed fallback's (ADR-038). `emitException(cause, attributes)` (and `addException(cause, attributes)`) populate record-level `ExceptionRecord.spanAttributes` while the event stays object-only (ADR-005). |
-| **report** | the **tail** fan-out at trace end (`ReportAdapter.onReport(status)`): buffered tree, breadcrumbs + crash, and spans for an adapter that asks, gated by status. |
-| **live** | the **per-event** fan-out as it happens (`LiveAdapter.onLive`): immediate, ungated by trace status. |
+| **report** | the **tail** fan-out at trace end (`ReportAdapter.onReport(status)`): buffered tree, breadcrumbs, exceptions and report-only attached failures, plus spans for an adapter that asks. Each sink selects by status and origin. |
+| **live** | the **per-event** fan-out as it happens (`LiveAdapter.onLive`): immediate, ungated by trace status; attached failures are report-only. |
 | **status** | `SpanStatus` = one node's outcome (`OK`/`ERROR`/`CANCELLED`, the last for a span whose own coroutine was cancelled, ADR-044); `TraceStatus` = the whole trace's verdict (`OK`/`ERROR`/`CANCELLED`). Separate on purpose (§2). |
 | **adapter** | a consumer sink (`TraceAdapter`): `ReportAdapter` (tail) or `LiveAdapter` (per-event). |
 
@@ -153,7 +153,7 @@ a routing decision. Where it goes is a policy decision (§4); the flag only says
 sealed interface TraceRecord { traceId?, spanId?, parentId?, operation?, atNanos, scopeId?, spanAttributes, links }
   ├─ LogRecord(attributes, message, sensitive)  // from a LogEvent
   ├─ NamedRecord(name, attributes)              // from a NamedEvent
-  └─ ExceptionRecord(throwable, origin)         // from an ExceptionEvent; origin BIRTHPLACE / PROPAGATED (ADR-019)
+  └─ ExceptionRecord(throwable, origin)         // from an ExceptionEvent; origin BIRTHPLACE / PROPAGATED / EXPLICIT / ATTACHED
 ```
 
 The **denormalized** form: flat, with the identity/join fields stamped on (a raw `SpanEvent` carries
@@ -184,7 +184,9 @@ name (`NamedEvent.name`): on a `NamedRecord`, `operation` = the span, `name` = t
 Capture and egress are both **three** kinds, one-to-one. The sealed `SpanEvent` has `LogEvent`,
 `NamedEvent`, and `ExceptionEvent`: the exception is an **event on the span**, not a `Span.error` field
 (its single source of truth is `Span.events`, read via the `Span.exception` extension). `ExceptionRecord` is
-lifted from the birthplace `ExceptionEvent`, the deepest throwable-bearing span on a branch (ADR-005).
+lifted from a timeline `ExceptionEvent`, or built at report time from an attached failure on its owner.
+`ExceptionRecord.origin` is `BIRTHPLACE`, `PROPAGATED`, `EXPLICIT` or `ATTACHED` at report time, and null live.
+`ATTACHED` marks both registry entries and the `attached` argument (ADR-045).
 Mapping:
 
 ```mermaid
@@ -215,7 +217,7 @@ callback) read them without a `coroutineContext` handle.
 | Element | Carries | Read via | Decides |
 |---|---|---|---|
 | `SpanContext` | the active span | `currentThreadSpan()` (suspend: `currentSpan()`) | who is a new span's **parent** |
-| `SpanCollector` | every span in one trace | `currentThreadCollector()` | which tree is **collected** |
+| `SpanCollector` | every span and the registered trace-level failures | `currentThreadCollector()` | which tree is **collected** |
 | `TraceConfig` | the consumer's adapters + policies | `currentThreadConfig()` (suspend: `currentConfig()`) | how the trace **fans out** |
 | `ScopeContext` | the ambient `scope_id` (ADR-010) | `currentThreadScopeId()` (suspend: `currentScopeId()`), ambient only | the correlation umbrella above `trace_id`; without one, a record takes the installed fallback (ADR-038) |
 
@@ -240,6 +242,12 @@ collector seeded inside a traced flow, whose spans are children of a span it doe
 walks every root (a parentless span, or one whose parent is not in the collector) into the one report, each
 record keeping its own `trace_id`/`parent_id`, and `renderTree` renders each root (ADR-026). Nothing is dropped
 because it is not under the first root.
+
+The collector also holds a lazily allocated registry of at most 100 attached throwable identities (ADR-045).
+`attachException` reads the current span and collector without resolving configuration or checking cancellation.
+An owner outside the collector is ignored. One lock serializes membership, identity uniqueness, capacity,
+insertion and the owner's `kotrace.attached_dropped` increment. The first registration fixes ownership and time;
+refused identities are not retained. Reporting does not drain the registry or reset its bound.
 
 **The one process-global** (ADR-010). Per-*flow* state (the collector, the current span, the scope) is
 context-scoped and pure. **Configuration is not per-flow**: which sinks and policies a consumer runs is static and
@@ -363,7 +371,9 @@ interface TracePolicy {
   invoked on a dropped copy and sees birthplaces only. An opt-in (log/trace-viz) adapter receives the full
   marked climb off the *same* walk. An `addException` record is stamped `EXPLICIT` instead, never a birthplace,
   and an adapter that ships those live drops them from its view with `acceptsExplicitException = false`, applied
-  before `acceptsEvent` too (ADR-040). `toJson` writes `"exception_origin"` as `propagated` or `explicit`, so a
+  before `acceptsEvent` too (ADR-040). Attached failures are stamped `ATTACHED`: neither origin gate excludes them,
+  and `acceptsEvent` still decides delivery. `acceptsSpan` and `acceptsSensitive` are not consulted. `toJson` writes
+  `"exception_origin"` as `propagated`, `explicit` or `attached`, so a
   birthplace record carries no origin key. A live `ExceptionRecord` is unclassified
   (`origin = null`): the tree is incomplete when it is emitted.
 
@@ -407,9 +417,15 @@ sequenceDiagram
 ```
 
 The live calls happen while the code runs, on its thread; the report happens once, when the root ends. A child is
-never a report boundary, so nothing about the outcome (`returnedOutcome`, attached throwables) is read below the
-auto-root. What each scenario delivers is tabulated in [docs/outcome-matrix.md](docs/outcome-matrix.md), generated
-from this code.
+never a report boundary: `returnedOutcome` is read only at the auto-root. A nested wrapper registers trace-level
+failures inside its span block through `attachException`; they survive an outer return, failure or cancellation.
+Before the lazy shared walk, `reportTrace` captures membership, freezes spans, copies the registry, then copies the
+`attached` argument. Each copy has separate `runIsolated` protection (`report.attach_registry` and
+`report.attached`), so one faulty copy loses only its own failures. A null registry read is the empty copy without
+locking. Owners outside captured membership are skipped. Registry entries follow the walk in registration order,
+with their owner's correlation and registration time; the argument follows on the earliest root at report time.
+Both are stamped `ATTACHED`; the argument keeps multiplicity and is not deduplicated against the registry.
+What each scenario delivers is tabulated in [docs/outcome-matrix.md](docs/outcome-matrix.md), generated from this code.
 
 ### Tail, not head
 
@@ -451,7 +467,7 @@ at its one legitimate site (ADR-003). The `traits` a span is opened with are its
 dimensions (§2, ADR-001); kotrace ships the mechanism and names no layers; a consumer folds its own layer
 vocabulary in at the call site (or, like Camailux, behind its own thin wrappers).
 
-**Event verbs are all extensions on `Span`** (`Span.log`, `Span.addNamed`, `Span.addException`): one
+**Timeline event verbs are extensions on `Span`** (`Span.log`, `Span.addNamed`, `Span.addException`): one
 uniform shape; there is no ambient no-receiver form. The caller resolves the span with a getter and calls
 the verb on it. Every verb stores its event unconditionally: there is no capture gate (§4, ADR-002); the
 log message lambda is still not built for an event no adapter accepts, because `emit`/`viewOf` resolve it
@@ -597,7 +613,8 @@ report is delivered and the throwable rethrown; `returnedOutcome` is never invok
 by precedence:
 
 1. an explicit `span(returnedOutcome = …) { }` (ADR-016) wins, over the classifier too: it remaps a status, forces
-   `OK`, or rides trace-level orphan failures up as `attached` (ADR-012);
+   `OK`, or passes trace-level failures as `attached`. A wrapper that may nest instead calls `attachException`
+   inside its block, without passing those same failures through `TraceOutcome.attached` (ADR-045);
 2. else a classified failure: `CANCELLED` when its throwable is a `CancellationException` and the root's coroutine
    is itself cancelled (the same test as a thrown one, ADR-022; a returned timeout is `ERROR`), otherwise `ERROR`;
 3. else `OK`.
@@ -639,8 +656,9 @@ The rules below hold everywhere; the decisions that set them are cited. When one
   (ADR-039).
 - **`acceptsSpan` reads `traits` only**, which are fixed when the span opens, so a filter never races a late
   `putAttribute` (ADR-001/032).
-- **Memory is bounded per span.** A span keeps at most `maxEventsPerSpan` events, dropping the oldest named event first, else the oldest log, an exception only when nothing else is left
-  (ADR-029/033).
+- **Memory is bounded per span and per collector.** A span keeps at most `maxEventsPerSpan` events, dropping the
+  oldest named event first, else the oldest log, an exception only when nothing else is left (ADR-029/033). A
+  collector holds at most 100 attached failures and 100 identities; refused identities are not retained (ADR-045).
 - **A genuine cancellation records no exception** (ADR-022). A `CancellationException` thrown through a coroutine
   that is still active (an inner `withTimeout`, an awaited `Deferred` cancelled elsewhere) is a failure and is
   recorded, and `addException` records whatever it is given.
@@ -649,7 +667,8 @@ The rules below hold everywhere; the decisions that set them are cited. When one
 
 | Limitation | Consequence | Source |
 |---|---|---|
-| `returnedOutcome` runs only at an auto-root | a nested `span`'s status and attached throwables are dropped; a wrapper that may nest must carry them itself | ADR-016/017 |
+| `returnedOutcome` runs only at an auto-root | a nested mapper is not read; a wrapper that may nest registers trace-level failures with `attachException` inside its block | ADR-016/017/045 |
+| An attached failure is registered after the report's copy | it reaches no report already begun, only a later manual report | ADR-045, backlog D05 |
 | A live record has no `origin` | a live sink cannot tell `addException` from a thrown failure without its own marker attribute | ADR-019/040 |
 | `acceptsExplicitException = false` drops **every** `EXPLICIT` record from that adapter's report | an `addException` call the adapter did not ship live (one without its marker) is lost to it; only a single facade that marks every call makes the setting safe | ADR-040 |
 | `addException(e)` and a thrown `e` are separate lineages | reporting and rethrowing the same throwable gives two records | ADR-041 (rejected) |

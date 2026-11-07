@@ -11,6 +11,7 @@ import dev.kotrace.currentSpan
 import dev.kotrace.event.ExceptionRecord
 import dev.kotrace.event.SpanRecord
 import dev.kotrace.event.TraceRecord
+import dev.kotrace.event.attachException
 import dev.kotrace.event.addException
 import dev.kotrace.event.emitException
 import dev.kotrace.span
@@ -100,6 +101,23 @@ class OutcomeMatrixTest {
         },
         Scenario("child `returnedOutcome` = ERROR with an attached throwable") {
             span("root") { span("child", returnedOutcome = ::failedWithAttached) {} }
+        },
+        Scenario("child `attachException`, root returns OK") {
+            span("root") { span("child") { attachException(Boom("attached")) } }
+        },
+        Scenario("child `attachException`, root throws ERROR") {
+            span("root") {
+                span("child") { attachException(Boom("attached")) }
+                throw Boom("root")
+            }
+        },
+        Scenario("child `attachException`, caller cancels the root") {
+            withTimeout(1) {
+                span("root") {
+                    span("child") { attachException(Boom("attached")) }
+                    delay(1_000)
+                }
+            }
         },
         Scenario("`withTimeout` inside the root expires") {
             span("root") { withTimeout(1) { delay(1_000) } }

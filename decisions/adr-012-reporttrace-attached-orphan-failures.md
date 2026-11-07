@@ -2,6 +2,9 @@
 
 - **Date:** 2026-09-07
 - **Status:** Accepted
+- **Amended:** 2026-11-07 by [ADR-045](adr-045-attach-exception-from-any-span.md): `attached` is no longer the only
+  entry, since any span can register a trace-level failure with `attachException`, and both are stamped `ATTACHED`,
+  not `BIRTHPLACE`.
 - **Affects:** `reportTrace` gains an optional `attached: List<Throwable>` parameter (`Report.kt`); no
   change to `Span`, the walk, or any adapter. Additive public API → **0.3.0 → 0.4.0**.
 - **Builds on:** [ADR-005](adr-005-birthplace-requires-throwable-drop-helper.md) (birthplace = deepest

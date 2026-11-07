@@ -174,6 +174,14 @@ support. A newer version in your build wins through normal dependency resolution
 **Upgrading.** [CHANGELOG.md](CHANGELOG.md) lists each release's changes and what to migrate: read it before
 bumping the version.
 
+**Upgrading from 0.7.0 to 0.8.0.** Handle `ExceptionOrigin.ATTACHED` in every exhaustive `when` and recompile:
+code compiled against 0.7.0 throws `NoWhenBranchMatchedException` on its first attached record. A check for
+`origin == BIRTHPLACE` stops matching attached failures, and their JSON writes `"exception_origin":"attached"`.
+`attachException(cause)` registers a report-only trace-level failure inside the current span block, including a
+nested wrapper, without changing its status or timeline. A collector holds at most 100 distinct throwable identities;
+refusals increment `Span.ATTACHED_DROPPED_ATTRIBUTE` on the owner. A crash sink selects `ATTACHED` on `OK` and
+`CANCELLED` too. Do not pass the same failures through `TraceOutcome.attached` as well: both routes report them.
+
 ## How to run (build + test)
 
 ```bash

@@ -1,7 +1,7 @@
 # ADR-045: `attachException` attaches a trace-level failure from any span; the report stamps it `ATTACHED`
 
 - **Date:** 2026-11-07
-- **Status:** Proposed
+- **Status:** Accepted (implemented in 0.8.0)
 - **Affects:**
   - a public `suspend fun attachException(cause: Throwable)` in `dev.kotrace.event`, beside `addException` in
     `event/TraceException.kt`;
@@ -155,15 +155,20 @@ the verdict: a rollback that left state behind is not repaired because the calle
   its owner's correlation and the trace's breadcrumbs.
 - A sink routes `ATTACHED` independently of the verdict: a crash sink that reports `ERROR` traces can also deliver
   the attached failures of an `OK` or `CANCELLED` trace, without delivering recovered birthplaces. It must then read
-  the records of every report, giving up for itself the status-first skip of ADR-029; other adapters keep it. That
-  path is benchmarked before this ADR is accepted. A `hasAttached` signal follows only if the cost shows.
+  the records of every report, giving up for itself the status-first skip of ADR-029; other adapters keep it.
+  Measured in [`20261107-adr045`](../benchmarks/results/20261107-adr045/analysis.md) (HotSpot on an M1 Pro, a
+  128-span tree): a crash-sink-shaped adapter on an `OK` report with no attached failure costs 17.3 µs and 60 KB,
+  16.4 µs and 55 KB above a skipping adapter. One or ten attached failures add no resolved time and 4 to 7 KB, the
+  owner membership set. A skipping adapter's report stays within noise of 0.7.0, 8 B more per report.
+  `hasAttached` stays deferred: the saving is real per report, but no consumer has yet weighed it against its report
+  rate and an Android device budget.
 - Still not guaranteed:
   - delivery exactly once across routes: a throwable that both climbs and is attached reports twice, a consumer
     rule as in ADR-041;
   - a failure registered after the report's copy, such as one from a span that outlives its root (D05);
   - process death before the report (D02), or a cancellation before the failure is registered.
 - Memory is bounded per span (`maxEventsPerSpan`) and per collector (attached failures).
-- **Accepted once these hold in tests:** identity uniqueness and the first owner under concurrent registration; the
+- **Held in tests at acceptance:** identity uniqueness and the first owner under concurrent registration; the
   bound and the refusal count, including concurrent refusals on one owner; a span outside the current collector; a registration after the copy; a manual
   collector reported twice; one copy shared by every adapter; each policy gate above; span status, events and the
   traced result unchanged; `attached` multiplicity and its overlap with the registry; the `toJson` line; new

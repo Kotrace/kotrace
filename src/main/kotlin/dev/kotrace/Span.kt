@@ -181,5 +181,12 @@ class Span(
          * [TracePolicy.acceptsAttribute] admits this key (ADR-039).
          */
         const val EVENTS_DROPPED_ATTRIBUTE: String = "kotrace.events_dropped"
+
+        /**
+         * The [attributes] key counting the attached failures this span registered and its collector refused past
+         * its bound (ADR-045). Read live when a record is built. An adapter receives it only when its
+         * [TracePolicy.acceptsAttribute] admits this key (ADR-039).
+         */
+        const val ATTACHED_DROPPED_ATTRIBUTE: String = "kotrace.attached_dropped"
     }
 }

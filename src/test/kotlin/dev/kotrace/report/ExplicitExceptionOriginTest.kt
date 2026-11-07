@@ -96,7 +96,7 @@ class ExplicitExceptionOriginTest {
     }
 
     @OptIn(NonSuspendTracingBridge::class)
-    @Test fun `bridge end error and attached orphan stay birthplaces behind the explicit gate`() {
+    @Test fun `bridge end error and attached orphan keep their origins behind the explicit gate`() {
         val records = mutableListOf<TraceRecord>()
         Kotrace.install(listOf(report(records, object : TracePolicy { override val acceptsExplicitException = false })))
         val collector = SpanCollector()
@@ -107,7 +107,7 @@ class ExplicitExceptionOriginTest {
 
         val crashes = records.filterIsInstance<ExceptionRecord>()
         assertEquals(2, crashes.size)
-        assertTrue(crashes.all { it.origin == ExceptionOrigin.BIRTHPLACE })
+        assertEquals(listOf(ExceptionOrigin.BIRTHPLACE, ExceptionOrigin.ATTACHED), crashes.map { it.origin })
     }
 
     private fun report(collected: MutableList<TraceRecord>, policy: TracePolicy = object : TracePolicy {}): ReportAdapter =

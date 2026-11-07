@@ -4,6 +4,7 @@ import dev.kotrace.ReturnVerdict
 import dev.kotrace.TraceOutcome
 import dev.kotrace.TraceStatus
 import dev.kotrace.currentSpan
+import dev.kotrace.event.attachException
 import dev.kotrace.event.addException
 import dev.kotrace.event.log
 import dev.kotrace.span
@@ -39,6 +40,14 @@ internal object SpanSamples {
         val price = span("price.fetch") { fetchPrice() }
         emit(price)
     }
+
+    /** A wrapper registers rollback failures inside its span, so it keeps ownership when nested. */
+    suspend fun attachExceptionUsage(work: suspend () -> Outcome<Int>): Outcome<Int> =
+        span("operation") {
+            work().also { result ->
+                if (result is Outcome.Failed) result.rollbackErrors.forEach { attachException(it) }
+            }
+        }
 
     /** A domain result carried as a **value** (ADR-016): a failure is returned, not thrown. */
     sealed interface Outcome<out T> {

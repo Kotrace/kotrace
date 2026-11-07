@@ -6,7 +6,7 @@ import dev.kotrace.TraceStatus
 /**
  * The phase a fault was contained in, passed to a [FaultHook]: the coarse "where", which the hook's `faultMessage`
  * narrows to one step. [LIVE], [SPANLESS_LIVE] and [REPORT] are fan-out phases (ADR-014); [REPORT] also covers a
- * fault of kotrace's own while reporting (ADR-034). [RETURNED_OUTCOME] is the auto-root value mapper (ADR-016) and
+ * fault of kotrace's own while reporting (ADR-034) or registering an attached failure. [RETURNED_OUTCOME] is the auto-root value mapper (ADR-016) and
  * [RETURN_VERDICT_CLASSIFIER] the `returnVerdictClassifier` (ADR-018/020): a contained fault there means "no failure"
  * (the mapper falls back to [TraceStatus.OK]). [SPAN_OPEN] is a fault opening a span, whose block then runs untraced
  * (ADR-034).

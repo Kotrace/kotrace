@@ -39,8 +39,8 @@ Two defaults bite most often:
   maps, kotrace's own keys (`Span.EVENTS_DROPPED_ATTRIBUTE`, `HttpSpan.STATUS`) included. Admit by name what may
   leave the device; only a debug adapter on the developer's device should return `true`.
 - **A report is delivered for every status.** `onReport` is called with `OK` and `CANCELLED` too, and an `OK`
-  report can hold the birthplace of a failure the code recovered from. A crash sink returns early unless the status
-  is `ERROR`.
+  report can hold the birthplace of a failure the code recovered from. A crash sink delivers every exception on
+  `ERROR`, and only `ATTACHED` on other statuses.
 
 ## 3. Threading, faults and reentrancy
 
@@ -65,8 +65,12 @@ Kotrace.installFaultHook { phase, faultMessage, cause ->
 
 ## 4. Recipe: a crash sink
 
-The default policy already gives one record per failure: the `BIRTHPLACE` of each lineage, plus `EXPLICIT`
-records. Gate on the status, and nothing else is needed.
+The default policy gives the `BIRTHPLACE` of each lineage, plus `EXPLICIT` records and `ATTACHED` trace-level
+failures. Deliver every exception on `ERROR`; on `OK` or `CANCELLED`, deliver only `ATTACHED`, so a recovered
+birthplace stays out. `attachException` and `TraceOutcome.attached` are report-only and independent of the verdict.
+If the sink also sends breadcrumbs, read `records.toList()` once, select these failures, then flush its log records
+before sending the selected exceptions. This sink reads every report; adapters that gate only on status can still
+skip the lazy walk.
 
 <!-- snippet: guide-report-crash -->
 ```kotlin
@@ -74,8 +78,9 @@ class ReportCrashSink(private val reporter: CrashReporter) : ReportAdapter {
     override val policy = object : TracePolicy {}
 
     override fun onReport(status: TraceStatus, records: Sequence<TraceRecord>) {
-        if (status != TraceStatus.ERROR) return          // a recovered failure is in an OK report too
-        records.filterIsInstance<ExceptionRecord>().forEach { reporter.record(it.throwable, it.traceId) }
+        records.filterIsInstance<ExceptionRecord>()
+            .filter { status == TraceStatus.ERROR || it.origin == ExceptionOrigin.ATTACHED }
+            .forEach { reporter.record(it.throwable, it.traceId) }
     }
 }
 ```
@@ -87,7 +92,7 @@ class ReportCrashSink(private val reporter: CrashReporter) : ReportAdapter {
 ## 5. Recipe: a crash sink that ships explicit reports live
 
 An exception the code catches, reports and recovers from must reach the crash reporter even when the trace
-ends `OK`, and the report path would drop it at the status gate above. Ship it live instead.
+ends `OK`. Ship it live instead; attached trace-level failures still arrive through the report.
 
 **Only when every `addException` in the codebase goes through one facade that marks it.** The recipe removes every
 `EXPLICIT` record from this adapter's report, marked or not, so an unmarked call is shipped by neither path and lost
@@ -120,8 +125,9 @@ class LiveCrashSink(private val reporter: CrashReporter) : LiveAdapter, ReportAd
     }
 
     override fun onReport(status: TraceStatus, records: Sequence<TraceRecord>) {
-        if (status != TraceStatus.ERROR) return
-        records.filterIsInstance<ExceptionRecord>().forEach { reporter.record(it.throwable, it.traceId) }
+        records.filterIsInstance<ExceptionRecord>()
+            .filter { status == TraceStatus.ERROR || it.origin == ExceptionOrigin.ATTACHED }
+            .forEach { reporter.record(it.throwable, it.traceId) }
     }
 
     companion object { const val REPORTED = "reported" }
@@ -159,7 +165,7 @@ class TraceViewerSink(private val store: TraceStore) : ReportAdapter {
     override fun onReport(status: TraceStatus, records: Sequence<TraceRecord>) {
         records.filterIsInstance<ExceptionRecord>().forEach { record ->
             when (record.origin) {                       // exhaustive: a new origin is a compile error here
-                ExceptionOrigin.BIRTHPLACE, ExceptionOrigin.EXPLICIT -> store.append(record, propagated = false)
+                ExceptionOrigin.BIRTHPLACE, ExceptionOrigin.EXPLICIT, ExceptionOrigin.ATTACHED -> store.append(record, propagated = false)
                 ExceptionOrigin.PROPAGATED -> store.append(record, propagated = true)
                 null -> Unit                             // live records only; a report record always has one
             }
@@ -168,8 +174,8 @@ class TraceViewerSink(private val store: TraceStore) : ReportAdapter {
 }
 ```
 
-Match `origin` exhaustively, with no `else`. An `else` hides a new origin, as `EXPLICIT` was in 0.6.0, and an
-adapter compiled against an older version throws `NoWhenBranchMatchedException` on it.
+Match `origin` exhaustively, with no `else`, so every origin has a deliberate route. An adapter compiled against
+an older enumeration throws `NoWhenBranchMatchedException` when an exhaustive expression encounters an unknown origin.
 
 ## 7. Recipe: a span exporter
 
@@ -205,7 +211,7 @@ passes `acceptsEvent` alone, so a policy that rejects spans can leave a crash wi
 
 - [ ] The policy admits, by name, every attribute key this adapter may ship, and no others.
 - [ ] `acceptsSensitive` stays `false` unless the output never leaves the device.
-- [ ] A crash sink returns early on a non-`ERROR` status, and stamps each crash report with the record's `traceId`.
+- [ ] A crash sink delivers all exceptions on `ERROR`, only `ATTACHED` otherwise, and stamps each crash report with `traceId`.
 - [ ] If it ships `addException` records live: every call goes through one marking facade, enforced by a rule;
       the adapter reads a marker it admits; only then `acceptsExplicitException = false`.
 - [ ] I/O happens on a bounded worker, never in `onLive` or `onReport` directly.

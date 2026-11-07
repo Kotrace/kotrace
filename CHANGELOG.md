@@ -4,6 +4,27 @@ What changed in each release, and what a consumer must do to upgrade. Every chan
 in [DECISIONS.md](DECISIONS.md). A binary-breaking change bumps the version and gets an entry here in the same commit
 (AGENTS.md § Build And Test).
 
+## 0.8.0 (unreleased)
+
+**Added**
+
+- `attachException(cause)`: registers a trace-level failure from any current span, unique by identity across its
+  collector and bounded at 100, for report-only delivery on its first owner (ADR-045).
+- `ExceptionOrigin.ATTACHED` for registered failures and the `reportTrace(attached = …)` argument, and
+  `Span.ATTACHED_DROPPED_ATTRIBUTE` for registrations refused past the bound (ADR-045).
+
+**Changed**
+
+- An attached record carries `ATTACHED` instead of `BIRTHPLACE`, and `toJson` writes
+  `"exception_origin":"attached"` (ADR-045).
+
+**Upgrading from 0.7.0.** Recompile exhaustive `when` expressions over `ExceptionOrigin` with an `ATTACHED` branch.
+Existing signatures still link, but an exhaustive expression compiled against 0.7.0 throws
+`NoWhenBranchMatchedException` on its first attached record. A check for `origin == BIRTHPLACE` stops matching
+attached records. A crash sink that reports only `ERROR` traces must also select `ATTACHED` on other outcomes.
+A wrapper that may nest calls `attachException` inside its span block and stops passing those same failures
+through `TraceOutcome.attached`, or the root reports them twice.
+
 ## 0.7.0 (2026-11-03)
 
 **Added**

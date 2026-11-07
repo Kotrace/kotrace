@@ -4,6 +4,8 @@
 - **Status:** Accepted
 - **Amended:** 2026-09-23: [ADR-020](adr-020-value-only-failure-classifier.md) renamed ADR-018's callback to
   `returnVerdictClassifier`; origin marking applies to `ReturnedFailure.CausedBy`, while `ValueOnly` emits no event.
+- **Amended:** 2026-11-07 by [ADR-045](adr-045-attach-exception-from-any-span.md): `ExceptionOrigin` gains
+  `ATTACHED`; an attached failure is no longer stamped `BIRTHPLACE`.
 - **Affects:** the report walk no longer *drops* non-birthplace `ExceptionEvent`s; it collects the whole
   climb and stamps each entry's **origin** ([`Report.kt:52-60`](../src/main/kotlin/dev/kotrace/Report.kt:52));
   `ExceptionRecord` gains `origin: ExceptionOrigin?`

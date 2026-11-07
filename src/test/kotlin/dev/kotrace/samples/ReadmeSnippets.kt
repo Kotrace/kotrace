@@ -136,8 +136,9 @@ internal object ReadmeSnippets {
         override val policy = object : TracePolicy {}
 
         override fun onReport(status: TraceStatus, records: Sequence<TraceRecord>) {
-            if (status != TraceStatus.ERROR) return          // a recovered failure is in an OK report too
-            records.filterIsInstance<ExceptionRecord>().forEach { reporter.record(it.throwable, it.traceId) }
+            records.filterIsInstance<ExceptionRecord>()
+                .filter { status == TraceStatus.ERROR || it.origin == ExceptionOrigin.ATTACHED }
+                .forEach { reporter.record(it.throwable, it.traceId) }
         }
     }
     // end README snippet
@@ -159,8 +160,9 @@ internal object ReadmeSnippets {
         }
 
         override fun onReport(status: TraceStatus, records: Sequence<TraceRecord>) {
-            if (status != TraceStatus.ERROR) return
-            records.filterIsInstance<ExceptionRecord>().forEach { reporter.record(it.throwable, it.traceId) }
+            records.filterIsInstance<ExceptionRecord>()
+                .filter { status == TraceStatus.ERROR || it.origin == ExceptionOrigin.ATTACHED }
+                .forEach { reporter.record(it.throwable, it.traceId) }
         }
 
         companion object { const val REPORTED = "reported" }
@@ -184,7 +186,7 @@ internal object ReadmeSnippets {
         override fun onReport(status: TraceStatus, records: Sequence<TraceRecord>) {
             records.filterIsInstance<ExceptionRecord>().forEach { record ->
                 when (record.origin) {                       // exhaustive: a new origin is a compile error here
-                    ExceptionOrigin.BIRTHPLACE, ExceptionOrigin.EXPLICIT -> store.append(record, propagated = false)
+                    ExceptionOrigin.BIRTHPLACE, ExceptionOrigin.EXPLICIT, ExceptionOrigin.ATTACHED -> store.append(record, propagated = false)
                     ExceptionOrigin.PROPAGATED -> store.append(record, propagated = true)
                     null -> Unit                             // live records only; a report record always has one
                 }

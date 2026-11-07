@@ -32,7 +32,7 @@ Break one of these and a test fails. They are not style: they are the contract
   (`bridge/`, ADR-035); an integration does not write its own.
 - **Fail-closed by default.** An adapter receives no sensitive log and no attribute it has not accepted.
 - **`acceptsSpan` reads `traits` only**, fixed when the span opens.
-- **Memory is bounded per span** (`maxEventsPerSpan`).
+- **Memory is bounded per span** (`maxEventsPerSpan`) **and per collector** (100 attached failures, unique by identity).
 - **A genuine cancellation records no exception.**
 - **Unredacted output never reaches a sink.** `renderTree()` stays behind `@UnredactedTraceRead`.
 - **The module split holds.** The core is pure Kotlin plus coroutines; OkHttp and Android/Room live only in their
