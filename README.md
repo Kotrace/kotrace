@@ -136,20 +136,20 @@ contract, so an OpenTelemetry upgrade later is additive.
 maven { url = uri("https://maven.kotrace.dev") }
 
 // build.gradle.kts
-implementation("dev.kotrace:kotrace:0.7.0")
+implementation("dev.kotrace:kotrace:0.8.0")
 
 // OkHttp integration only: the traceparent-on-the-wire glue. Pulls the core transitively.
-implementation("dev.kotrace:kotrace-okhttp:0.7.0")
+implementation("dev.kotrace:kotrace-okhttp:0.8.0")
 
 // Room integration only (Android): logs each query's SQL onto the active span. Pulls the core.
-implementation("dev.kotrace:kotrace-room:0.7.0")
+implementation("dev.kotrace:kotrace-room:0.8.0")
 ```
 
 Or align every module through the BOM: declare its version once, drop the version off each dependency:
 
 <!-- snippet: gradle -->
 ```kotlin
-implementation(platform("dev.kotrace:kotrace-bom:0.7.0"))
+implementation(platform("dev.kotrace:kotrace-bom:0.8.0"))
 implementation("dev.kotrace:kotrace")
 implementation("dev.kotrace:kotrace-okhttp")
 ```
