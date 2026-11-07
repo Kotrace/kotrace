@@ -6,6 +6,38 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class BenchmarkPreflightTest {
+    @Test
+    fun crashSinkSelectsAttachmentsIndependentlyOfOutcomeAndDoesNotDrain() {
+        listOf(0, 1, 10).forEach { attached ->
+            listOf("ALONE", "MIXED").forEach { layout ->
+                val fixture = BenchWorkloads.buildCrashSinkFixture(attached)
+                assertEquals(128, fixture.spanCount)
+                CrashSinkSession(layout).use { session ->
+                    session.enter()
+                    // Repeated reports share one trial fixture: no registry drain or record retention.
+                    repeat(2) {
+                        session.report(fixture, TraceStatus.OK)
+                        assertEquals(attached, session.crash.selected)
+                        assertEquals(attached, session.crash.selectedAttached)
+                        assertEquals(0, session.crash.selectedBirthplaces)
+                        assertEquals(attached + 1, session.crash.exceptions)
+                        assertEquals(128, session.crash.breadcrumbs)
+                        assertEquals(0, session.skippingRecordCount())
+
+                        session.report(fixture, TraceStatus.ERROR)
+                        assertEquals(attached + 1, session.crash.selected)
+                        assertEquals(session.crash.exceptions, session.crash.selected)
+                        assertEquals(attached, session.crash.selectedAttached)
+                        assertEquals(1, session.crash.selectedBirthplaces)
+                        assertEquals(128, session.crash.breadcrumbs)
+                        assertEquals(if (layout == "MIXED") 3 * (129 + attached) else 0,
+                            session.skippingRecordCount())
+                    }
+                    assertEquals(4, session.crash.reads)
+                }
+            }
+        }
+    }
 
     @Test
     fun lazyMessageIsResolvedOnlyAfterLivePolicyAccepts() {

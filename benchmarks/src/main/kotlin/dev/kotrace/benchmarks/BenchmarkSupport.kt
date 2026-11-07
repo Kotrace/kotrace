@@ -15,6 +15,7 @@ import dev.kotrace.event.ExceptionEvent
 import dev.kotrace.event.TraceRecord
 import dev.kotrace.event.addException
 import dev.kotrace.event.addNamed
+import dev.kotrace.event.attachException
 import dev.kotrace.event.log
 import dev.kotrace.report.reportTrace
 import dev.kotrace.span
@@ -201,6 +202,21 @@ class EventReadFixture internal constructor(
 }
 
 object BenchWorkloads {
+    /** Same balanced tree as outcome reporting, with a recovered child and trial-only registrations. */
+    @JvmStatic
+    fun buildCrashSinkFixture(attached: Int): ReportFixture {
+        require(attached in listOf(0, 1, 10))
+        val collector = SpanCollector()
+        runBlocking {
+            withContext(collector + TraceConfig(emptyList())) {
+                balanced(128, 0, attached, recoveredFailure = true)
+            }
+        }
+        check(collector.spans.size == 128)
+        check(collector.spans.single { it.parentId == null }.status == SpanStatus.OK)
+        return ReportFixture(collector, 128)
+    }
+
     @JvmStatic
     fun plain(value: Int): Int = value + 1
 
@@ -325,16 +341,29 @@ object BenchWorkloads {
         }
     }
 
-    private suspend fun balanced(spanCount: Int, index: Int) {
+    private suspend fun balanced(
+        spanCount: Int,
+        index: Int,
+        attached: Int = 0,
+        recoveredFailure: Boolean = false,
+    ) {
         span("balanced-$index") {
             currentLog(index)
+            if (index < attached) attachException(IllegalStateException("attached-$index"))
             val remaining = spanCount - 1
             if (remaining > 0) {
                 val left = remaining / 2
                 val right = remaining - left
-                if (left > 0) balanced(left, index * 2 + 1)
-                if (right > 0) balanced(right, index * 2 + 2)
+                if (left > 0) balanced(left, index * 2 + 1, attached, recoveredFailure)
+                if (right > 0) {
+                    if (recoveredFailure && index == 0) {
+                        runCatching { balanced(right, index * 2 + 2, attached, recoveredFailure) }
+                    } else {
+                        balanced(right, index * 2 + 2, attached, recoveredFailure)
+                    }
+                }
             }
+            if (recoveredFailure && index == 2) throw IllegalStateException("recovered-birthplace")
         }
     }
 

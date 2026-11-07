@@ -29,6 +29,7 @@ một batch ghi N event, như định nghĩa trong từng benchmark.
 | `ReportScalingBenchmark` | report cây dựng sẵn, message đã warm | chain, star, balanced; 1, 16, 128, 512 span |
 | `ReportFailureScalingBenchmark` | report cây có một birthplace exception ở mỗi child | 16, 128, 512 span |
 | `ReportOutcomeBenchmark` | report cây 128 span theo outcome | bỏ qua hoặc đọc; OK, ERROR, CANCELLED; 1, 4, 16 adapter |
+| `CrashSinkBenchmark` | report cây cân bằng 128 span có một birthplace đã được phục hồi; đọc một lần, đếm breadcrumb rồi chọn exception theo outcome và origin | 0, 1, 10 lỗi qua `attachException`; OK, ERROR; một crash adapter hoặc thêm 3 adapter bỏ qua report không phải ERROR (12 trường hợp) |
 | `FailureBenchmark` | lỗi leo qua chuỗi span so với throw/catch coroutine thuần | độ sâu 1, 8, 32 |
 | `ConcurrencyBenchmark` | 100 log mỗi worker trên dispatcher 4 thread | worker 1, 4, 16; không tracing, span chung dưới cap, span chung với cap mặc định, mỗi worker một child span |
 | `SinkLatencyBenchmark` | thời gian ứng dụng chờ một live sink chặn 1 ms mỗi record (SampleTime) | 1, 10 record |
